@@ -152,3 +152,5 @@ $RECYCLE.BIN/
 .vscode/
 out/
 !bpf_*.o
+!go.mod
+dist/
