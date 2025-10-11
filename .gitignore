@@ -151,3 +151,4 @@ $RECYCLE.BIN/
 
 .vscode/
 out/
+!bpf_*.o

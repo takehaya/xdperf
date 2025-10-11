@@ -1,0 +1,16 @@
+FROM golang:bookworm as builder
+
+RUN apt-get update && \
+	apt-get install -y clang llvm libelf-dev libbpf-dev gcc-multilib
+WORKDIR /app
+COPY . .
+
+ARG BPF_CLANG=clang
+ARG BPF_CFLAGS="-O2 -g -Wall -Werror"
+ENV BPF_CLANG=${BPF_CLANG}
+ENV BPF_CFLAGS=${BPF_CFLAGS}
+
+RUN go generate pkg/coreelf/elf.go
+
+FROM scratch
+COPY --from=builder /app/pkg/coreelf/bpf_* /
