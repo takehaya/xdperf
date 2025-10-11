@@ -29,9 +29,17 @@ lefthook install
 
 ### Go Binary Build
 ```shell
-# Build the application binary (xdperf)
+# Build all binaries (goreleaser)
+make goreleaser
+
+# Development build
 make build
 
-# Build the BPF binary
+# Run build test (check for panics)
+make test-runnable
+```
+
+### BPF Binary Build
+```shell
 make bpf-gen
 ```

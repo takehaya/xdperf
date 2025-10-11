@@ -30,6 +30,10 @@ make_outdir:
 $(TARGETS):
 	$(GOCMD) build -o out/bin/$@ ./cmd/$@/
 
+.PHONY: goreleaser
+goreleaser: ## build with goreleaser
+	goreleaser release --snapshot --clean
+
 clean: ## Remove build related file
 	rm -fr ./out/bin
 
@@ -57,9 +61,6 @@ bpf-gen: export BPF_CFLAGS := $(CFLAGS) $(CEXTRA_FLAGS)
 bpf-gen: ## generate ebpf code and object files
 	docker build --build-arg BPF_CLANG=${BPF_CLANG} --build-arg BPF_CFLAGS="${BPF_CFLAGS}" . --output ./pkg/coreelf -f Dockerfile.bpf
 
-install-build-tools: ## install build tools
-	./scripts/install_build_tools.sh
-
 ## Lint:
 .PHONY: install-lint-tools
 install-lint-tools: ## install lint tools
@@ -83,10 +84,18 @@ nilaway: ## Run nil check lint
 		-exclude-errors-in-files="mock_" \
 		./...
 
-## Mise:
+## tools and pkg install:
 .PHONY: install-dev-pkg
 install-dev-pkg: ## install mise.toml
 	mise install -y
+
+.PHONY: install-build-tools
+install-build-tools: ## install build tools
+	./scripts/install_build_tools.sh
+
+.PHONY: install-dev-tools
+install-dev-tools: ## install development tools
+	./scripts/install_dev_tools.sh
 
 ## Env:
 .PHONY: remove-ebpfmap show-trace_pipe

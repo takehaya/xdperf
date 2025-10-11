@@ -11,29 +11,8 @@ if ! command -v apt-get >/dev/null 2>&1; then
     exit 1
 fi
 
-# Function to check if a command exists
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-# Function to install a tool
-install_tool() {
-    local tool="$1"
-    local install_cmd="$2"
-
-    if command_exists "$tool"; then
-        echo "✓ $tool is already installed"
-    else
-        echo "Installing $tool..."
-        eval "$install_cmd"
-        if command_exists "$tool"; then
-            echo "✓ $tool installed successfully"
-        else
-            echo "✗ Failed to install $tool"
-            exit 1
-        fi
-    fi
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/libs/install_utils.sh"
 
 # Ensure ~/.local/bin directory exists
 mkdir -p "${HOME}/.local/bin"
