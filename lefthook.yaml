@@ -1,0 +1,86 @@
+pre-commit:
+  parallel: true
+  commands:
+    check-executables-have-shebangs:
+      glob: "**/*"
+      run: |
+        for file in {staged_files}; do
+          # Skip non-text files
+          if ! file --mime-type "$file" | grep -q "text/"; then
+            continue
+          fi
+          if [ -x "$file" ] && [ -f "$file" ] && ! grep -q '^#!' "$file"; then
+            echo "Executable without shebang: $file"
+            exit 1
+          fi
+        done
+
+    trailing-whitespace:
+      glob: "**/*"
+      exclude:
+        - "*.md"
+        - "*.patch"
+      run: |
+        for file in {staged_files}; do
+          # Skip non-text files
+          if ! file --mime-type "$file" | grep -q "text/"; then
+            continue
+          fi
+          if grep -q '[[:space:]]$' "$file"; then
+            sed -i 's/[[:space:]]*$//' "$file"
+            echo "Fixed trailing whitespace in: $file"
+          fi
+        done
+
+    yamllint:
+      glob: "**/*.{yml,yaml}"
+      run: yamllint -f colored {staged_files}
+
+    check-json:
+      glob: "**/*.json"
+      run: |
+        failed=0
+        for f in {staged_files}; do
+          if ! jq -e empty "$f" >/dev/null 2>&1; then
+            echo "JSON parse error in $f"
+            jq empty "$f"
+            failed=1
+          fi
+        done
+        exit $failed
+
+    check-toml:
+      glob: "**/*.toml"
+      run: taplo check {staged_files}
+
+    mixed-line-ending:
+      glob: "**/*"
+      run: |
+        for file in {staged_files}; do
+          # Skip non-text files
+          if ! file --mime-type "$file" | grep -q "text/"; then
+            continue
+          fi
+          dos2unix -q "$file"
+        done
+
+    golangci-lint:
+      glob: "**/*.go"
+      run: golangci-lint run --fix
+
+    clang-format:
+      glob: "**/*.{c,h,cc,cpp}"
+      run: clang-format -i {staged_files}
+
+commit-msg:
+  commands:
+    msg-check:
+      run: |
+        if ! grep -qE '^(hotfix|feat|fix|docs|style|refactor|perf|test|chore|ci)((\([^\)]*\))|)!?:\s*' {1}; then
+          echo "Commit message must include conventional commit type."
+          echo "Format: <type>(<scope>): <description>"
+          exit 1
+        fi
+
+# Colors and output
+colors: true
