@@ -1,0 +1,44 @@
+---
+name: test
+
+on:
+  push:
+    paths:
+      - 'go.*'
+      - '**.go'
+      - '**.h'
+      - '**.c'
+      - '.github/workflows/test.yaml'
+
+jobs:
+  build:
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    runs-on: ubuntu-latest
+    steps:
+      - name: check out
+        uses: actions/checkout@v5
+      - name: setup go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ./go.mod
+          cache: false
+      - name: test buildable
+        run: make build
+      - name: test pass init() phase of all packages
+        run: make test-runnable
+  test:
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    runs-on: ubuntu-latest
+    steps:
+      - name: check out
+        uses: actions/checkout@v4
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ./go.mod
+      - name: go test
+        run: go test -exec "sudo -E" -race -covermode=atomic -coverprofile=coverage.out -v ./...
