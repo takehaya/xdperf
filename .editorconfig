@@ -1,0 +1,49 @@
+# EditorConfig is awesome: https://EditorConfig.org
+# Other references
+# cf. https://github.com/gogs/gogs/blob/main/.editorconfig
+# cf. https://git.qemu.org/?p=qemu.git;a=blob;f=.editorconfig;h=b2022e391abfeaf4d7a4eb9b14e682ebf7ba8a43;hb=refs/heads/master
+# cf. https://gitlab.gnome.org/GNOME/gnome-builder/-/blob/main/.editorconfig
+
+# top-most EditorConfig file
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.go]
+indent_style = tab
+indent_size = 4
+
+[*.tmpl]
+indent_style = tab
+indent_size = 2
+
+[*.{less, yml}]
+indent_style = space
+indent_size = 2
+
+[*.json]
+indent_size = 4
+tab_size = 4
+
+# 4 space indentation
+[*.py]
+indent_style = space
+indent_size = 4
+
+# Tab indentation (no size specified)
+[Makefile*]
+indent_style = tab
+indent_size = 8
+
+# Indentation override for all JS under lib directory
+[lib/**.js]
+indent_style = space
+indent_size = 2
+
+[*.{c,h}]
+indent_style = space
+indent_size = 4
