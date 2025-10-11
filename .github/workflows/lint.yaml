@@ -1,0 +1,82 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        id: setup-go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-
+            ${{ runner.os }}-go-
+
+      - name: Cache golangci-lint cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            golangci-lint-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-
+            golangci-lint-${{ runner.os }}-
+
+      - name: Install lint tools
+        run: |
+          make install-lint-tools
+
+      - name: Cache lefthook
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/lefthook
+          key: lefthook-${{ runner.os }}-${{ hashFiles('lefthook.yml') }}
+          restore-keys: |
+            lefthook-${{ runner.os }}-
+
+      - name: Run lefthook (push)
+        if: github.event_name == 'push'
+        run: |
+          # Get changed files and pass them as arguments
+          FILES=$(git diff --name-only "${{ github.event.before }}" HEAD | tr '\n' ' ')
+          if [[ -n "$FILES" ]]; then
+            lefthook run pre-commit --file $FILES
+          fi
+
+      - name: Run lefthook (pull_request)
+        if: github.event_name == 'pull_request'
+        run: |
+          export BASE_BRANCH=${{ github.base_ref }}
+          git fetch origin $BASE_BRANCH
+          if [[ -z "$BASE_BRANCH" ]]; then
+            BASE_BRANCH="master"
+          fi
+          make lint-ci DIFF_FROM_BRANCH_NAME=origin/$BASE_BRANCH
+
+      - name: Check modified files
+        if: failure()
+        run: |
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "::error::Files were modified by lefthook. Please run 'lefthook run pre-commit' locally and commit the changes."
+            git status --porcelain
+            git diff
+          fi
