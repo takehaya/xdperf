@@ -6,7 +6,7 @@ VERSION := 0.0.1
 GIT_HASH=$(git rev-parse --short HEAD)
 CLANG ?= clang
 CFLAGS := -O2 -g -Wall -Werror $(CFLAGS)
-DIFF_FROM_BRANCH_NAME ?= origin/master
+DIFF_FROM_BRANCH_NAME ?= origin/main
 
 ENTRY_POINT_DIR=cmd
 TARGETS=$(notdir $(wildcard $(ENTRY_POINT_DIR)/*))
@@ -59,6 +59,29 @@ bpf-gen: ## generate ebpf code and object files
 
 install-build-tools: ## install build tools
 	./scripts/install_build_tools.sh
+
+## Lint:
+.PHONY: install-lint-tools
+install-lint-tools: ## install lint tools
+	./scripts/install_lint_tools.sh
+
+.PHONY: lint
+lint: ## Run lefthook, fmt and lint for this project.
+	lefthook run pre-commit --all-files
+
+.PHONY: lint-ci
+lint-ci: ## Run lefthook for CI
+	FILES="$$(git diff --name-only $(DIFF_FROM_BRANCH_NAME) HEAD | tr '\n' ' ')"; \
+	if [ -n "$$FILES" ]; then \
+		lefthook run pre-commit --file $$FILES; \
+	fi
+
+.PHONY: nilaway
+nilaway: ## Run nil check lint
+	nilaway -fix -include-pkgs="$(PACKAGE)" \
+		-test=false \
+		-exclude-errors-in-files="mock_" \
+		./...
 
 ## Mise:
 .PHONY: install-dev-pkg
