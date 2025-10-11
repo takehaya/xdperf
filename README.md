@@ -19,6 +19,8 @@ On a Debian-based Linux environment, make sure the following tools are installed
 ### Development Setup
 ```shell
 make install-dev-pkg
+make install-dev-tools
+make install-build-tools
 
 # Used by lefthook (explained later)
 make install-lint-tools
