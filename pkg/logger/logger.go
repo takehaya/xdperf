@@ -1,8 +1,11 @@
 package logger
 
 import (
+	"context"
+	"errors"
 	"os"
 	"runtime"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -17,7 +20,7 @@ type Config struct {
 	AddCaller bool `default:"false"` // trueならログに呼び出し元情報を追加する
 }
 
-func NewLogger(cfg Config) (*zap.Logger, func(), error) {
+func NewLogger(cfg Config) (*zap.Logger, func(context.Context) error, error) {
 	encCfg := zapcore.EncoderConfig{
 		TimeKey:        "ts",
 		LevelKey:       "level",
@@ -63,8 +66,15 @@ func NewLogger(cfg Config) (*zap.Logger, func(), error) {
 
 	lg := zap.New(core, opts...)
 
-	cleanup := func() {
-		_ = lg.Sync()
+	cleanup := func(_ context.Context) error {
+		if err := lg.Sync(); err != nil {
+			// 標準出力・標準エラーに対する Sync は多くの環境で EINVAL 等になるため無視する
+			if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EBADF) {
+				return nil
+			}
+			return err
+		}
+		return nil
 	}
 	return lg, cleanup, nil
 }

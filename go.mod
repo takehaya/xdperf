@@ -9,6 +9,7 @@ require (
 	github.com/tetratelabs/wazero v1.9.0
 	github.com/urfave/cli v1.22.17
 	go.uber.org/zap v1.27.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

@@ -9,6 +9,11 @@ xdperf is a high-performance network traffic generation tool that leverages XDP 
 go install github.com/takehaya/xdperf@latest
 ```
 
+## How To Use
+```shell
+./out/bin/xdperf --plugin hello --plugin-path plugins/hello/
+```
+
 ## For Developers
 The following information describes what is required to build the project.
 

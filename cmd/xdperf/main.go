@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -43,6 +44,10 @@ func newApp(version string) *cli.App {
 			Value: "/usr/local/lib/xdperf/plugins/",
 			Usage: "plugin path, default is /usr/local/lib/xdperf/plugins/",
 		},
+		cli.StringFlag{
+			Name:  "plugin-config, c",
+			Usage: "plugin configuration file (JSON or YAML)",
+		},
 		cli.BoolFlag{
 			Name:  "server, s",
 			Usage: "run as server mode",
@@ -60,12 +65,24 @@ func run(ctx *cli.Context) error {
 	}
 	c.PluginName = ctx.String("plugin")
 	c.PluginPath = ctx.String("plugin-path")
+	c.PluginConfig = ctx.String("plugin-config")
 	c.ServerFlag = ctx.Bool("server")
 
-	xdperf, err := xdperf.NewXdperf(c)
+	xdp, err := xdperf.NewXdperf(c)
 	if err != nil {
 		return fmt.Errorf("xdperf initialization failed: %w", err)
 	}
-	defer xdperf.Close()
+	defer xdp.Close()
+
+	if c.ServerFlag {
+		// TODO: サーバーモードの実装
+		log.Printf("server mode not implemented yet")
+		return nil
+	}
+
+	err = xdp.StartClient(context.Background())
+	if err != nil {
+		return fmt.Errorf("xdperf client start failed: %w", err)
+	}
 	return nil
 }
