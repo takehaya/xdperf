@@ -1,5 +1,6 @@
 # cf. based https://gist.github.com/thomaspoignant/5b72d579bd5f311904d973652180c705
 GOCMD=go
+TINYGOCMD=tinygo
 GOTEST=$(GOCMD) test
 GOVET=$(GOCMD) vet
 VERSION := 0.0.1
@@ -9,7 +10,9 @@ CFLAGS := -O2 -g -Wall -Werror $(CFLAGS)
 DIFF_FROM_BRANCH_NAME ?= origin/main
 
 ENTRY_POINT_DIR=cmd
+ENTRY_POINT_DIR_PLUGINS=plugins
 TARGETS=$(notdir $(wildcard $(ENTRY_POINT_DIR)/*))
+PLUGIN_TARGETS := $(notdir $(shell find $(ENTRY_POINT_DIR_PLUGINS) -mindepth 1 -maxdepth 1 -type d))
 
 GREEN  := $(shell tput -Txterm setaf 2)
 YELLOW := $(shell tput -Txterm setaf 3)
@@ -22,13 +25,17 @@ all: help
 
 ## Build:
 .PHONY: $(TARGETS)
+.PHONY: $(PLUGIN_TARGETS)
 .PHONY: build, make_outdir, clean
-build: make_outdir $(TARGETS) ## Build your project and put the output binary in out/bin/
+build: make_outdir $(TARGETS) $(PLUGIN_TARGETS) ## Build your project and put the output binary in out/bin/
 make_outdir:
 	mkdir -p out/bin
 
 $(TARGETS):
 	$(GOCMD) build -o out/bin/$@ ./cmd/$@/
+
+$(PLUGIN_TARGETS):
+	$(TINYGOCMD) build -scheduler=none -target=wasip1 -buildmode=c-shared -o ./plugins/$@/$@.wasm ./plugins/$@/main.go
 
 .PHONY: goreleaser
 goreleaser: ## build with goreleaser
