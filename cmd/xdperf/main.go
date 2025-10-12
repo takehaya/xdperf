@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 
+	"github.com/kelseyhightower/envconfig"
+	"github.com/takehaya/xdperf/pkg/xdperf"
 	"github.com/urfave/cli"
 )
 
@@ -51,5 +53,19 @@ func newApp(version string) *cli.App {
 }
 
 func run(ctx *cli.Context) error {
+	var c xdperf.Config
+	err := envconfig.Process("manager", &c)
+	if err != nil {
+		return fmt.Errorf("config parsing failed: %w", err)
+	}
+	c.PluginName = ctx.String("plugin")
+	c.PluginPath = ctx.String("plugin-path")
+	c.ServerFlag = ctx.Bool("server")
+
+	xdperf, err := xdperf.NewXdperf(c)
+	if err != nil {
+		return fmt.Errorf("xdperf initialization failed: %w", err)
+	}
+	defer xdperf.Close()
 	return nil
 }
