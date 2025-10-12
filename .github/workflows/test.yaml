@@ -24,6 +24,10 @@ jobs:
         with:
           go-version-file: ./go.mod
           cache: false
+      - name: install make
+        run: sudo apt-get update && sudo apt-get install -y make
+      - name: install build tools
+        run: make install-build-tools
       - name: test buildable
         run: make build
       - name: test pass init() phase of all packages
