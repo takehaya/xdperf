@@ -27,7 +27,7 @@ func newApp(version string) *cli.App {
 	app.Name = "Xdperf"
 	app.Version = fmt.Sprintf("%s, %s, %s, %s", version, commit, date, builtBy)
 
-	app.Usage = ""
+	app.Usage = "high performance XDP based network traffic generator tool"
 
 	app.EnableBashCompletion = true
 	app.Flags = []cli.Flag{
@@ -38,7 +38,12 @@ func newApp(version string) *cli.App {
 		},
 		cli.StringFlag{
 			Name:  "plugin-path, P",
+			Value: "/usr/local/lib/xdperf/plugins/",
 			Usage: "plugin path, default is /usr/local/lib/xdperf/plugins/",
+		},
+		cli.BoolFlag{
+			Name:  "server, s",
+			Usage: "run as server mode",
 		},
 	}
 	app.Action = run
