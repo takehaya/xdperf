@@ -71,71 +71,42 @@ func (x *Xdperf) startClientSimple(ctx context.Context) error {
 	generator := plugin.NewGeneratorAdapter(x.cfg.PluginName, wasmPlugin)
 	x.Logger.Info("testing simple plugin communication")
 
-	// 3回テスト呼び出し
-	for seq := uint64(0); seq < 3; seq++ {
-		// シンプルな入力
-		input := map[string]interface{}{
-			"sequence": seq,
-		}
-
-		x.Logger.Info("calling plugin", zap.Uint64("sequence", seq))
-
-		// プラグイン呼び出し
-		outputBytes, err := generator.CallWithJSON(ctx, input)
-		if err != nil {
-			x.Logger.Error("CallWithJSON failed", zap.Error(err))
-			return fmt.Errorf("failed to call plugin (seq=%d): %w", seq, err)
-		}
-		x.Logger.Info("after CallWithJSON success")
-
-		x.Logger.Info("received response",
-			zap.Uint64("sequence", seq),
-			zap.Int("output_size", len(outputBytes)),
-			zap.String("output", string(outputBytes)),
-		)
-
-		// JSONパース
-		var response map[string]interface{}
-		if err := json.Unmarshal(outputBytes, &response); err != nil {
-			return fmt.Errorf("failed to parse response: %w", err)
-		}
-
-		x.Logger.Info("parsed response",
-			zap.Any("message", response["message"]),
-			zap.Any("status", response["status"]),
-		)
+	// シンプルな入力
+	counter := uint64(1)
+	input := map[string]interface{}{
+		"count": counter,
 	}
+
+	x.Logger.Info("calling plugin", zap.Uint64("counter", counter))
+
+	// プラグイン呼び出し
+	outputBytes, err := generator.CallWithJSON(ctx, input)
+	if err != nil {
+		x.Logger.Error("CallWithJSON failed", zap.Error(err))
+		return fmt.Errorf("failed to call plugin (counter=%d): %w", counter, err)
+	}
+	x.Logger.Info("after CallWithJSON success")
+
+	x.Logger.Info("received response",
+		zap.Uint64("counter", counter),
+		zap.Int("output_size", len(outputBytes)),
+		zap.String("output", string(outputBytes)),
+	)
+
+	// JSONパース
+	var response map[string]interface{}
+	if err := json.Unmarshal(outputBytes, &response); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	x.Logger.Info("parsed response",
+		zap.Any("message", response["message"]),
+		zap.Any("status", response["status"]),
+	)
 
 	x.Logger.Info("plugin test completed successfully")
 	return nil
 }
-
-// func (x *Xdperf) loadConfigFile(path string) ([]byte, error) {
-// 	data, err := os.ReadFile(path)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to read config file: %w", err)
-// 	}
-
-// 	ext := filepath.Ext(path)
-// 	switch ext {
-// 	case ".json":
-// 		// JSONはそのまま返す
-// 		return data, nil
-// 	case ".yaml", ".yml":
-// 		// YAMLをJSONに変換
-// 		var yamlData interface{}
-// 		if err := yaml.Unmarshal(data, &yamlData); err != nil {
-// 			return nil, fmt.Errorf("failed to parse YAML: %w", err)
-// 		}
-// 		jsonData, err := json.Marshal(yamlData)
-// 		if err != nil {
-// 			return nil, fmt.Errorf("failed to convert YAML to JSON: %w", err)
-// 		}
-// 		return jsonData, nil
-// 	default:
-// 		return nil, fmt.Errorf("unsupported config file extension: %s (supported: .json, .yaml, .yml)", ext)
-// 	}
-// }
 
 func (x *Xdperf) Close() {
 	for _, fn := range x.cleanupFnList {

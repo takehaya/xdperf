@@ -35,7 +35,9 @@ $(TARGETS):
 	$(GOCMD) build -o out/bin/$@ ./cmd/$@/
 
 $(PLUGIN_TARGETS):
-	$(TINYGOCMD) build -scheduler=none -target=wasip1 -buildmode=c-shared -o ./plugins/$@/$@.wasm ./plugins/$@/main.go
+	@echo "Building TinyGo plugin: $@"
+	@mkdir -p plugins/$@/out
+	cd plugins/$@ && $(TINYGOCMD) build -scheduler=none -target=wasip1 -buildmode=c-shared -o out/$@.wasm .
 
 .PHONY: goreleaser
 goreleaser: ## build with goreleaser

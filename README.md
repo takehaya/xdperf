@@ -11,7 +11,7 @@ go install github.com/takehaya/xdperf@latest
 
 ## How To Use
 ```shell
-./out/bin/xdperf --plugin hello --plugin-path plugins/hello/
+./out/bin/xdperf --plugin simpleudp --plugin-path plugins/simpleudp/out
 ```
 
 ## For Developers

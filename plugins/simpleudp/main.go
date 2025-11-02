@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"runtime"
 	"unsafe"
+
+	"github.com/mcuadros/go-defaults"
 )
 
 // dummy main to satisfy Go compiler
@@ -31,16 +33,6 @@ func plugin_init(configPtr, configLen uint32) uint32 {
 	return 0
 }
 
-type inputPayload struct {
-	Sequence uint64 `json:"sequence"`
-}
-
-type outputPayload struct {
-	Message  string `json:"message"`
-	Sequence uint64 `json:"sequence"`
-	Status   string `json:"status"`
-}
-
 //go:wasmexport plugin_process
 func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	// read input
@@ -51,21 +43,47 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	}
 
 	// decode input JSON
-	var req inputPayload
+	var req GeneratorRequest
+	defaults.SetDefaults(&req)
 	if err := json.Unmarshal(in, &req); err != nil {
 		log(3, "json unmarshal failed: "+err.Error())
 		return -2
 	}
 
 	// show input
-	log(1, "plugin_process called: sequence="+string(rune(req.Sequence)))
+	log(1, "plugin_process called: count="+string(rune(req.Count)))
 	log(1, "show input: "+string(in))
 
+	// dummy ethernet packet as base_packet
+	srcMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+
+	// ペイロードの生成（指定サイズ）
+	payload := make([]byte, req.PayloadSize)
+	for i := range payload {
+		payload[i] = byte(i % 256)
+	}
+
+	// UDPパケットの構築
+	packetBytes := BuildSimpleUDPPacket(
+		srcMAC, dstMAC,
+		req.SrcIP, req.DstIP,
+		req.SrcPort, req.DstPort,
+		payload,
+	)
+	basePacketStr := string(packetBytes)
+
 	// create response
-	res := outputPayload{
-		Message:  "Hello from plugin!",
-		Sequence: req.Sequence,
-		Status:   "ok",
+	res := GeneratorResponse{
+		Template: PacketTemplate{
+			BasePacket: BasePacket{
+				Data:   basePacketStr,
+				Length: uint16(len(basePacketStr)),
+			},
+		},
+		Metadata: Metadata{
+			PacketCount: 1,
+		},
 	}
 
 	// marshal to JSON
