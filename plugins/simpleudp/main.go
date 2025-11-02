@@ -55,7 +55,6 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	log(1, "show input: "+string(in))
 
 	// dummy ethernet packet as base_packet
-	srcMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
 	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
 	// ペイロードの生成（指定サイズ）
@@ -66,7 +65,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 
 	// UDPパケットの構築
 	packetBytes := BuildSimpleUDPPacket(
-		srcMAC, dstMAC,
+		req.DeviceMacAddr, dstMAC,
 		req.SrcIP, req.DstIP,
 		req.SrcPort, req.DstPort,
 		payload,
@@ -74,15 +73,17 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	basePacketStr := string(packetBytes)
 
 	// create response
-	res := GeneratorResponse{
-		Template: PacketTemplate{
-			BasePacket: BasePacket{
-				Data:   basePacketStr,
-				Length: uint16(len(basePacketStr)),
+	res := []GeneratorResponse{
+		{
+			Template: PacketTemplate{
+				BasePacket: BasePacket{
+					Data:   basePacketStr,
+					Length: uint16(len(basePacketStr)),
+				},
 			},
-		},
-		Metadata: Metadata{
-			PacketCount: 1,
+			Metadata: Metadata{
+				PacketCount: 1,
+			},
 		},
 	}
 

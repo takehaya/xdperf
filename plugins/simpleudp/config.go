@@ -7,7 +7,10 @@ type GeneratorRequest struct {
 	SrcPort     uint16 `json:"src_port" default:"1234"`
 	DstPort     uint16 `json:"dst_port" default:"5678"`
 	PayloadSize int    `json:"payload_size" default:"1024"`
-	Count       uint64 `json:"count" default:"1"`
+
+	// required param
+	Count         uint64  `json:"count" default:"1"`
+	DeviceMacAddr [6]byte `json:"device_mac_addr"`
 }
 
 // plugin Response (output structure)
@@ -18,9 +21,6 @@ type GeneratorResponse struct {
 
 type PacketTemplate struct {
 	BasePacket BasePacket `json:"base_packet"`
-	// Layers     []Layer    `json:"layers"`
-	// Modifiers []Modifier `json:"modifiers"`
-	// Checksums []Checksum `json:"checksums"`
 }
 
 type BasePacket struct {

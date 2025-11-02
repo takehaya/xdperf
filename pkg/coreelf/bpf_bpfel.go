@@ -13,34 +13,40 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type bpfDatarec struct {
+type BpfDatarec struct {
 	_         structs.HostLayout
 	RxPackets uint64
 	RxBytes   uint64
 }
 
-// loadBpf returns the embedded CollectionSpec for bpf.
-func loadBpf() (*ebpf.CollectionSpec, error) {
+type BpfPktTemplate struct {
+	_    structs.HostLayout
+	Len  uint32
+	Data [2048]uint8
+}
+
+// LoadBpf returns the embedded CollectionSpec for Bpf.
+func LoadBpf() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_BpfBytes)
 	spec, err := ebpf.LoadCollectionSpecFromReader(reader)
 	if err != nil {
-		return nil, fmt.Errorf("can't load bpf: %w", err)
+		return nil, fmt.Errorf("can't load Bpf: %w", err)
 	}
 
 	return spec, err
 }
 
-// loadBpfObjects loads bpf and converts it into a struct.
+// LoadBpfObjects loads Bpf and converts it into a struct.
 //
 // The following types are suitable as obj argument:
 //
-//	*bpfObjects
-//	*bpfPrograms
-//	*bpfMaps
+//	*BpfObjects
+//	*BpfPrograms
+//	*BpfMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadBpfObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
-	spec, err := loadBpf()
+func LoadBpfObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+	spec, err := LoadBpf()
 	if err != nil {
 		return err
 	}
@@ -48,78 +54,84 @@ func loadBpfObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
 	return spec.LoadAndAssign(obj, opts)
 }
 
-// bpfSpecs contains maps and programs before they are loaded into the kernel.
+// BpfSpecs contains maps and programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type bpfSpecs struct {
-	bpfProgramSpecs
-	bpfMapSpecs
-	bpfVariableSpecs
+type BpfSpecs struct {
+	BpfProgramSpecs
+	BpfMapSpecs
+	BpfVariableSpecs
 }
 
-// bpfProgramSpecs contains programs before they are loaded into the kernel.
+// BpfProgramSpecs contains programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type bpfProgramSpecs struct {
+type BpfProgramSpecs struct {
 	XdpTx *ebpf.ProgramSpec `ebpf:"xdp_tx"`
 }
 
-// bpfMapSpecs contains maps before they are loaded into the kernel.
+// BpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type bpfMapSpecs struct {
-	StatsMap *ebpf.MapSpec `ebpf:"stats_map"`
+type BpfMapSpecs struct {
+	SeqStateMap   *ebpf.MapSpec `ebpf:"seq_state_map"`
+	StatsMap      *ebpf.MapSpec `ebpf:"stats_map"`
+	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
 }
 
-// bpfVariableSpecs contains global variables before they are loaded into the kernel.
+// BpfVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type bpfVariableSpecs struct {
+type BpfVariableSpecs struct {
 }
 
-// bpfObjects contains all objects after they have been loaded into the kernel.
+// BpfObjects contains all objects after they have been loaded into the kernel.
 //
-// It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
-type bpfObjects struct {
-	bpfPrograms
-	bpfMaps
-	bpfVariables
+// It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
+type BpfObjects struct {
+	BpfPrograms
+	BpfMaps
+	BpfVariables
 }
 
-func (o *bpfObjects) Close() error {
+func (o *BpfObjects) Close() error {
 	return _BpfClose(
-		&o.bpfPrograms,
-		&o.bpfMaps,
+		&o.BpfPrograms,
+		&o.BpfMaps,
 	)
 }
 
-// bpfMaps contains all maps after they have been loaded into the kernel.
+// BpfMaps contains all maps after they have been loaded into the kernel.
 //
-// It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
-type bpfMaps struct {
-	StatsMap *ebpf.Map `ebpf:"stats_map"`
+// It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
+type BpfMaps struct {
+	SeqStateMap   *ebpf.Map `ebpf:"seq_state_map"`
+	StatsMap      *ebpf.Map `ebpf:"stats_map"`
+	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
 }
 
-func (m *bpfMaps) Close() error {
+func (m *BpfMaps) Close() error {
 	return _BpfClose(
+		m.SeqStateMap,
 		m.StatsMap,
+		m.TxOverrideMap,
 	)
 }
 
-// bpfVariables contains all global variables after they have been loaded into the kernel.
+// BpfVariables contains all global variables after they have been loaded into the kernel.
 //
-// It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
-type bpfVariables struct {
+// It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
+type BpfVariables struct {
 }
 
-// bpfPrograms contains all programs after they have been loaded into the kernel.
+// BpfPrograms contains all programs after they have been loaded into the kernel.
 //
-// It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
-type bpfPrograms struct {
+// It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
+type BpfPrograms struct {
 	XdpTx *ebpf.Program `ebpf:"xdp_tx"`
 }
 
-func (p *bpfPrograms) Close() error {
+func (p *BpfPrograms) Close() error {
 	return _BpfClose(
 		p.XdpTx,
 	)

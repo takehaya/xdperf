@@ -45,12 +45,26 @@ func newApp(version string) *cli.App {
 			Usage: "plugin path, default is /usr/local/lib/xdperf/plugins/",
 		},
 		cli.StringFlag{
-			Name:  "plugin-config, c",
+			Name:  "plugin-config, cfg",
 			Usage: "plugin configuration file (JSON or YAML)",
 		},
 		cli.BoolFlag{
 			Name:  "server, s",
 			Usage: "run as server mode",
+		},
+		cli.StringFlag{
+			Name:  "device, d",
+			Usage: "network device name to send packets",
+		},
+		cli.IntFlag{
+			Name:  "parallelism, l",
+			Value: 1,
+			Usage: "number of parallel packet sending threads",
+		},
+		cli.IntFlag{
+			Name:  "count, c",
+			Value: 1,
+			Usage: "number of packets to send",
 		},
 	}
 	app.Action = run
@@ -67,6 +81,14 @@ func run(ctx *cli.Context) error {
 	c.PluginPath = ctx.String("plugin-path")
 	c.PluginConfig = ctx.String("plugin-config")
 	c.ServerFlag = ctx.Bool("server")
+	c.Device = ctx.String("device")
+	c.Parallelism = ctx.Int("parallelism")
+	c.Count = ctx.Int("count")
+
+	// Validate config
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
+	}
 
 	xdp, err := xdperf.NewXdperf(c)
 	if err != nil {
