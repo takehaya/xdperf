@@ -9,8 +9,8 @@ type GeneratorRequest struct {
 	PayloadSize int    `json:"payload_size" default:"1024"`
 
 	// required param
-	Count         uint64  `json:"count" default:"1"`
-	DeviceMacAddr [6]byte `json:"device_mac_addr"`
+	Count         uint64 `json:"count" default:"1"`
+	DeviceMacAddr []byte `json:"device_mac_addr"`
 }
 
 // plugin Response (output structure)
@@ -24,7 +24,7 @@ type PacketTemplate struct {
 }
 
 type BasePacket struct {
-	Data   string `json:"data"`
+	Data   []byte `json:"data"`
 	Length uint16 `json:"length"`
 }
 

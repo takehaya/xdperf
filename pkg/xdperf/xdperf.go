@@ -12,6 +12,8 @@ import (
 	"syscall"
 
 	"github.com/cilium/ebpf"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/logger"
 	"github.com/takehaya/xdperf/pkg/plugin"
@@ -84,7 +86,7 @@ type PacketTemplate struct {
 }
 
 type BasePacket struct {
-	Data   string `json:"data"`
+	Data   []byte `json:"data"`
 	Length uint16 `json:"length"`
 }
 
@@ -109,6 +111,14 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 		return err
 	}
 	x.Logger.Info("conversion to tx override entry successful", zap.Int("entry_count", len(entries)))
+
+	for i, e := range entries {
+		packet := gopacket.NewPacket(e.Data, layers.LayerTypeEthernet, gopacket.Default)
+		x.Logger.Info("constructed packet from entry", zap.Int("entry_index", i))
+		for _, layer := range packet.Layers() {
+			x.Logger.Info("packet layer", zap.String("layer_type", fmt.Sprintf("%T", layer)), zap.Any("layer", layer))
+		}
+	}
 
 	if err := x.initEbpfMap(entries); err != nil {
 		x.Logger.Error("failed to init ebpf map", zap.Error(err))
@@ -161,7 +171,7 @@ func (x *Xdperf) callPlugin(ctx context.Context) ([]*GeneratorResponse, error) {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	x.Logger.Info("parsed response",
+	x.Logger.Debug("parsed response",
 		zap.Any("response", response),
 	)
 

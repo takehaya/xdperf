@@ -36,7 +36,7 @@ func newApp(version string) *cli.App {
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:  "plugin, p",
-			Value: "simple",
+			Value: "simpleudp",
 			Usage: "plugin file name",
 		},
 		cli.StringFlag{
@@ -53,8 +53,9 @@ func newApp(version string) *cli.App {
 			Usage: "run as server mode",
 		},
 		cli.StringFlag{
-			Name:  "device, d",
-			Usage: "network device name to send packets",
+			Name:     "device, d",
+			Required: true,
+			Usage:    "network device name to send packets",
 		},
 		cli.IntFlag{
 			Name:  "parallelism, l",

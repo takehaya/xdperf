@@ -29,8 +29,12 @@ func (x *Xdperf) initTxOverrideMap(entry []*TxOverrideEntry) error {
 	for cpu := 0; cpu < numCpus; cpu++ {
 		idx := cpu % entrycount
 		e := *entry[idx]
-		if e.Length <= 0 || int(e.Length) >= len(e.Data) {
+		ld := int(e.Length)
+		if ld <= 0 {
 			return fmt.Errorf("invalid entry length: %d", e.Length)
+		}
+		if ld > len(e.Data) {
+			return fmt.Errorf("length %d exceeds data size %d", e.Length, len(e.Data))
 		}
 
 		entrylist[cpu] = coreelf.BpfPktTemplate{
