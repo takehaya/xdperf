@@ -18,6 +18,7 @@ func main() {}
 func plugin_init(configPtr, configLen uint32) uint32 {
 	msg := PtrToString(configPtr, configLen)
 	log(1, "plugin initialized!: msg ->"+msg)
+	log(1, "plugin version: "+version+", commit: "+commit+", date: "+date)
 	return 0
 }
 

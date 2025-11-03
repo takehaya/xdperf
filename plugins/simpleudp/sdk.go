@@ -2,6 +2,12 @@ package main
 
 import "runtime"
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 //go:wasmimport env host_log
 func host_log(level uint32, msgPtr uint32, msgLen uint32)
 

@@ -12,12 +12,33 @@ builds:
     main: ./cmd/xdperf
     goos: [ linux ]
     goarch: [ amd64 ]
+  - id: plugin-simpleudp
+    dir: ./plugins/simpleudp
+    main: .
+    tool: tinygo
+    binary: simpleudp.wasm
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+    asmflags: []
+    targets:
+      - linux_amd64
+    flags:
+      - -scheduler=none
+      - -target=wasip1
+      - -buildmode=c-shared
 archives:
   - id: xdperf
-    formats: 
+    formats:
     - 'binary'
     ids:
     - xdperf
+  - id: plugin-simpleudp
+    formats:
+    - 'binary'
+    ids:
+    - plugin-simpleudp
 checksum:
   name_template: 'checksums.txt'
 snapshot:
