@@ -42,8 +42,8 @@ func newApp(version string) *cli.App {
 		},
 		cli.StringFlag{
 			Name:  "plugin-path, P",
-			Value: "/usr/local/lib/xdperf/plugins/",
-			Usage: "plugin path, default is /usr/local/lib/xdperf/plugins/",
+			Value: "/usr/local/share/xdperf/plugins",
+			Usage: "plugin path, default is /usr/local/share/xdperf/plugins",
 		},
 		cli.StringFlag{
 			Name:  "plugin-config, cfg",
