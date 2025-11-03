@@ -5,7 +5,7 @@ import "C"
 
 import (
 	"encoding/json"
-	"runtime"
+	"time"
 	"unsafe"
 
 	"github.com/mcuadros/go-defaults"
@@ -13,18 +13,6 @@ import (
 
 // dummy main to satisfy Go compiler
 func main() {}
-
-//go:wasmimport env host_log
-func host_log(level uint32, msgPtr uint32, msgLen uint32)
-
-func log(level uint32, msg string) {
-	if len(msg) == 0 {
-		return
-	}
-	ptr, size := StringToPtr(msg)
-	host_log(level, ptr, size)
-	runtime.KeepAlive(msg)
-}
 
 //go:wasmexport plugin_init
 func plugin_init(configPtr, configLen uint32) uint32 {
@@ -102,6 +90,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	dst := BytesFrom(outputPtr, outputMaxLen)
 	copy(dst, out)
 
+	report_metric("gen resp count", 1, time.Now().UnixNano())
 	log(1, "response sent")
 	return int32(len(out))
 }

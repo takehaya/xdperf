@@ -2,7 +2,11 @@
 
 🚧WIP🚧
 
-xdperf is a high-performance network traffic generation tool that leverages XDP (eXpress Data Path). It can operate in both client and server modes, allowing you to test network throughput and packet rate.
+xdperf is a high-performance network traffic generation tool that leverages XDP (eXpress Data Path). It can operate in both client and server modes, enabling measurement of network throughput and packet rate.
+
+In addition, xdperf provides a flexible mechanism for transmitting arbitrary packets. This functionality is implemented through a plugin system based on WASM, which eliminates the dependency issues often encountered with Python-based tools like Trex. Another major advantage is that it does not rely on DPDK.
+
+Furthermore, since xdperf is implemented in Go, it runs as a single binary, making deployment simple and convenient.
 
 ## install
 ```shell
