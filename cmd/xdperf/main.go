@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -96,6 +97,17 @@ func run(ctx *cli.Context) error {
 		return fmt.Errorf("xdperf initialization failed: %w", err)
 	}
 	defer xdp.Close()
+
+	// plugin config load
+	if c.PluginConfig != "" {
+		configData, err := os.ReadFile(c.PluginConfig)
+		if err != nil {
+			return fmt.Errorf("failed to read plugin config file: %w", err)
+		}
+		if err := json.Unmarshal(configData, &c.LoadedPluginConfig); err != nil {
+			return fmt.Errorf("failed to parse plugin config: %w", err)
+		}
+	}
 
 	if c.ServerFlag {
 		// TODO: サーバーモードの実装

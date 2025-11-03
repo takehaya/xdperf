@@ -36,8 +36,7 @@ $(TARGETS):
 
 $(PLUGIN_TARGETS):
 	@echo "Building TinyGo plugin: $@"
-	@mkdir -p plugins/$@/out
-	cd plugins/$@ && $(TINYGOCMD) build -scheduler=none -target=wasip1 -buildmode=c-shared -o out/$@.wasm .
+	cd plugins/$@ && $(TINYGOCMD) build -scheduler=none -target=wasip1 -buildmode=c-shared -o ../../out/bin/$@.wasm .
 
 .PHONY: goreleaser
 goreleaser: ## build with goreleaser
