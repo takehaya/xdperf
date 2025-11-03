@@ -10,13 +10,14 @@ type Config struct {
 	LoggerConfig logger.Config
 
 	// From For CLI Flags
-	PluginPath   string
-	PluginName   string
-	PluginConfig string
-	ServerFlag   bool
-	Device       string
-	Parallelism  int
-	Count        int
+	PluginPath         string
+	PluginName         string
+	PluginConfig       string
+	LoadedPluginConfig map[string]interface{} // internal use only
+	ServerFlag         bool
+	Device             string
+	Parallelism        int
+	Count              int
 }
 
 func (c *Config) Validate() error {
