@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/takehaya/xdperf/compare/v0.1.0...v0.1.1) (2025-11-03)
+
+
+### 🔧 Miscellaneous Chores
+
+* add xdperf installer script and docs ([bbc63e6](https://github.com/takehaya/xdperf/commit/bbc63e6a65cd46bb7b6d76f281d4ddef52b78e15))
+* add xdperf installer script and docs ([b07d26e](https://github.com/takehaya/xdperf/commit/b07d26e3e7bc10299c9372015d09338e234cc1dc))
+
 ## [0.1.0](https://github.com/takehaya/xdperf/compare/v0.0.1...v0.1.0) (2025-11-03)
 
 
