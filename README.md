@@ -8,14 +8,19 @@ In addition, xdperf provides a flexible mechanism for transmitting arbitrary pac
 
 Furthermore, since xdperf is implemented in Go, it runs as a single binary, making deployment simple and convenient.
 
-## install
+## Install
+Note: You need to install `jq` beforehand.
 ```shell
-go install github.com/takehaya/xdperf@latest
+# latest install
+curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/install_xdperf.sh | sudo sh
+
+# extra: select version mode
+curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/install_xdperf.sh | sudo sh -s -- --version v0.1.0
 ```
 
 ## How To Use
 ```shell
-./out/bin/xdperf --plugin simpleudp --plugin-path plugins/simpleudp/out --device enp138s0f0
+sudo ./out/bin/xdperf --plugin simpleudp --device enp138s0f0
 ```
 
 ## For Developers
