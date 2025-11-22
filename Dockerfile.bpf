@@ -1,4 +1,4 @@
-FROM golang:bookworm as builder
+FROM golang:trixie as builder
 
 RUN apt-get update && \
 	apt-get install -y clang llvm libelf-dev libbpf-dev gcc-multilib
