@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/takehaya/xdperf/compare/v0.1.1...v0.1.2) (2025-11-22)
+
+
+### 🐛 Bug Fixes
+
+* bpf gen build ([f985283](https://github.com/takehaya/xdperf/commit/f985283658d80a23d4297fe0d948a6437ea1b451))
+* bpf gen build ([a10c1b3](https://github.com/takehaya/xdperf/commit/a10c1b3ae65047a9e514686676157d96b697a78f))
+
 ## [0.1.1](https://github.com/takehaya/xdperf/compare/v0.1.0...v0.1.1) (2025-11-03)
 
 
