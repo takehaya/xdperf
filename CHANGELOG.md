@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/takehaya/xdperf/compare/v0.1.2...v0.1.3) (2025-11-22)
+
+
+### 🐛 Bug Fixes
+
+* add build flag ([ffcb237](https://github.com/takehaya/xdperf/commit/ffcb237faef6482f78a7247fdb9921f29762010c))
+* add build flag ([df7d2a8](https://github.com/takehaya/xdperf/commit/df7d2a83f34092599703b7016d14d554f7b4d612))
+
 ## [0.1.2](https://github.com/takehaya/xdperf/compare/v0.1.1...v0.1.2) (2025-11-22)
 
 
