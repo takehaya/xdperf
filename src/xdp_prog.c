@@ -45,15 +45,16 @@ int xdp_tx(struct xdp_md *ctx) {
   if (data + tlen > data_end)
     return XDP_ABORTED;
 
-  for (int i = 0; i < MAX_TEMPLATE_SIZE; i++) {
-    if (i >= (int)tlen)
+  void *cursor = data;
+  for (__u32 i = 0; i < MAX_TEMPLATE_SIZE; i++) {
+    if (i >= tlen)
       break;
 
-    void *dp = data + i;
-    if (dp + 1 > data_end)
+    if (cursor + 1 > data_end)
       return XDP_ABORTED;
 
-    *(__u8 *)dp = pt->data[i];
+    *(__u8 *)cursor = pt->data[i];
+    cursor++;
   }
 
   // next index
