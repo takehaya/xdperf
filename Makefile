@@ -24,16 +24,20 @@ RESET  := $(shell tput -Txterm sgr0)
 all: help
 
 ## Build:
-.PHONY: $(TARGETS)
-.PHONY: $(PLUGIN_TARGETS)
 .PHONY: build, make_outdir, clean
-build: make_outdir $(TARGETS) $(PLUGIN_TARGETS) ## Build your project and put the output binary in out/bin/
+build: make_outdir build-targets build-plugins ## Build your project and put the output binary in out/bin/
 make_outdir:
 	mkdir -p out/bin
 
+.PHONY: $(PLUGIN_TARGETS)
+.PHONY: build-targets
+build-targets: $(TARGETS) ## Build main targets
 $(TARGETS):
 	$(GOCMD) build -o out/bin/$@ ./cmd/$@/
 
+.PHONY: $(TARGETS)
+.PHONY: build-plugins
+build-plugins: $(PLUGIN_TARGETS) ## Build TinyGo plugins
 $(PLUGIN_TARGETS):
 	@echo "Building TinyGo plugin: $@"
 	cd plugins/$@ && $(TINYGOCMD) build -scheduler=none -target=wasip1 -buildmode=c-shared -o ../../out/bin/$@.wasm .
