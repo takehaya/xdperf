@@ -1,0 +1,47 @@
+name: bpf generate
+
+on:
+  push:
+    paths:
+      - 'src/**.h'
+      - 'src/**.c'
+      - '.github/workflows/bpf_generate.yaml'
+      - '**/go.mod'
+  workflow_dispatch:
+env:
+  GOPRIVATE: ${{ vars.GOPRIVATE }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TAKEHAYA_RELEASE_PLEASE_APP_APP_ID }}
+          private-key: ${{ secrets.TAKEHAYA_RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      - name: Configure git for private modules
+        run: git config --global --replace-all url."https://x-oauth-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
+      - uses: actions/checkout@v5
+      - name: setup go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ./go.mod
+          cache-dependency-path: |
+             go.sum
+      - name: Generate an eBPF binary for production
+        id: generate
+        run: |
+          make bpf-gen
+          echo "prod_count=$(git diff --name-only | wc -l)" >> $GITHUB_OUTPUT
+      - name: git commit and push
+        id: commit
+        if: steps.generate.outputs.count > 0
+        run: |
+          git config --local user.email "hayatake396@gmail.net"
+          git config --local user.name "takehaya(bot)"
+          git add .
+          git commit -m "chore: go generate"
+          git push
