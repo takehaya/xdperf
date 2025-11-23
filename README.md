@@ -60,4 +60,6 @@ make test-runnable
 ### BPF Binary Build
 ```shell
 make bpf-gen
+# debug pattern
+# CEXTRA_FLAGS="-DXDPERF_DEBUG" make bpf-gen
 ```

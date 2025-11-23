@@ -5,6 +5,12 @@
 #include <linux/bpf.h>
 #include <linux/in.h>
 
+#ifdef XDPERF_DEBUG
+#define DEBUG_PRINT(fmt, ...) bpf_printk(fmt, ##__VA_ARGS__)
+#else
+#define DEBUG_PRINT(fmt, ...) (void)0
+#endif
+
 struct datarec {
   __u64 rx_packets;
   __u64 rx_bytes;
