@@ -205,11 +205,16 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to build sample packet: %w", err)
 	}
-	// TODO: カウント数 / スレッド数 にして送信しているが、あまりの部分については超えるようにケアする必要がある
+	xdpmd := XdpMd{
+		DataEnd:        uint32(len(in)),
+		IngressIfindex: uint32(x.Device.Index),
+	}
+
 	runOpts := &ebpf.RunOptions{
-		Data:   in,
-		Repeat: uint32(x.cfg.Count / x.cfg.Parallelism),
-		Flags:  unix.BPF_F_TEST_XDP_LIVE_FRAMES,
+		Data:    in,
+		Repeat:  uint32(x.cfg.Count / x.cfg.Parallelism),
+		Flags:   unix.BPF_F_TEST_XDP_LIVE_FRAMES,
+		Context: xdpmd,
 	}
 
 	var wg sync.WaitGroup

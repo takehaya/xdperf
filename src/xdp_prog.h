@@ -1,9 +1,9 @@
 #ifndef XDP_UTILS_H
 #define XDP_UTILS_H
-#include <linux/types.h>
 #include <bpf/bpf_helpers.h>
 #include <linux/bpf.h>
 #include <linux/in.h>
+#include <linux/types.h>
 
 #ifdef XDPERF_DEBUG
 #define DEBUG_PRINT(fmt, ...) bpf_printk(fmt, ##__VA_ARGS__)
@@ -43,5 +43,14 @@ struct {
   __type(key, __u32);
   __type(value, __u32);
 } seq_state_map SEC(".maps");
+
+// https://github.com/cloudflare/xdpcap
+// struct bpf_map_def SEC("maps") xdpcap_hook = XDPCAP_HOOK();
+struct xdpcap_hook {
+  __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+  __uint(key_size, sizeof(int));
+  __uint(value_size, sizeof(int));
+  __uint(max_entries, 5);
+} xdpcap_hook SEC(".maps");
 
 #endif // XDP_UTILS_H

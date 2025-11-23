@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"fmt"
+	"structs"
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
@@ -74,4 +75,14 @@ func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 	}
 	x.Logger.Info("tx override map initialized")
 	return nil
+}
+
+type XdpMd struct {
+	_              structs.HostLayout
+	Data           uint32
+	DataEnd        uint32
+	DataMeta       uint32
+	IngressIfindex uint32
+	RxQueueIndex   uint32
+	EgressIfindex  uint32
 }

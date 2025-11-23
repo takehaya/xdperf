@@ -11,10 +11,8 @@
  */
 #define XDPCAP_HOOK()                                                          \
   {                                                                            \
-      .type = BPF_MAP_TYPE_PROG_ARRAY,                                         \
-      .key_size = sizeof(int),                                                 \
-      .value_size = sizeof(int),                                               \
-      .max_entries = 5,                                                        \
+    .type = BPF_MAP_TYPE_PROG_ARRAY, .key_size = sizeof(int),                  \
+    .value_size = sizeof(int), .max_entries = 5,                               \
   }
 
 /**
