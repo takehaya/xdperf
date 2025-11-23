@@ -77,6 +77,7 @@ type BpfMapSpecs struct {
 	SeqStateMap   *ebpf.MapSpec `ebpf:"seq_state_map"`
 	StatsMap      *ebpf.MapSpec `ebpf:"stats_map"`
 	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
+	XdpcapHook    *ebpf.MapSpec `ebpf:"xdpcap_hook"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -108,6 +109,7 @@ type BpfMaps struct {
 	SeqStateMap   *ebpf.Map `ebpf:"seq_state_map"`
 	StatsMap      *ebpf.Map `ebpf:"stats_map"`
 	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
+	XdpcapHook    *ebpf.Map `ebpf:"xdpcap_hook"`
 }
 
 func (m *BpfMaps) Close() error {
@@ -115,6 +117,7 @@ func (m *BpfMaps) Close() error {
 		m.SeqStateMap,
 		m.StatsMap,
 		m.TxOverrideMap,
+		m.XdpcapHook,
 	)
 }
 

@@ -51,7 +51,7 @@ int xdp_tx(struct xdp_md *ctx) {
       DEBUG_PRINT("data out of bounds\n");
       return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
     }
-
+  }
     void *cursor = data;
     for (__u32 i = 0; i < MAX_TEMPLATE_SIZE; i++) {
       if (i >= tlen)
@@ -78,9 +78,10 @@ int xdp_tx(struct xdp_md *ctx) {
     struct datarec *rec = bpf_map_lookup_elem(&stats_map, &zero);
     if (!rec) {
       DEBUG_PRINT("stats_map lookup failed\n");
-      xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+      return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
     }
     rec->rx_packets++;
     rec->rx_bytes += ctx->data_end - ctx->data;
+    DEBUG_PRINT("tx packet len=%u, iface=%d\n", ctx->data_end - ctx->data, ctx->ingress_ifindex);
     return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);
-  };
+};
