@@ -154,3 +154,5 @@ out/
 !bpf_*.o
 !go.mod
 dist/
+
+*.dat

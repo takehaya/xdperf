@@ -23,8 +23,10 @@ int xdp_tx(struct xdp_md *ctx) {
     idx = 0;
 
   struct pkt_template *pt = bpf_map_lookup_elem(&tx_override_map, &idx);
-  if (!pt)
-    return XDP_ABORTED;
+  if (!pt) {
+    DEBUG_PRINT("tx_override_map lookup failed\n");
+    return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+  }
 
   __u32 tlen = pt->len;
   if (tlen > MAX_TEMPLATE_SIZE)
@@ -33,25 +35,32 @@ int xdp_tx(struct xdp_md *ctx) {
   __u32 cur_len = data_end - data;
   if (cur_len != tlen) {
     int delta = (int)tlen - (int)cur_len;
-    if (bpf_xdp_adjust_tail(ctx, delta) < 0)
-      return XDP_ABORTED;
+    if (bpf_xdp_adjust_tail(ctx, delta) < 0) {
+      DEBUG_PRINT("bpf_xdp_adjust_tail failed\n");
+      return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
     data = (void *)(long)ctx->data;
     data_end = (void *)(long)ctx->data_end;
-    if (data + tlen > data_end)
-      return XDP_ABORTED;
+    if (data + tlen > data_end) {
+      DEBUG_PRINT("data out of bounds\n");
+      return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    // override payload
+    if (data + tlen > data_end) {
+      DEBUG_PRINT("data out of bounds\n");
+      return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
   }
-
-  // override payload
-  if (data + tlen > data_end)
-    return XDP_ABORTED;
-
   void *cursor = data;
   for (__u32 i = 0; i < MAX_TEMPLATE_SIZE; i++) {
     if (i >= tlen)
       break;
 
-    if (cursor + 1 > data_end)
-      return XDP_ABORTED;
+    if (cursor + 1 > data_end) {
+      DEBUG_PRINT("cursor out of bounds\n");
+      return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
 
     *(__u8 *)cursor = pt->data[i];
     cursor++;
@@ -67,9 +76,18 @@ int xdp_tx(struct xdp_md *ctx) {
 
   // sended packet stats
   struct datarec *rec = bpf_map_lookup_elem(&stats_map, &zero);
-  if (!rec)
-    return XDP_ABORTED;
+  if (!rec) {
+    DEBUG_PRINT("stats_map lookup failed\n");
+    return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+  }
   rec->rx_packets++;
   rec->rx_bytes += ctx->data_end - ctx->data;
-  return XDP_TX;
+  DEBUG_PRINT("tx packet len=%u, iface=%d\n", ctx->data_end - ctx->data,
+              ctx->ingress_ifindex);
+  return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);
+};
+
+SEC("xdp")
+int xdp_pass_dummy(struct xdp_md *ctx) {
+    return XDP_PASS;
 };

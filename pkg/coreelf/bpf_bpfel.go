@@ -67,7 +67,8 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	XdpTx *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpPassDummy *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
+	XdpTx        *ebpf.ProgramSpec `ebpf:"xdp_tx"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -77,6 +78,7 @@ type BpfMapSpecs struct {
 	SeqStateMap   *ebpf.MapSpec `ebpf:"seq_state_map"`
 	StatsMap      *ebpf.MapSpec `ebpf:"stats_map"`
 	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
+	XdpcapHook    *ebpf.MapSpec `ebpf:"xdpcap_hook"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -108,6 +110,7 @@ type BpfMaps struct {
 	SeqStateMap   *ebpf.Map `ebpf:"seq_state_map"`
 	StatsMap      *ebpf.Map `ebpf:"stats_map"`
 	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
+	XdpcapHook    *ebpf.Map `ebpf:"xdpcap_hook"`
 }
 
 func (m *BpfMaps) Close() error {
@@ -115,6 +118,7 @@ func (m *BpfMaps) Close() error {
 		m.SeqStateMap,
 		m.StatsMap,
 		m.TxOverrideMap,
+		m.XdpcapHook,
 	)
 }
 
@@ -128,11 +132,13 @@ type BpfVariables struct {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	XdpTx *ebpf.Program `ebpf:"xdp_tx"`
+	XdpPassDummy *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpTx        *ebpf.Program `ebpf:"xdp_tx"`
 }
 
 func (p *BpfPrograms) Close() error {
 	return _BpfClose(
+		p.XdpPassDummy,
 		p.XdpTx,
 	)
 }
