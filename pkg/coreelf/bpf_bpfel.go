@@ -67,7 +67,8 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	XdpTx *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpPassDummy *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
+	XdpTx        *ebpf.ProgramSpec `ebpf:"xdp_tx"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -131,11 +132,13 @@ type BpfVariables struct {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	XdpTx *ebpf.Program `ebpf:"xdp_tx"`
+	XdpPassDummy *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpTx        *ebpf.Program `ebpf:"xdp_tx"`
 }
 
 func (p *BpfPrograms) Close() error {
 	return _BpfClose(
+		p.XdpPassDummy,
 		p.XdpTx,
 	)
 }

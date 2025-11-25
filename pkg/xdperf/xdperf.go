@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/takehaya/xdperf/pkg/coreelf"
@@ -205,11 +206,21 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to build sample packet: %w", err)
 	}
+
+	// dummy XDP Prog attachment
+	l, err := link.AttachXDP(link.XDPOptions{
+		Program:   x.bpfobjs.XdpPassDummy,
+		Interface: x.Device.Index,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to attach XDP program: %w", err)
+	}
+	defer l.Close()
+
 	xdpmd := XdpMd{
 		DataEnd:        uint32(len(in)),
 		IngressIfindex: uint32(x.Device.Index),
 	}
-
 	runOpts := &ebpf.RunOptions{
 		Data:    in,
 		Repeat:  uint32(x.cfg.Count / x.cfg.Parallelism),

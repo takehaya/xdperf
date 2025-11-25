@@ -86,3 +86,8 @@ int xdp_tx(struct xdp_md *ctx) {
               ctx->ingress_ifindex);
   return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);
 };
+
+SEC("xdp")
+int xdp_pass_dummy(struct xdp_md *ctx) {
+    return XDP_PASS;
+};
