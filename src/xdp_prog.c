@@ -12,82 +12,83 @@
 char _license[] SEC("license") = "GPL";
 
 SEC("xdp")
-int xdp_tx(struct xdp_md *ctx) {
-  void *data = (void *)(long)ctx->data;
-  void *data_end = (void *)(long)ctx->data_end;
-  __u32 zero = 0;
+int xdp_tx(struct xdp_md *ctx)
+{
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    __u32 zero = 0;
 
-  __u32 *pidx = bpf_map_lookup_elem(&seq_state_map, &zero);
-  __u32 idx = pidx ? *pidx : 0;
-  if (idx >= MAX_PACKET_ENTRY)
-    idx = 0;
+    __u32 *pidx = bpf_map_lookup_elem(&seq_state_map, &zero);
+    __u32 idx = pidx ? *pidx : 0;
+    if (idx >= MAX_PACKET_ENTRY)
+        idx = 0;
 
-  struct pkt_template *pt = bpf_map_lookup_elem(&tx_override_map, &idx);
-  if (!pt) {
-    DEBUG_PRINT("tx_override_map lookup failed\n");
-    return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
-  }
-
-  __u32 tlen = pt->len;
-  if (tlen > MAX_TEMPLATE_SIZE)
-    tlen = MAX_TEMPLATE_SIZE;
-
-  __u32 cur_len = data_end - data;
-  if (cur_len != tlen) {
-    int delta = (int)tlen - (int)cur_len;
-    if (bpf_xdp_adjust_tail(ctx, delta) < 0) {
-      DEBUG_PRINT("bpf_xdp_adjust_tail failed\n");
-      return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-    data = (void *)(long)ctx->data;
-    data_end = (void *)(long)ctx->data_end;
-    if (data + tlen > data_end) {
-      DEBUG_PRINT("data out of bounds\n");
-      return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    struct pkt_template *pt = bpf_map_lookup_elem(&tx_override_map, &idx);
+    if (!pt) {
+        DEBUG_PRINT("tx_override_map lookup failed\n");
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // override payload
-    if (data + tlen > data_end) {
-      DEBUG_PRINT("data out of bounds\n");
-      return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    __u32 tlen = pt->len;
+    if (tlen > MAX_TEMPLATE_SIZE)
+        tlen = MAX_TEMPLATE_SIZE;
+
+    __u32 cur_len = data_end - data;
+    if (cur_len != tlen) {
+        int delta = (int)tlen - (int)cur_len;
+        if (bpf_xdp_adjust_tail(ctx, delta) < 0) {
+            DEBUG_PRINT("bpf_xdp_adjust_tail failed\n");
+            return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+        }
+        data = (void *)(long)ctx->data;
+        data_end = (void *)(long)ctx->data_end;
+        if (data + tlen > data_end) {
+            DEBUG_PRINT("data out of bounds\n");
+            return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+        }
+
+        // override payload
+        if (data + tlen > data_end) {
+            DEBUG_PRINT("data out of bounds\n");
+            return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+        }
     }
-  }
-  void *cursor = data;
-  for (__u32 i = 0; i < MAX_TEMPLATE_SIZE; i++) {
-    if (i >= tlen)
-      break;
+    void *cursor = data;
+    for (__u32 i = 0; i < MAX_TEMPLATE_SIZE; i++) {
+        if (i >= tlen)
+            break;
 
-    if (cursor + 1 > data_end) {
-      DEBUG_PRINT("cursor out of bounds\n");
-      return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+        if (cursor + 1 > data_end) {
+            DEBUG_PRINT("cursor out of bounds\n");
+            return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+        }
+
+        *(__u8 *)cursor = pt->data[i];
+        cursor++;
     }
 
-    *(__u8 *)cursor = pt->data[i];
-    cursor++;
-  }
+    // next index
+    if (pidx) {
+        __u32 next = idx + 1;
+        if (next >= MAX_PACKET_ENTRY)
+            next = 0;
+        *pidx = next;
+    }
 
-  // next index
-  if (pidx) {
-    __u32 next = idx + 1;
-    if (next >= MAX_PACKET_ENTRY)
-      next = 0;
-    *pidx = next;
-  }
-
-  // sended packet stats
-  struct datarec *rec = bpf_map_lookup_elem(&stats_map, &zero);
-  if (!rec) {
-    DEBUG_PRINT("stats_map lookup failed\n");
-    return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
-  }
-  rec->rx_packets++;
-  rec->rx_bytes += ctx->data_end - ctx->data;
-  DEBUG_PRINT("tx packet len=%u, iface=%d\n", ctx->data_end - ctx->data,
-              ctx->ingress_ifindex);
-  return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);
+    // sended packet stats
+    struct datarec *rec = bpf_map_lookup_elem(&stats_map, &zero);
+    if (!rec) {
+        DEBUG_PRINT("stats_map lookup failed\n");
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+    rec->rx_packets++;
+    rec->rx_bytes += ctx->data_end - ctx->data;
+    DEBUG_PRINT("tx packet len=%u, iface=%d\n", ctx->data_end - ctx->data, ctx->ingress_ifindex);
+    return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);
 };
 
 SEC("xdp")
-int xdp_pass_dummy(struct xdp_md *ctx) {
+int xdp_pass_dummy(struct xdp_md *ctx)
+{
     return XDP_PASS;
 };
