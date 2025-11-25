@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.0](https://github.com/takehaya/xdperf/compare/v0.1.3...v0.2.0) (2025-11-25)
+
+
+### 🎉 Features
+
+* add dummy xdp prog attach and add tips ([5432b76](https://github.com/takehaya/xdperf/commit/5432b767dd8bdcff06c1a6b782b04d5a08d3c8b4))
+* add dummy xdp prog attach and add tips ([99b4576](https://github.com/takehaya/xdperf/commit/99b45763a1f2e66bde62e680184432af24a5f6cb))
+
+
+### 🐛 Bug Fixes
+
+* bpf verifyer bug fix ([40efd63](https://github.com/takehaya/xdperf/commit/40efd63b6d29cd12051e65bdc4a7dabb39ebe770))
+
+
+### 🔧 Miscellaneous Chores
+
+* add debug print option for bpf ([66a7622](https://github.com/takehaya/xdperf/commit/66a7622fdea8a805dff667e94b9114c0e2914190))
+* add output iface ([3882a46](https://github.com/takehaya/xdperf/commit/3882a46611543b559c473ed7b1b121f2d5762f24))
+* apply lint ([7bb26f7](https://github.com/takehaya/xdperf/commit/7bb26f72ae913edbb107f2cbc33fd3cabd0e36c4))
+* out bpf gen ([e3937f6](https://github.com/takehaya/xdperf/commit/e3937f6fc8c505e04562c775a4d804bd1d2e5cc5))
+* split target options ([f4da01b](https://github.com/takehaya/xdperf/commit/f4da01b598b885afc5427b77e08e6918c984997e))
+* split target options ([d6af8a0](https://github.com/takehaya/xdperf/commit/d6af8a0c9a87dca008484d9f61bf390a868fce51))
+* tiny fix ([18f0fb8](https://github.com/takehaya/xdperf/commit/18f0fb8a8ae6e32186845eaa8e4295a8c72929ab))
+
+
+### ♻️ Code Refactoring
+
+* add clang-fmt conf and fmt ([4fd4a40](https://github.com/takehaya/xdperf/commit/4fd4a402e3c7c7ad57a027c27ebe3a3ea2a2b1d9))
+* add clang-fmt conf and fmt ([02a9c31](https://github.com/takehaya/xdperf/commit/02a9c31e3be6138288dfa35b1351c48b0d73ee21))
+
 ## [0.1.3](https://github.com/takehaya/xdperf/compare/v0.1.2...v0.1.3) (2025-11-22)
 
 
