@@ -44,8 +44,8 @@ type GeneratorRequest struct {
   DstPort      uint16 `json:"dst_port"`
   PayloadSize  int    `json:"payload_size"`    // 生成するペイロード長
 
-  // 必須
-  Count        uint64 `json:"count"`           // 要求テンプレート数 (simpleudp は 1 固定扱い)
+  // どのテンプレートでも必須
+  Count        uint64 `json:"count"`           // 要求テンプレート数 (simpleudp は 0 の場合はraw templateモードで動作する)
   DeviceMacAddr []byte `json:"device_mac_addr"` // ホストが注入 (送信元 MAC)
 }
 
@@ -54,18 +54,33 @@ type BasePacket struct {
   Data   []byte `json:"data"`   // Ethernet 先頭からの生バイト列 (base64 で JSON 化)
   Length uint16 `json:"length"` // 有効長
 }
+type TemplateRange struct {
+	Start uint16 `json:"start"`
+	End   uint16 `json:"end"`
+}
+type TemplateGeneraterParams struct {
+	ByteStart   uint64        `json:"byte_start"`
+	ByteSize    uint64        `json:"byte_size"`
+	ByteRange   TemplateRange `json:"byte_range"`
+	PatternType string        `json:"pattern_type"` // e.g., "sequential", "random"
+}
+type RawPacketTemplate struct {
+	BasePacket []BasePacket `json:"base_packet"`
+}
+type VariablePacketTemplate struct {
+	BasePacket        BasePacket              `json:"base_packet"`
+	TemplateGenerater TemplateGeneraterParams `json:"template_generater"`
+}
 
 // 出力: simpleudp は配列 []GeneratorResponse を返す
-// 全て必須
+// typeに合わせてどちらかのTemplateを追加して対応する必要がある
+//
+// raw: パケット列と長さの組みを返却し、そのままそれを送信し続ける
+// variable: パケット列と長さの組みと、そのパケットの変化を表現するパラメーターを返却し、xdpcap側で生成をする
 type GeneratorResponse struct {
-  Template struct {
-    BasePacket BasePacket `json:"base_packet"`
-  } `json:"template"`
-  Metadata struct {
-    PacketCount uint64   `json:"packet_count"` // 生成パケット数 (通常 1)
-    RatePPS     uint64   `json:"rate_pps"`     // 生成率 (未設定なら 0)
-    Tags        []string `json:"tags"`
-  } `json:"metadata"`
+	TemplateType           string                   `json:"template_type"` // e.g., "raw", "variable"
+	RawPacketTemplate      []BasePacket             `json:"raw_packet_template"`
+	VariablePacketTemplate []VariablePacketTemplate `json:"variable_packet_template"`
 }
 ```
 `plugin_process` は `[]GeneratorResponse` (配列) を JSON で返却。

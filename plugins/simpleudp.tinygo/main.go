@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/mcuadros/go-defaults"
+	"github.com/takehaya/xdperf/pkg/guest"
 )
 
 // dummy main to satisfy Go compiler
@@ -61,16 +62,12 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	)
 
 	// create response
-	res := []GeneratorResponse{
-		{
-			Template: PacketTemplate{
-				BasePacket: BasePacket{
-					Data:   packetBytes,
-					Length: uint16(len(packetBytes)),
-				},
-			},
-			Metadata: Metadata{
-				PacketCount: 1,
+	res := guest.GeneratorResponse{
+		TemplateType: "raw",
+		RawPacketTemplate: []guest.BasePacket{
+			{
+				Data:   packetBytes,
+				Length: uint16(len(packetBytes)),
 			},
 		},
 	}
@@ -118,14 +115,4 @@ func PtrToString(ptr uint32, size uint32) string {
 func StringToPtr(s string) (uint32, uint32) {
 	ptr := unsafe.Pointer(unsafe.StringData(s))
 	return uint32(uintptr(ptr)), uint32(len(s))
-}
-
-// StringToLeakedPtr returns a pointer and size pair for the given string in a way
-// compatible with WebAssembly numeric types.
-// The pointer is not automatically managed by TinyGo hence it must be freed by the host.
-func StringToLeakedPtr(s string) (uint32, uint32) {
-	size := C.ulong(len(s))
-	ptr := unsafe.Pointer(C.malloc(size))
-	copy(unsafe.Slice((*byte)(ptr), size), s)
-	return uint32(uintptr(ptr)), uint32(size)
 }

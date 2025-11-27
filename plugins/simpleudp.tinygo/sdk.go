@@ -1,6 +1,8 @@
 package main
 
-import "runtime"
+import (
+	"runtime"
+)
 
 var (
 	version = "dev"
