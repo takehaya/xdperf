@@ -45,11 +45,16 @@ archives:
     - 'binary'
     ids:
     - xdperf
-  - id: plugin-simpleudp
+  - id: plugin-simpleudp.tinygo
     formats:
     - 'binary'
     ids:
-    - plugin-simpleudp
+    - plugin-simpleudp.tinygo
+  - id: plugin-simpleudp.go
+    formats:
+    - 'binary'
+    ids:
+    - plugin-simpleudp.go
 checksum:
   name_template: 'checksums.txt'
 snapshot:
