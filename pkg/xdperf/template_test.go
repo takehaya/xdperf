@@ -265,7 +265,7 @@ func TestApplyVariableParam(t *testing.T) {
 		name     string
 		data     []byte
 		param    guest.VariableParams
-		value    uint16
+		value    uint64
 		expected []byte
 		wantErr  bool
 	}{
@@ -284,9 +284,23 @@ func TestApplyVariableParam(t *testing.T) {
 			expected: []byte{0x00, 0x12, 0x34, 0x00},
 		},
 		{
+			name:     "4 byte value big endian",
+			data:     []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+			param:    guest.VariableParams{ByteStart: 1, ByteSize: 4},
+			value:    0x12345678,
+			expected: []byte{0x00, 0x12, 0x34, 0x56, 0x78, 0x00},
+		},
+		{
+			name:     "8 byte value big endian",
+			data:     []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+			param:    guest.VariableParams{ByteStart: 1, ByteSize: 8},
+			value:    0x123456789ABCDEF0,
+			expected: []byte{0x00, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x00},
+		},
+		{
 			name:    "unsupported byte size",
 			data:    []byte{0x00, 0x00, 0x00, 0x00},
-			param:   guest.VariableParams{ByteStart: 0, ByteSize: 4},
+			param:   guest.VariableParams{ByteStart: 0, ByteSize: 3},
 			value:   0,
 			wantErr: true,
 		},

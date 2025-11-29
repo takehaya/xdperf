@@ -66,7 +66,7 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 	}
 
 	// Initialize state for sequential params
-	currentValues := make([]uint16, len(variant.Params))
+	currentValues := make([]uint64, len(variant.Params))
 	for i, p := range variant.Params {
 		currentValues[i] = p.ByteRange.Start
 	}
@@ -156,7 +156,7 @@ func calculateHeaderLength(packet gopacket.Packet) int {
 
 // applyVariableParam applies a single variable param to packet data.
 // The value is written in network byte order (big endian).
-func applyVariableParam(data []byte, param guest.VariableParams, value uint16) error {
+func applyVariableParam(data []byte, param guest.VariableParams, value uint64) error {
 	start := param.ByteStart
 	size := param.ByteSize
 
@@ -168,9 +168,13 @@ func applyVariableParam(data []byte, param guest.VariableParams, value uint16) e
 	case 1:
 		data[start] = byte(value)
 	case 2:
-		binary.BigEndian.PutUint16(data[start:start+2], value)
+		binary.BigEndian.PutUint16(data[start:start+2], uint16(value))
+	case 4:
+		binary.BigEndian.PutUint32(data[start:start+4], uint32(value))
+	case 8:
+		binary.BigEndian.PutUint64(data[start:start+8], value)
 	default:
-		return fmt.Errorf("unsupported byte size: %d (only 1 or 2 supported)", size)
+		return fmt.Errorf("unsupported byte size: %d (only 1, 2, 4, or 8 supported)", size)
 	}
 
 	return nil
@@ -245,9 +249,9 @@ func (x *Xdperf) convVariableTemplateMixed(variantSet guest.PacketVariantSet, to
 	}
 
 	// Track current values for each variant's params (for sequential VariableParams)
-	variantStates := make([][]uint16, len(variants))
+	variantStates := make([][]uint64, len(variants))
 	for i, v := range variants {
-		variantStates[i] = make([]uint16, len(v.Params))
+		variantStates[i] = make([]uint64, len(v.Params))
 		for j, p := range v.Params {
 			variantStates[i][j] = p.ByteRange.Start
 		}
@@ -291,7 +295,7 @@ func selectVariantByWeight(variants []guest.PacketVariant, totalWeight uint64) i
 }
 
 // expandSinglePacket generates a single packet from a variant, updating the state for sequential params.
-func expandSinglePacket(variant guest.PacketVariant, currentValues []uint16) (*TxOverrideEntry, error) {
+func expandSinglePacket(variant guest.PacketVariant, currentValues []uint64) (*TxOverrideEntry, error) {
 	baseData := variant.Base.Data
 	baseLen := variant.Base.Length
 	params := variant.Params
@@ -305,11 +309,11 @@ func expandSinglePacket(variant guest.PacketVariant, currentValues []uint16) (*T
 
 	// Apply each variable param
 	for j, p := range params {
-		var value uint16
+		var value uint64
 		switch p.PatternType {
 		case guest.ValuePatternTypeMixed:
-			rangeSize := int(p.ByteRange.End-p.ByteRange.Start) + 1
-			value = p.ByteRange.Start + uint16(rand.Intn(rangeSize))
+			rangeSize := int64(p.ByteRange.End-p.ByteRange.Start) + 1
+			value = p.ByteRange.Start + uint64(rand.Int63n(rangeSize))
 		default:
 			// Sequential
 			value = currentValues[j]
@@ -320,7 +324,7 @@ func expandSinglePacket(variant guest.PacketVariant, currentValues []uint16) (*T
 		}
 
 		if p.ByteStart == guest.ByteStartPacketLength {
-			packetLen = value
+			packetLen = uint16(value)
 		} else if err := applyVariableParam(data, p, value); err != nil {
 			return nil, fmt.Errorf("failed to apply variable param %d: %w", j, err)
 		}

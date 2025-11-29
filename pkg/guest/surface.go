@@ -114,10 +114,10 @@ type VariableParams struct {
 // varying values.
 type TemplateRange struct {
 	// Start value.
-	Start uint16 `json:"start"`
+	Start uint64 `json:"start"`
 
 	// End value.
-	End uint16 `json:"end"`
+	End uint64 `json:"end"`
 }
 
 // PacketVariantSet represents a set of packet variants along with a pattern
