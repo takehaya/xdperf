@@ -193,7 +193,7 @@ func (x *Xdperf) convVariableTemplate(variantSet guest.PacketVariantSet, totalCo
 	}
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to generate %s template: %w", variantSet.Pattern, err)
 	}
 
 	x.Logger.Info("generated variable template packets",
