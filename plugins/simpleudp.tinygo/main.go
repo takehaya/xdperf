@@ -48,9 +48,11 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	// dummy ethernet packet as base_packet
 	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
-	// Variant B uses up to 220 bytes, so payload needs: 220 - 14(eth) - 20(ip) - 8(udp) = 178 bytes
-	maxPayloadSize := 200 // enough for 220 byte packets
-	payload := make([]byte, maxPayloadSize)
+	if req.PayloadSize <= 0 {
+		guest.Log(3, "invalid payload_size: must be positive")
+		return -1
+	}
+	payload := make([]byte, req.PayloadSize)
 	for i := range payload {
 		payload[i] = byte(i % 256)
 	}
