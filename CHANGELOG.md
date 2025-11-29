@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.3.0](https://github.com/takehaya/xdperf/compare/v0.2.0...v0.3.0) (2025-11-29)
+
+
+### 🎉 Features
+
+* add a new plugin iface define ([79efb50](https://github.com/takehaya/xdperf/commit/79efb500d452b67c1f8121d4e9a748ac31a57def))
+* add debug log option ([e1274b8](https://github.com/takehaya/xdperf/commit/e1274b8796771c1739a0261d41eec0c2c34a1055))
+* add debug log option ([830e0ec](https://github.com/takehaya/xdperf/commit/830e0ec70c27d3c167ae5c1731909b09710d8e10))
+* add go plugin type ([c310c71](https://github.com/takehaya/xdperf/commit/c310c717d2a1c6716766f179e3905c1835b85629))
+* add template engine ([c1ad24c](https://github.com/takehaya/xdperf/commit/c1ad24cc94231661e241d20d9a5e34a6532b2120))
+* use go plugin ([4e77c6a](https://github.com/takehaya/xdperf/commit/4e77c6ae8c89a6acf4591e33462857d232deee20))
+
+
+### 🐛 Bug Fixes
+
+* add param for go plugin case ([8dd2474](https://github.com/takehaya/xdperf/commit/8dd247462cb1cc2b8c8a315a24ee064c4a20f05c))
+* add param for go plugin case ([1762274](https://github.com/takehaya/xdperf/commit/1762274689f68a5e7fe3e77b1aee4d357c5f9bf5))
+
+
+### 🔧 Miscellaneous Chores
+
+* remove release for bpf build ([21a2b34](https://github.com/takehaya/xdperf/commit/21a2b344c0eefc10aea2d153547f8ff33e6813dc))
+
+
+### ♻️ Code Refactoring
+
+* modify all logic ([6ac791b](https://github.com/takehaya/xdperf/commit/6ac791b354129099b114340845cc4201fa901f6d))
+* modify plugin call logic ([1307a61](https://github.com/takehaya/xdperf/commit/1307a61de4c986cd00f6063e71e1e74215a6d4e1))
+* move to guest api file ([cde4193](https://github.com/takehaya/xdperf/commit/cde4193fdc2c02e4be91eb4c86afc597c7be8fc2))
+
 ## [0.2.0](https://github.com/takehaya/xdperf/compare/v0.1.3...v0.2.0) (2025-11-25)
 
 
