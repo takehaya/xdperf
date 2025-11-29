@@ -2,6 +2,12 @@ package main
 
 import "github.com/takehaya/xdperf/pkg/guest"
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 // plugin Request (configuration structure)
 type GeneratorRequest struct {
 	SrcIP       string `json:"src_ip" default:"192.168.1.1"`
