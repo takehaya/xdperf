@@ -293,7 +293,7 @@ func (p *wasmPlugin) CallCleanup(ctx context.Context, input []byte) ([]byte, err
 		return nil, fmt.Errorf("plugin_cleanup function not found")
 	}
 	if p.pluginLang == "go" {
-		return p.CallCleanupWithGolang(ctx)
+		return p.CallCleanupWithGolang(ctx, input)
 	}
 
 	return p.callReadAndResp(ctx, input, p.functions.cleanup)

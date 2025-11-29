@@ -264,14 +264,14 @@ func (p *wasmPlugin) CallProcessWithGolang(ctx context.Context, input []byte) ([
 	}
 }
 
-func (p *wasmPlugin) CallCleanupWithGolang(ctx context.Context) ([]byte, error) {
+func (p *wasmPlugin) CallCleanupWithGolang(ctx context.Context, input []byte) ([]byte, error) {
 	if p.functions.cleanup == nil {
 		return nil, fmt.Errorf("plugin_cleanup function not found")
 	}
 
 	resp := make(chan []byte, 1)
 	res, err := p.ProcessFunctionCall(ctx, p.functions.cleanup, &GeneratorStack{
-		GeneratorCleanupRequest: []byte{},
+		GeneratorCleanupRequest: input,
 		CleanupResponseChan:     resp,
 	}, 0, 0, 0, 0) // dummy args
 	if err != nil {
