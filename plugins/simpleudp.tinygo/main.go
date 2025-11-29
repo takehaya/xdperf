@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/mcuadros/go-defaults"
+	"github.com/takehaya/xdperf/pkg/guest"
 )
 
 // dummy main to satisfy Go compiler
@@ -61,16 +62,12 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	)
 
 	// create response
-	res := []GeneratorResponse{
-		{
-			Template: PacketTemplate{
-				BasePacket: BasePacket{
-					Data:   packetBytes,
-					Length: uint16(len(packetBytes)),
-				},
-			},
-			Metadata: Metadata{
-				PacketCount: 1,
+	res := guest.GeneratorResponse{
+		TemplateType: guest.GeneratorTemplateTypeRaw,
+		RawPacketTemplate: []guest.BasePacket{
+			{
+				Data:   packetBytes,
+				Length: uint16(len(packetBytes)),
 			},
 		},
 	}

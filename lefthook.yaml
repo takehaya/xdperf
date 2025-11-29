@@ -67,7 +67,7 @@ pre-commit:
 
     golangci-lint:
       glob: "**/*.go"
-      run: golangci-lint run --fix
+      run: golangci-lint run --fix ./...
 
     clang-format:
       glob: "**/*.{c,h,cc,cpp}"

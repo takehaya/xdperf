@@ -145,8 +145,6 @@ func (m *Manager) LoadPlugin(ctx context.Context, name string) error {
 		_ = metadataBytes
 	}
 
-	// WASMモジュールのコンパイルとインスタンス化
-	// デフォルト設定で初期化（_startは呼ばれるがselectでブロックする）
 	module, err := m.runtime.InstantiateWithConfig(ctx, wasmBytes,
 		wazero.NewModuleConfig().WithStartFunctions("_initialize"))
 	if err != nil {

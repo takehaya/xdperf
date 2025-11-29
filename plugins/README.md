@@ -32,43 +32,7 @@ plugins/simpleudp/
 ```
 
 ## 主な構造体
-`plugin_process` に対してのRequest/Responceの構造が以下に見えます。
-
-```go
-// 入力: パケットの生成要求
-type GeneratorRequest struct {
-  // ユーザー定義
-  SrcIP        string `json:"src_ip"`         // 送信元 IPv4
-  DstIP        string `json:"dst_ip"`         // 宛先 IPv4
-  SrcPort      uint16 `json:"src_port"`
-  DstPort      uint16 `json:"dst_port"`
-  PayloadSize  int    `json:"payload_size"`    // 生成するペイロード長
-
-  // 必須
-  Count        uint64 `json:"count"`           // 要求テンプレート数 (simpleudp は 1 固定扱い)
-  DeviceMacAddr []byte `json:"device_mac_addr"` // ホストが注入 (送信元 MAC)
-}
-
-// テンプレート中のパケット本体
-type BasePacket struct {
-  Data   []byte `json:"data"`   // Ethernet 先頭からの生バイト列 (base64 で JSON 化)
-  Length uint16 `json:"length"` // 有効長
-}
-
-// 出力: simpleudp は配列 []GeneratorResponse を返す
-// 全て必須
-type GeneratorResponse struct {
-  Template struct {
-    BasePacket BasePacket `json:"base_packet"`
-  } `json:"template"`
-  Metadata struct {
-    PacketCount uint64   `json:"packet_count"` // 生成パケット数 (通常 1)
-    RatePPS     uint64   `json:"rate_pps"`     // 生成率 (未設定なら 0)
-    Tags        []string `json:"tags"`
-  } `json:"metadata"`
-}
-```
-`plugin_process` は `[]GeneratorResponse` (配列) を JSON で返却。
+[pkg/guest/surface.go](https://github.com/takehaya/xdperf/tree/main/pkg/guest/surface.go) を見るとユーザーが返却するべき関数などがわかります。
 
 ## ホスト import
 いくつかの便利機能をhostから関数exportをしているのでSDK的に利用する事が可能です。

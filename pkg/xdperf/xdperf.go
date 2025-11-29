@@ -78,22 +78,30 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 
 // TODO: あとで整理してpkg/pluginにから呼び出せるようにする
 type GeneratorResponse struct {
-	Template PacketTemplate `json:"template"`
-	Metadata Metadata       `json:"metadata"`
+	TemplateType           string                   `json:"template_type"` // e.g., "raw", "variable"
+	RawPacketTemplate      []BasePacket             `json:"raw_packet_template"`
+	VariablePacketTemplate []VariablePacketTemplate `json:"variable_packet_template"`
 }
 
-type PacketTemplate struct {
-	BasePacket BasePacket `json:"base_packet"`
+type TemplateRange struct {
+	Start uint16 `json:"start"`
+	End   uint16 `json:"end"`
+}
+type TemplateGeneraterParams struct {
+	ByteStart   uint64        `json:"byte_start"`
+	ByteSize    uint64        `json:"byte_size"`
+	ByteRange   TemplateRange `json:"byte_range"`
+	PatternType string        `json:"pattern_type"` // e.g., "sequential", "random"
+}
+
+type VariablePacketTemplate struct {
+	BasePacket        BasePacket              `json:"base_packet"`
+	TemplateGenerater TemplateGeneraterParams `json:"template_generater"`
 }
 
 type BasePacket struct {
 	Data   []byte `json:"data"`
 	Length uint16 `json:"length"`
-}
-
-type Metadata struct {
-	PacketCount uint64 `json:"packet_count"`
-	RatePPS     uint64 `json:"rate_pps"`
 }
 
 func (x *Xdperf) StartClient(ctx context.Context) error {
@@ -136,7 +144,7 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 	return nil
 }
 
-func (x *Xdperf) callPlugin(ctx context.Context) ([]*GeneratorResponse, error) {
+func (x *Xdperf) callPlugin(ctx context.Context) (*GeneratorResponse, error) {
 	wasmPlugin, err := x.PluginManager.GetPlugin(x.cfg.PluginName)
 	if err != nil {
 		return nil, fmt.Errorf("failed get plugin: %w", err)
@@ -167,7 +175,7 @@ func (x *Xdperf) callPlugin(ctx context.Context) ([]*GeneratorResponse, error) {
 		zap.String("output", string(outputBytes)),
 	)
 
-	var response []*GeneratorResponse
+	var response GeneratorResponse
 	if err := json.Unmarshal(outputBytes, &response); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
@@ -176,19 +184,19 @@ func (x *Xdperf) callPlugin(ctx context.Context) ([]*GeneratorResponse, error) {
 		zap.Any("response", response),
 	)
 
-	return response, nil
+	return &response, nil
 }
 
-func (x *Xdperf) convToTxOverrideEntry(resp []*GeneratorResponse) ([]*TxOverrideEntry, error) {
+func (x *Xdperf) convToTxOverrideEntry(resp *GeneratorResponse) ([]*TxOverrideEntry, error) {
 	var entries []*TxOverrideEntry
-	for _, r := range resp {
-		data := []byte(r.Template.BasePacket.Data)
-		if len(data) < int(r.Template.BasePacket.Length) {
-			return nil, fmt.Errorf("invalid packet length: data size %d < length %d", len(data), r.Template.BasePacket.Length)
+	for _, r := range resp.RawPacketTemplate {
+		data := []byte(r.Data)
+		if len(data) < int(r.Length) {
+			return nil, fmt.Errorf("invalid packet length: data size %d < length %d", len(data), r.Length)
 		}
 		entry := &TxOverrideEntry{
 			Data:   data,
-			Length: r.Template.BasePacket.Length,
+			Length: r.Length,
 		}
 		entries = append(entries, entry)
 	}
