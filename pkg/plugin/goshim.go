@@ -123,6 +123,9 @@ var pluginInitRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
 
 var pluginInitResponseFn = makeReadHandler(func(s *GeneratorStack, b []byte) {
 	s.GeneratorInitResponse = b
+	if s.InitResponseChan != nil {
+		s.InitResponseChan <- b
+	}
 })
 
 var pluginProcessRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
@@ -131,6 +134,9 @@ var pluginProcessRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
 
 var pluginProcessResponseFn = makeReadHandler(func(s *GeneratorStack, b []byte) {
 	s.GeneratorProcessResponse = b
+	if s.ProcessResponseChan != nil {
+		s.ProcessResponseChan <- b
+	}
 })
 
 var pluginCleanupRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
@@ -139,6 +145,9 @@ var pluginCleanupRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
 
 var pluginCleanupResponseFn = makeReadHandler(func(s *GeneratorStack, b []byte) {
 	s.GeneratorCleanupResponse = b
+	if s.CleanupResponseChan != nil {
+		s.CleanupResponseChan <- b
+	}
 })
 
 func getShutdownRequestedFn(ctx context.Context, mod api.Module, stack []uint64) {
@@ -183,7 +192,7 @@ func (p *wasmPlugin) CallInitWithGolang(ctx context.Context, config []byte) ([]b
 	resp := make(chan []byte, 1)
 	res, err := p.ProcessFunctionCall(ctx, p.functions.init, &GeneratorStack{
 		GeneratorInitRequest: config,
-		ProcessResponseChan:  resp,
+		InitResponseChan:     resp,
 	}, 0, 0, 0, 0) // dummy args
 	if err != nil {
 		return nil, fmt.Errorf("plugin_init failed: %w", err)

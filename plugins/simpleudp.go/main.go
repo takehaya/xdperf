@@ -14,13 +14,13 @@ func main() {}
 //go:wasmexport plugin_init
 func plugin_init(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	msg := goshim.PluginGeneratorInitRequest()
-	log(1, "plugin initialized!: msg ->"+string(msg.PluginConfig))
-	log(1, "plugin version: "+version+", commit: "+commit+", date: "+date)
+	guest.Log(1, "plugin initialized!: msg ->"+string(msg.PluginConfig))
+	guest.Log(1, "plugin version: "+version+", commit: "+commit+", date: "+date)
 
 	goshim.PluginGeneratorInitResponse(guest.GeneratorInitResponse{
 		Success: true,
 	})
-	return 0
+	return 1
 }
 
 //go:wasmexport plugin_process
@@ -29,7 +29,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 
 	// show input
 	reqJSON, _ := json.Marshal(req)
-	log(1, "plugin_process called with input: "+string(reqJSON))
+	guest.Log(1, "plugin_process called with input: "+string(reqJSON))
 
 	// dummy ethernet packet as base_packet
 	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
@@ -47,7 +47,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		payload,
 	)
 	if err != nil {
-		log(3, "failed to build sample packet: "+err.Error())
+		guest.Log(3, "failed to build sample packet: "+err.Error())
 		return -5
 	}
 
@@ -64,16 +64,16 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 
 	goshim.PluginGeneratorProcessResponse(res)
 
-	report_metric("gen resp count", 1, time.Now().UnixNano())
-	log(1, "response sent")
+	guest.ReportMetric("gen resp count", 1, time.Now().UnixNano())
+	guest.Log(1, "response sent")
 	return int32(len(packetBytes))
 }
 
 //go:wasmexport plugin_cleanup
 func plugin_cleanup(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	msg := goshim.PluginGeneratorCleanupRequest()
-	log(1, "plugin cleanup")
-	log(1, "plugin cleanup!: msg ->"+string(msg.PluginConfig))
+	guest.Log(1, "plugin cleanup")
+	guest.Log(1, "plugin cleanup!: msg ->"+string(msg.PluginConfig))
 
 	goshim.PluginGeneratorCleanupResponse(guest.GeneratorCleanupResponse{
 		Success: true,

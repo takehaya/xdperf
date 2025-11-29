@@ -17,20 +17,19 @@ func main() {}
 func plugin_init(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	req, err := guest.ReadRequest[guest.GeneratorInitRequest](inputPtr, inputLen)
 	if err != nil {
-		log(3, "failed to read request: "+err.Error())
+		guest.Log(3, "failed to read request: "+err.Error())
 		return -1
 	}
-	log(1, "plugin initialized!"+": msg ->"+string(req.PluginConfig))
-	log(1, "plugin version: "+version+", commit: "+commit+", date: "+date)
-
+	guest.Log(1, "plugin initialized!"+": msg ->"+string(req.PluginConfig))
+	guest.Log(1, "plugin version: "+version+", commit: "+commit+", date: "+date)
 	res, err := guest.WriteResponse(&guest.GeneratorInitResponse{
 		Success: true,
 	}, outputPtr, outputMaxLen)
 	if err != nil {
-		log(3, "failed to write response: "+err.Error())
+		guest.Log(3, "failed to write response: "+err.Error())
 		return -3
 	}
-	log(1, "response sent")
+	guest.Log(1, "response sent")
 	return res
 }
 
@@ -38,13 +37,13 @@ func plugin_init(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	req, err := guest.ReadRequest[GeneratorRequest](inputPtr, inputLen)
 	if err != nil {
-		log(3, "failed to read request: "+err.Error())
+		guest.Log(3, "failed to read request: "+err.Error())
 		return -1
 	}
 	reqJSON, _ := json.Marshal(req)
 	// show input
-	log(1, "plugin_process called: count="+string(rune(req.Count)))
-	log(1, "show input: "+string(reqJSON))
+	guest.Log(1, "plugin_process called: count="+string(rune(req.Count)))
+	guest.Log(1, "show input: "+string(reqJSON))
 
 	// dummy ethernet packet as base_packet
 	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
@@ -77,12 +76,12 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	// marshal to JSON
 	wres, err := guest.WriteResponse(&res, outputPtr, outputMaxLen)
 	if err != nil {
-		log(3, "failed to write response: "+err.Error())
+		guest.Log(3, "failed to write response: "+err.Error())
 		return -3
 	}
 
-	report_metric("gen resp count", float64(len(res.RawPacketTemplate)), time.Now().UnixNano())
-	log(1, "response sent")
+	guest.ReportMetric("gen resp count", float64(len(res.RawPacketTemplate)), time.Now().UnixNano())
+	guest.Log(1, "response sent")
 	return wres
 }
 
@@ -90,18 +89,18 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 func plugin_cleanup(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	req, err := guest.ReadRequest[guest.GeneratorCleanupRequest](inputPtr, inputLen)
 	if err != nil {
-		log(3, "failed to read request: "+err.Error())
+		guest.Log(3, "failed to read request: "+err.Error())
 		return -1
 	}
-	log(1, "plugin cleanup called: msg ->"+string(req.PluginConfig))
+	guest.Log(1, "plugin cleanup called: msg ->"+string(req.PluginConfig))
 
 	res, err := guest.WriteResponse(&guest.GeneratorCleanupResponse{
 		Success: true,
 	}, outputPtr, outputMaxLen)
 	if err != nil {
-		log(3, "failed to write response: "+err.Error())
+		guest.Log(3, "failed to write response: "+err.Error())
 		return -3
 	}
-	log(1, "cleanup response sent")
+	guest.Log(1, "cleanup response sent")
 	return res
 }
