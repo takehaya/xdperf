@@ -29,7 +29,8 @@ func (v *VerifierAdapter) Version() string {
 }
 
 func (v *VerifierAdapter) Initialize(ctx context.Context, config []byte) error {
-	return v.plugin.CallInit(ctx, config)
+	_, err := v.plugin.CallInit(ctx, config)
+	return err
 }
 
 func (v *VerifierAdapter) Cleanup(ctx context.Context) error {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"runtime"
+
+	"github.com/takehaya/xdperf/pkg/guest"
 )
 
 var (
@@ -17,7 +19,7 @@ func log(level uint32, msg string) {
 	if len(msg) == 0 {
 		return
 	}
-	ptr, size := StringToPtr(msg)
+	ptr, size := guest.StringToPtr(msg)
 	host_log(level, ptr, size)
 	runtime.KeepAlive(msg)
 }
@@ -29,7 +31,7 @@ func report_metric(name string, value float64, timestamp int64) {
 	if len(name) == 0 {
 		return
 	}
-	ptr, size := StringToPtr(name)
+	ptr, size := guest.StringToPtr(name)
 	host_report_metric(ptr, size, value, timestamp)
 	runtime.KeepAlive(name)
 }

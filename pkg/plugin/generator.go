@@ -25,19 +25,15 @@ func (g *GeneratorAdapter) Name() string {
 	return g.name
 }
 
-func (g *GeneratorAdapter) Initialize(ctx context.Context, config []byte) error {
+func (g *GeneratorAdapter) Initialize(ctx context.Context, config []byte) ([]byte, error) {
 	return g.plugin.CallInit(ctx, config)
 }
 
-func (g *GeneratorAdapter) Cleanup(ctx context.Context) error {
-	if g.plugin.functions.cleanup == nil {
-		return nil
-	}
-	_, err := g.plugin.functions.cleanup.Call(ctx)
-	return err
+func (g *GeneratorAdapter) Cleanup(ctx context.Context) ([]byte, error) {
+	return g.plugin.CallCleanup(ctx, nil)
 }
 
-func (g *GeneratorAdapter) GenerateTemplate(ctx context.Context, input map[string]interface{}) (*guest.GeneratorResponse, error) {
+func (g *GeneratorAdapter) GenerateTemplate(ctx context.Context, input map[string]interface{}) (*guest.GeneratorProcessResponse, error) {
 	// input data serialization
 	inputBytes, err := json.Marshal(input)
 	if err != nil {
@@ -49,7 +45,7 @@ func (g *GeneratorAdapter) GenerateTemplate(ctx context.Context, input map[strin
 		return nil, fmt.Errorf("failed to call plugin: %w", err)
 	}
 
-	var output guest.GeneratorResponse
+	var output guest.GeneratorProcessResponse
 	if err := json.Unmarshal(outputBytes, &output); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal output: %w", err)
 	}

@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/takehaya/xdperf/pkg/logger"
 )
@@ -10,14 +11,16 @@ type Config struct {
 	LoggerConfig logger.Config
 
 	// From For CLI Flags
-	PluginPath         string
-	PluginName         string
-	PluginConfig       string
-	LoadedPluginConfig map[string]interface{} // internal use only
-	ServerFlag         bool
-	Device             string
-	Parallelism        int
-	Count              int
+	PluginPath       string
+	PluginName       string
+	PluginLanguage   string
+	PluginConfig     string
+	PluginConfigPath string
+
+	ServerFlag  bool
+	Device      string
+	Parallelism int
+	Count       int
 
 	DebugMode int
 }
@@ -34,6 +37,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Count <= 0 {
 		return fmt.Errorf("count must be positive")
+	}
+	if c.PluginLanguage == "" {
+		sp := strings.Split(c.PluginName, ".")
+		if len(sp) != 2 {
+			return fmt.Errorf("invalid plugin name format, must be <name>.<lang>")
+		}
+		c.PluginLanguage = strings.ToLower(sp[1])
 	}
 
 	// parallelism and count check

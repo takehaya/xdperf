@@ -2,24 +2,32 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
+	"github.com/stealthrocket/wasi-go"
+	"github.com/stealthrocket/wasi-go/imports"
+	"github.com/stealthrocket/wasi-go/imports/wasi_snapshot_preview1"
+	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
-	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
 // Manager is the plugin manager
 type Manager struct {
-	runtime   wazero.Runtime
-	plugins   map[string]*wasmPlugin
-	pluginDir string
-	mu        sync.RWMutex
-	hostFuncs *hostFunctions
+	runtime          wazero.Runtime
+	plugins          map[string]*wasmPlugin
+	pluginDir        string
+	mu               sync.RWMutex
+	hostFuncs        map[string]interface{}
+	wasiP1HostModule *wasi_snapshot_preview1.Module
+	wasiSys          *wasi.System
+	pluginLang       string
+
+	pluginCfg string
 }
 
 // wasmPlugin is a wrapper for WASM plugins
@@ -34,87 +42,60 @@ type wasmPlugin struct {
 		malloc  api.Function
 		free    api.Function
 	}
-}
-
-// hostFunctions is a collection of host functions
-type hostFunctions struct {
-	logFunc    func(level uint32, msg string)
-	metricFunc func(name string, value float64, timestamp int64)
+	wasiP1HostModule *wasi_snapshot_preview1.Module
+	pluginLang       string
 }
 
 // NewManager is a function to create a new plugin manager
-func NewManager(pluginDir string) (*Manager, error) {
+func NewManager(pluginDir string, pluginCfg string, pluginLang string) (*Manager, error) {
 	ctx := context.Background()
 	runtime := wazero.NewRuntime(ctx)
-	_, err := wasi_snapshot_preview1.Instantiate(ctx, runtime)
+
+	// wrc := wazero.NewRuntimeConfigInterpreter()
+	// runtime := wazero.NewRuntimeWithConfig(ctx, wrc)
+
+	ctx, sys, err := imports.NewBuilder().
+		WithEnv(os.Environ()...).Instantiate(ctx, runtime)
 	if err != nil {
-		return nil, fmt.Errorf("failed to instantiate WASI: %w", err)
+		return nil, fmt.Errorf("wasm: error instantiating wasi module: %w", err)
+	}
+	wasiP1HostModule, ok := moduleInstanceFor[*wasi_snapshot_preview1.Module](ctx)
+	if !ok {
+		return nil, fmt.Errorf("wasm: error retrieving wasi host module instance")
 	}
 
 	m := &Manager{
 		runtime:   runtime,
 		plugins:   make(map[string]*wasmPlugin),
 		pluginDir: pluginDir,
-		hostFuncs: &hostFunctions{
-			logFunc: func(level uint32, msg string) {
-				fmt.Printf("[PLUGIN] [%d] %s\n", level, msg)
-			},
-			metricFunc: func(name string, value float64, timestamp int64) {
-				t := parseTimestamp(uint64(timestamp))
-				fmt.Printf("[METRIC] %s %.6f time=%s \n",
-					name,
-					value,
-					t.Format(time.RFC3339Nano),
-				)
-			},
+		hostFuncs: map[string]interface{}{
+			"logFunc":    logFunc,
+			"metricFunc": metricFunc,
 		},
+		wasiP1HostModule: wasiP1HostModule,
+		wasiSys:          &sys,
+		pluginLang:       pluginLang,
+		pluginCfg:        pluginCfg,
 	}
-	if err := m.registerHostFunctions(ctx); err != nil {
+	if err := m.registerHostAPIFunctions(ctx); err != nil {
 		return nil, fmt.Errorf("failed to register host functions: %w", err)
+	}
+	if pluginLang == "go" {
+		_, err := instantiateHostModule(ctx, runtime)
+		if err != nil {
+			return nil, fmt.Errorf("wasm: error instantiating host module: %w", err)
+		}
 	}
 
 	return m, nil
 }
 
-func parseTimestamp(ts uint64) time.Time {
-	nowNs := time.Now().UnixNano()
-	switch {
-	case ts > uint64(nowNs/100): // ns order
-		return time.Unix(0, int64(ts))
-	case ts > uint64(nowNs/100_000): // us order
-		return time.Unix(0, int64(ts*1000))
-	case ts > uint64(nowNs/100_000_000): // ms order
-		return time.Unix(0, int64(ts*1_000_000))
-	default: // sec order
-		return time.Unix(int64(ts), 0)
-	}
-}
-
 // registerHostFunctions はホスト関数を登録する
-func (m *Manager) registerHostFunctions(ctx context.Context) error {
+func (m *Manager) registerHostAPIFunctions(ctx context.Context) error {
 	hostModule := m.runtime.NewHostModuleBuilder("env")
 
-	// host_log関数の登録
-	hostModule.NewFunctionBuilder().
-		WithFunc(func(ctx context.Context, mod api.Module, level uint32, msgPtr, msgLen uint32) {
-			data, ok := mod.Memory().Read(msgPtr, msgLen)
-			if !ok {
-				return
-			}
-			m.hostFuncs.logFunc(level, string(data))
-		}).
-		Export("host_log")
-
-	// host_report_metric関数の登録
-	hostModule.NewFunctionBuilder().
-		WithFunc(func(ctx context.Context, mod api.Module, namePtr, nameLen uint32, value float64, timestamp int64) {
-			data, ok := mod.Memory().Read(namePtr, nameLen)
-			if !ok {
-				return
-			}
-			m.hostFuncs.metricFunc(string(data), value, timestamp)
-		}).
-		Export("host_report_metric")
+	hostModule.NewFunctionBuilder().WithFunc(logFunc).Export("host_log")
+	hostModule.NewFunctionBuilder().WithFunc(metricFunc).Export("host_report_metric")
 
 	_, err := hostModule.Instantiate(ctx)
 	return err
@@ -135,6 +116,7 @@ func (m *Manager) LoadPlugin(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to read plugin file: %w", err)
 	}
 
+	// TODO: メタデータの読み込み
 	metadataPath := filepath.Join(m.pluginDir, name+".json")
 	metadata := PluginMetadata{
 		Name:    name,
@@ -144,6 +126,7 @@ func (m *Manager) LoadPlugin(ctx context.Context, name string) error {
 		// TODO: JSONパース
 		_ = metadataBytes
 	}
+	ctx = withModuleInstance(ctx, m.wasiP1HostModule)
 
 	module, err := m.runtime.InstantiateWithConfig(ctx, wasmBytes,
 		wazero.NewModuleConfig().WithStartFunctions("_initialize"))
@@ -152,9 +135,11 @@ func (m *Manager) LoadPlugin(ctx context.Context, name string) error {
 	}
 
 	plugin := &wasmPlugin{
-		metadata: metadata,
-		module:   module,
-		memory:   module.Memory(),
+		metadata:         metadata,
+		module:           module,
+		memory:           module.Memory(),
+		wasiP1HostModule: m.wasiP1HostModule,
+		pluginLang:       m.pluginLang,
 	}
 
 	// エクスポート関数の取得
@@ -187,12 +172,15 @@ func (m *Manager) UnloadPlugin(ctx context.Context, name string) error {
 	if !exists {
 		return fmt.Errorf("plugin %s not loaded", name)
 	}
-
-	if plugin.functions.cleanup != nil {
-		_, err := plugin.functions.cleanup.Call(ctx)
-		if err != nil {
-			return fmt.Errorf("plugin cleanup failed: %w", err)
-		}
+	cleanupReq := guest.GeneratorInitRequest{
+		PluginConfig: []byte(m.pluginCfg),
+	}
+	cleanupReqJSON, err := json.Marshal(cleanupReq)
+	if err != nil {
+		return fmt.Errorf("failed to marshal cleanup request: %w", err)
+	}
+	if _, err := plugin.CallCleanup(ctx, cleanupReqJSON); err != nil {
+		return fmt.Errorf("failed to cleanup plugin %s: %w", name, err)
 	}
 
 	if err := plugin.module.Close(ctx); err != nil {
@@ -226,10 +214,10 @@ func (m *Manager) CallPlugin(ctx context.Context, name string, input []byte) ([]
 }
 
 // InitPlugin はプラグインを初期化する
-func (m *Manager) InitPlugin(ctx context.Context, name string, config []byte) error {
+func (m *Manager) InitPlugin(ctx context.Context, name string, config []byte) ([]byte, error) {
 	plugin, err := m.GetPlugin(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return plugin.CallInit(ctx, config)
 }
@@ -267,29 +255,24 @@ func (m *Manager) Close(ctx context.Context) error {
 	return firstErr
 }
 
+// ProcessFunctionCall executes a WASM function and handles stack management
+func (p *wasmPlugin) ProcessFunctionCall(ctx context.Context, fn api.Function, stack *GeneratorStack, args ...uint64) ([]uint64, error) {
+	ctx = createContextWithStack(ctx, stack)
+	// Set the WASI host module instance in the context
+	ctx = withModuleInstance(ctx, p.wasiP1HostModule)
+	return fn.Call(ctx, args...)
+}
+
 // CallPluginInit is a function to call plugin_init
-func (p *wasmPlugin) CallInit(ctx context.Context, config []byte) error {
+func (p *wasmPlugin) CallInit(ctx context.Context, config []byte) ([]byte, error) {
 	if p.functions.init == nil {
-		return fmt.Errorf("plugin_init function not found")
+		return nil, fmt.Errorf("plugin_init function not found")
+	}
+	if p.pluginLang == "go" {
+		return p.CallInitWithGolang(ctx, config)
 	}
 
-	// configをメモリに書き込む
-	configPtr, err := p.writeToMemory(ctx, config)
-	if err != nil {
-		return fmt.Errorf("failed to write config to memory: %w", err)
-	}
-
-	// plugin_init(config_ptr, config_len) を呼び出す
-	results, err := p.functions.init.Call(ctx, uint64(configPtr), uint64(len(config)))
-	if err != nil {
-		return fmt.Errorf("plugin_init failed: %w", err)
-	}
-
-	if len(results) > 0 && results[0] != 0 {
-		return fmt.Errorf("plugin_init returned error code: %d", results[0])
-	}
-
-	return nil
+	return p.callReadAndResp(ctx, config, p.functions.init)
 }
 
 // CallPluginProcess is a function to call plugin_process
@@ -297,45 +280,118 @@ func (p *wasmPlugin) CallProcess(ctx context.Context, input []byte) ([]byte, err
 	if p.functions.process == nil {
 		return nil, fmt.Errorf("plugin_process function not found")
 	}
+	if p.pluginLang == "go" {
+		return p.CallProcessWithGolang(ctx, input)
+	}
 
-	// 入力データをメモリに書き込む
+	return p.callReadAndResp(ctx, input, p.functions.process)
+}
+
+// CallPluginCleanup is a function to call plugin_cleanup
+func (p *wasmPlugin) CallCleanup(ctx context.Context, input []byte) ([]byte, error) {
+	if p.functions.cleanup == nil {
+		return nil, fmt.Errorf("plugin_cleanup function not found")
+	}
+	if p.pluginLang == "go" {
+		return p.CallCleanupWithGolang(ctx)
+	}
+
+	return p.callReadAndResp(ctx, input, p.functions.cleanup)
+}
+func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller api.Function) ([]byte, error) {
+	ctx = withModuleInstance(ctx, p.wasiP1HostModule)
+	if len(input) == 0 {
+		input = []byte{}
+	}
+
 	inPtr, err := p.writeToMemory(ctx, input)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		// free input memory
+		if _, err := p.functions.free.Call(ctx, uint64(inPtr)); err != nil {
+			panic(fmt.Sprintf("Warning: failed to free input memory: %v\n", err))
+		}
+	}()
 
-	// 出力用に十分なサイズを確保
-	cap := uint32(1024 * 1024)
+	// allocate memory for output
+	cap := uint32(1024 * 1024 * 32) // 32MB
 	res, err := p.functions.malloc.Call(ctx, uint64(cap))
 	if err != nil || len(res) == 0 {
-		return nil, fmt.Errorf("alloc out failed")
+		return nil, fmt.Errorf("malloc for output failed: %w", err)
 	}
 	outPtr := uint32(res[0])
+	defer func() {
+		// free output memory
+		if _, err := p.functions.free.Call(ctx, uint64(outPtr)); err != nil {
+			panic(fmt.Sprintf("Warning: failed to free output memory: %v\n", err))
+		}
+	}()
 
-	r, err := p.functions.process.Call(ctx, uint64(inPtr), uint64(len(input)), uint64(outPtr), uint64(cap))
+	// call plugin function
+	r, err := caller.Call(ctx, uint64(inPtr), uint64(len(input)), uint64(outPtr), uint64(cap))
 	if err != nil {
-		return nil, fmt.Errorf("plugin_process failed: %w", err)
+		return nil, fmt.Errorf("plugin function call failed: %w", err)
 	}
 	if len(r) == 0 {
 		return nil, fmt.Errorf("no return value")
 	}
 
 	outLen := uint32(r[0])
+	if outLen > cap {
+		return nil, fmt.Errorf("output size exceeds capacity")
+	}
+
 	buf, ok := p.memory.Read(outPtr, outLen)
 	if !ok {
 		return nil, fmt.Errorf("read output failed")
 	}
 
-	// 後片付け
-	if _, err = p.functions.free.Call(ctx, uint64(inPtr)); err != nil {
-		return nil, fmt.Errorf("free input failed: %w", err)
-	}
-	if _, err = p.functions.free.Call(ctx, uint64(outPtr)); err != nil {
-		return nil, fmt.Errorf("free output failed: %w", err)
-	}
-
 	return append([]byte(nil), buf...), nil
 }
+
+// func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller api.Function) ([]byte, error) {
+// 	// 入力データをメモリに書き込む
+// 	inPtr, err := p.writeToMemory(ctx, input)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer func() {
+// 		if _, err = p.functions.free.Call(ctx, uint64(inPtr)); err != nil {
+// 			panic(fmt.Sprintf("free input failed: %v", err))
+// 		}
+// 	}()
+
+// 	// 出力用に十分なサイズを確保
+// 	// TODO: configで指定できるようにする
+// 	cap := uint32(1024 * 1024 * 16) // 16MB
+// 	res, err := p.functions.malloc.Call(ctx, uint64(cap))
+// 	if err != nil || len(res) == 0 {
+// 		return nil, fmt.Errorf("alloc out failed")
+// 	}
+// 	outPtr := uint32(res[0])
+// 	defer func() {
+// 		if _, err = p.functions.free.Call(ctx, uint64(outPtr)); err != nil {
+// 			panic(fmt.Sprintf("free output failed: %v", err))
+// 		}
+// 	}()
+
+// 	r, err := caller.Call(ctx, uint64(inPtr), uint64(len(input)), uint64(outPtr), uint64(cap))
+// 	if err != nil {
+// 		return nil, fmt.Errorf("plugin_process failed: %w", err)
+// 	}
+// 	if len(r) == 0 {
+// 		return nil, fmt.Errorf("no return value")
+// 	}
+
+// 	outLen := uint32(r[0])
+// 	buf, ok := p.memory.Read(outPtr, outLen)
+// 	if !ok {
+// 		return nil, fmt.Errorf("read output failed")
+// 	}
+// 	return append([]byte(nil), buf...), nil
+// }
 
 func (p *wasmPlugin) writeToMemory(ctx context.Context, data []byte) (uint32, error) {
 	res, err := p.functions.malloc.Call(ctx, uint64(len(data)))

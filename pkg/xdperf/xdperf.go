@@ -41,7 +41,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 	}
 	cleanupFnList = append(cleanupFnList, cleanup)
 
-	pm, err := plugin.NewManager(cfg.PluginPath)
+	pm, err := plugin.NewManager(cfg.PluginPath, cfg.PluginConfig, cfg.PluginLanguage)
 	if err != nil {
 		return nil, fmt.Errorf("failed init plugin manager: %w", err)
 	}
@@ -122,7 +122,7 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 	return nil
 }
 
-func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorResponse, error) {
+func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessResponse, error) {
 	wasmPlugin, err := x.PluginManager.GetPlugin(x.cfg.PluginName)
 	if err != nil {
 		return nil, fmt.Errorf("failed get plugin: %w", err)
@@ -131,7 +131,15 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorResponse, erro
 	generator := plugin.NewGeneratorAdapter(x.cfg.PluginName, wasmPlugin)
 	x.Logger.Info("testing simple plugin communication")
 
-	if err := generator.Initialize(ctx, []byte(x.cfg.PluginConfig)); err != nil {
+	initReq := guest.GeneratorInitRequest{
+		PluginConfig: []byte(x.cfg.PluginConfig),
+	}
+	initReqJSON, err := json.Marshal(initReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal init request: %w", err)
+	}
+
+	if _, err := generator.Initialize(ctx, initReqJSON); err != nil {
 		x.Logger.Error("plugin initialization failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to initialize plugin: %w", err)
 	}
@@ -174,7 +182,7 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorResponse, erro
 	return resp, nil
 }
 
-func (x *Xdperf) convToTxOverrideEntry(resp *guest.GeneratorResponse) ([]*TxOverrideEntry, error) {
+func (x *Xdperf) convToTxOverrideEntry(resp *guest.GeneratorProcessResponse) ([]*TxOverrideEntry, error) {
 	var entries []*TxOverrideEntry
 	for _, r := range resp.RawPacketTemplate {
 		data := []byte(r.Data)
