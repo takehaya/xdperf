@@ -56,7 +56,7 @@ func calculateVariantCounts(variants []guest.PacketVariant, totalCount uint64) [
 }
 
 // expandVariant generates multiple packets from a single variant by applying variable params.
-// Each param can be sequential or random based on its PatternType.
+// Each param can be sequential or mixed based on its PatternType.
 // If a param has ByteStart == ByteStartPacketLength, it controls packet length.
 func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntry, error) {
 	if count == 0 {
@@ -88,8 +88,8 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 			// Get value based on pattern type
 			var value uint16
 			switch p.PatternType {
-			case guest.PatternTypeRandom:
-				// Random value within range
+			case guest.ValuePatternTypeMixed:
+				// Mixed: select value within range using randomization
 				rangeSize := int(p.ByteRange.End-p.ByteRange.Start) + 1
 				value = p.ByteRange.Start + uint16(rand.Intn(rangeSize))
 			default:
@@ -191,8 +191,8 @@ func (x *Xdperf) convVariableTemplate(variantSet guest.PacketVariantSet, totalCo
 	var err error
 
 	switch variantSet.Pattern {
-	case guest.PatternTypeRandom:
-		allEntries, err = x.convVariableTemplateRandom(variantSet, totalCount)
+	case guest.VariantSelectionModeMixed:
+		allEntries, err = x.convVariableTemplateMixed(variantSet, totalCount)
 	default:
 		// Sequential is the default
 		allEntries, err = x.convVariableTemplateSequential(variantSet, totalCount)
@@ -231,9 +231,9 @@ func (x *Xdperf) convVariableTemplateSequential(variantSet guest.PacketVariantSe
 	return allEntries, nil
 }
 
-// convVariableTemplateRandom generates packets by randomly selecting a variant for each packet.
+// convVariableTemplateMixed generates packets by selecting a variant for each packet using weighted randomization.
 // Selection is weighted by the variant's Weight field.
-func (x *Xdperf) convVariableTemplateRandom(variantSet guest.PacketVariantSet, totalCount uint64) ([]*TxOverrideEntry, error) {
+func (x *Xdperf) convVariableTemplateMixed(variantSet guest.PacketVariantSet, totalCount uint64) ([]*TxOverrideEntry, error) {
 	variants := variantSet.Variants
 
 	// Calculate total weight
@@ -257,7 +257,7 @@ func (x *Xdperf) convVariableTemplateRandom(variantSet guest.PacketVariantSet, t
 
 	entries := make([]*TxOverrideEntry, 0, totalCount)
 	for i := uint64(0); i < totalCount; i++ {
-		// Select variant by weighted random
+		// Select variant by weight
 		variantIdx := selectVariantByWeight(variants, totalWeight)
 
 		// Generate one packet from the selected variant
@@ -271,7 +271,7 @@ func (x *Xdperf) convVariableTemplateRandom(variantSet guest.PacketVariantSet, t
 	return entries, nil
 }
 
-// selectVariantByWeight selects a variant index based on weighted random selection.
+// selectVariantByWeight selects a variant index based on weighted selection.
 func selectVariantByWeight(variants []guest.PacketVariant, totalWeight uint64) int {
 	if len(variants) == 1 {
 		return 0
@@ -309,7 +309,7 @@ func expandSinglePacket(variant guest.PacketVariant, currentValues []uint16) (*T
 	for j, p := range params {
 		var value uint16
 		switch p.PatternType {
-		case guest.PatternTypeRandom:
+		case guest.ValuePatternTypeMixed:
 			rangeSize := int(p.ByteRange.End-p.ByteRange.Start) + 1
 			value = p.ByteRange.Start + uint16(rand.Intn(rangeSize))
 		default:

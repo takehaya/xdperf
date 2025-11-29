@@ -121,8 +121,8 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 					Weight: 1,
 				},
 			},
-			// VariantSelectionModeRandom: weighted random selection (A=75%, B=25%)
-			Pattern: guest.VariantSelectionModeRandom,
+			// VariantSelectionModeMixed: weighted selection (A=75%, B=25%)
+			Pattern: guest.VariantSelectionModeMixed,
 		},
 	}
 

@@ -57,25 +57,36 @@ type GeneratorProcessResponse struct {
 	VariablePacketTemplate PacketVariantSet `json:"variable_packet_template"`
 }
 
-// PatternType represents the pattern used when varying parts of a packet.
-type PatternType string
+// VariantSelectionMode represents how to select among multiple packet variants.
+type VariantSelectionMode string
+
+const (
+	// Unknown selection mode.
+	VariantSelectionModeUnknown VariantSelectionMode = ""
+
+	// Sequential selection.
+	// Variants are selected in order, with counts based on weight.
+	VariantSelectionModeSequential VariantSelectionMode = "sequential"
+
+	// Mixed selection.
+	// Variants are selected using weighted randomization.
+	VariantSelectionModeMixed VariantSelectionMode = "mixed"
+)
+
+// ValuePatternType represents how parameter values vary within a variant.
+type ValuePatternType string
 
 const (
 	// Unknown pattern type.
-	PatternTypeUnknown PatternType = ""
+	ValuePatternTypeUnknown ValuePatternType = ""
 
 	// Sequential pattern.
 	// Values within the specified range are incremented sequentially.
-	PatternTypeSequential PatternType = "sequential"
-
-	// Random pattern.
-	// Values are randomly selected from the specified range.
-	PatternTypeRandom PatternType = "random"
+	ValuePatternTypeSequential ValuePatternType = "sequential"
 
 	// Mixed pattern.
-	// Intended for combinations of multiple patterns such as sequential,
-	// random, and others.
-	PatternTypeMixed PatternType = "mixed"
+	// Values are selected randomly within the range.
+	ValuePatternTypeMixed ValuePatternType = "mixed"
 )
 
 // Special ByteStart value to indicate packet length modification
@@ -95,8 +106,8 @@ type VariableParams struct {
 	// When ByteStart is ByteStartPacketLength, this specifies the packet length range.
 	ByteRange TemplateRange `json:"byte_range"`
 
-	// Pattern type used for variation.
-	PatternType PatternType `json:"pattern_type"`
+	// Pattern type used for value variation.
+	PatternType ValuePatternType `json:"pattern_type"`
 }
 
 // TemplateRange represents a simple numerical range used when generating
@@ -115,9 +126,9 @@ type PacketVariantSet struct {
 	// List of packet variants.
 	Variants []PacketVariant `json:"variants"`
 
-	// Selection pattern for variants.
-	// Sequential selects in order, mixed may use weights or randomization.
-	Pattern PatternType `json:"pattern"`
+	// Selection mode for variants.
+	// Sequential selects in order, mixed uses weighted randomization.
+	Pattern VariantSelectionMode `json:"pattern"`
 }
 
 // PacketVariant represents a base packet, the variable regions inside it,

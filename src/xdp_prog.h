@@ -37,7 +37,7 @@ struct {
     __type(value, struct pkt_template);
 } tx_override_map SEC(".maps");
 
-// random or sequential per-cpu state
+// mixed or sequential per-cpu state
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
