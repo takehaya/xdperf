@@ -40,7 +40,29 @@ func (x *Xdperf) ShowStats(ctx context.Context) {
 			prevBytes = sumBytes
 			p.Printf("%d xmit/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
 		case <-ctx.Done():
+			// Print final stats before exiting
+			x.printFinalStats()
 			return
 		}
 	}
+}
+
+func (x *Xdperf) printFinalStats() {
+	possibleCPUs := ebpf.MustPossibleCPU()
+	recs := make([]coreelf.BpfDatarec, possibleCPUs)
+	p := message.NewPrinter(message.MatchLanguage("en"))
+
+	var key uint32
+	err := x.bpfobjs.StatsMap.Lookup(&key, &recs)
+	if err != nil {
+		fmt.Printf("failed to lookup stats_map: %v\n", err)
+		return
+	}
+	var sumPackets uint64
+	var sumBytes uint64
+	for _, rec := range recs {
+		sumPackets += rec.RxPackets
+		sumBytes += rec.RxBytes
+	}
+	p.Printf("Total: %d packets, %d bytes\n", sumPackets, sumBytes)
 }

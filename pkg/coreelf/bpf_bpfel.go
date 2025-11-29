@@ -75,10 +75,11 @@ type BpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
-	SeqStateMap   *ebpf.MapSpec `ebpf:"seq_state_map"`
-	StatsMap      *ebpf.MapSpec `ebpf:"stats_map"`
-	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
-	XdpcapHook    *ebpf.MapSpec `ebpf:"xdpcap_hook"`
+	SeqStateMap      *ebpf.MapSpec `ebpf:"seq_state_map"`
+	StatsMap         *ebpf.MapSpec `ebpf:"stats_map"`
+	TemplateCountMap *ebpf.MapSpec `ebpf:"template_count_map"`
+	TxOverrideMap    *ebpf.MapSpec `ebpf:"tx_override_map"`
+	XdpcapHook       *ebpf.MapSpec `ebpf:"xdpcap_hook"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -107,16 +108,18 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
-	SeqStateMap   *ebpf.Map `ebpf:"seq_state_map"`
-	StatsMap      *ebpf.Map `ebpf:"stats_map"`
-	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
-	XdpcapHook    *ebpf.Map `ebpf:"xdpcap_hook"`
+	SeqStateMap      *ebpf.Map `ebpf:"seq_state_map"`
+	StatsMap         *ebpf.Map `ebpf:"stats_map"`
+	TemplateCountMap *ebpf.Map `ebpf:"template_count_map"`
+	TxOverrideMap    *ebpf.Map `ebpf:"tx_override_map"`
+	XdpcapHook       *ebpf.Map `ebpf:"xdpcap_hook"`
 }
 
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
 		m.SeqStateMap,
 		m.StatsMap,
+		m.TemplateCountMap,
 		m.TxOverrideMap,
 		m.XdpcapHook,
 	)

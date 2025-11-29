@@ -44,6 +44,8 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	log(1, "show input: "+string(in))
 
 	// dummy ethernet packet as base_packet
+	// bc:24:11:39:70:bc
+	// dstMAC := [6]byte{0xbc, 0x24, 0x11, 0x39, 0x70, 0xbc}
 	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
 	// ペイロードの生成（指定サイズ）

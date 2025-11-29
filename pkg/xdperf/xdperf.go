@@ -121,13 +121,15 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 		}
 	}
 
-	if err := x.initEbpfMap(entries); err != nil {
+	if err := x.initEbpfMap(entries, x.cfg.Parallelism); err != nil {
 		x.Logger.Error("failed to init ebpf map", zap.Error(err))
 		return err
 	}
 	x.Logger.Info("ebpf map initialization successful")
 
-	if err := x.runTXPacket(ctx); err != nil {
+	// Use the first template packet size for input packet
+	templateSize := int(entries[0].Length)
+	if err := x.runTXPacket(ctx, templateSize); err != nil {
 		x.Logger.Error("failed to run TX packet", zap.Error(err))
 		return err
 	}
@@ -201,11 +203,11 @@ func (x *Xdperf) choiceTXBPFProgram() *ebpf.Program {
 	return x.bpfobjs.XdpTx
 }
 
-func (x *Xdperf) runTXPacket(ctx context.Context) error {
-	in, err := x.BuildSamplePacket()
-	if err != nil {
-		return fmt.Errorf("failed to build sample packet: %w", err)
-	}
+func (x *Xdperf) runTXPacket(ctx context.Context, templateSize int) error {
+	// Create input packet with same size as template to avoid bpf_xdp_adjust_tail
+	// The content doesn't matter as BPF program will overwrite it with template data
+	in := make([]byte, templateSize)
+	x.Logger.Info("input packet created", zap.Int("size", templateSize))
 
 	// dummy XDP Prog attachment
 	l, err := link.AttachXDP(link.XDPOptions{
@@ -221,9 +223,10 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		DataEnd:        uint32(len(in)),
 		IngressIfindex: uint32(x.Device.Index),
 	}
-	runOpts := &ebpf.RunOptions{
+	repeatCount := uint32(x.cfg.Count / x.cfg.Parallelism)
+	runOpts := ebpf.RunOptions{
 		Data:    in,
-		Repeat:  uint32(x.cfg.Count / x.cfg.Parallelism),
+		Repeat:  repeatCount,
 		Flags:   unix.BPF_F_TEST_XDP_LIVE_FRAMES,
 		Context: xdpmd,
 	}
@@ -242,57 +245,50 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		wg.Add(1)
 		go func(cpu int) {
 			defer wg.Done()
-			go func() {
-				defer p.Close()
-				if err := x.run(ctx, cpu, p, runOpts); err != nil {
-					fmt.Printf("error in run: %v\n", err)
-				}
-			}()
-			<-ctx.Done()
+			defer p.Close()
+			if err := x.run(ctx, cpu, p, runOpts); err != nil {
+				fmt.Printf("error in run: %v\n", err)
+			}
 		}(i)
 	}
+
+	// Wait for completion or interrupt
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-	x.Logger.Info("Exec done. Shutting down client...")
+
+	select {
+	case <-done:
+		x.Logger.Info("Transmission complete. Shutting down client...")
+	case <-sig:
+		x.Logger.Info("Interrupted. Shutting down client...")
+	}
 	cancel()
-	wg.Wait()
 
 	return nil
 }
 
-func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts *ebpf.RunOptions) error {
+func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts ebpf.RunOptions) error {
 	runtime.LockOSThread()
 	var cpuset unix.CPUSet
 	cpuset.Set(cpu)
 	if err := unix.SchedSetaffinity(unix.Gettid(), &cpuset); err != nil {
 		return fmt.Errorf("failed to set CPU affinity: %v", err)
 	}
-	ret, err := xdpProg.Run(runOpts)
+
+	x.Logger.Info("run started", zap.Int("cpu", cpu), zap.Uint32("repeat", runOpts.Repeat), zap.Int("dataLen", len(runOpts.Data)))
+
+	// Use kernel's repeat functionality with BPF_F_TEST_XDP_LIVE_FRAMES
+	ret, err := xdpProg.Run(&runOpts)
 	if err != nil {
 		return fmt.Errorf("bpf_prog_run failed: %w", err)
 	}
-	if ret != 0 {
-		return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
-	}
-
-	// interval := float64(time.Second) * float64(x.cfg.Count) * float64(x.cfg.Parallelism) / float64(x.cfg.PPS)
-	// ticker := time.NewTicker(time.Duration(interval))
-	// defer ticker.Stop()
-	// for {
-	// 	select {
-	// 	case <-ticker.C:
-	// 		ret, err := xdpProg.Run(runOpts)
-	// 		if err != nil {
-	// 			return fmt.Errorf("bpf_prog_run failed: %w", err)
-	// 		}
-	// 		if ret != 0 {
-	// 			return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
-	// 		}
-	// 	case <-ctx.Done():
-	// 		return nil
-	// 	}
-	// }
+	x.Logger.Info("run completed", zap.Int("cpu", cpu), zap.Uint32("ret", ret))
 	return nil
 }
 
