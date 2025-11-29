@@ -183,8 +183,19 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessRespons
 }
 
 func (x *Xdperf) convToTxOverrideEntry(resp *guest.GeneratorProcessResponse) ([]*TxOverrideEntry, error) {
+	switch resp.TemplateType {
+	case guest.GeneratorTemplateTypeRaw:
+		return x.convRawTemplate(resp.RawPacketTemplate)
+	case guest.GeneratorTemplateTypeVariable:
+		return x.convVariableTemplate(resp.VariablePacketTemplate, uint64(x.cfg.Count), x.cfg.Parallelism)
+	default:
+		return nil, fmt.Errorf("unknown template type: %s", resp.TemplateType)
+	}
+}
+
+func (x *Xdperf) convRawTemplate(packets []guest.BasePacket) ([]*TxOverrideEntry, error) {
 	var entries []*TxOverrideEntry
-	for _, r := range resp.RawPacketTemplate {
+	for _, r := range packets {
 		data := []byte(r.Data)
 		if len(data) < int(r.Length) {
 			return nil, fmt.Errorf("invalid packet length: data size %d < length %d", len(data), r.Length)

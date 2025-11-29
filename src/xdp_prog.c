@@ -18,9 +18,17 @@ int xdp_tx(struct xdp_md *ctx)
     void *data_end = (void *)(long)ctx->data_end;
     __u32 zero = 0;
 
+    // Get number of valid packet entries
+    __u32 *pkt_count = bpf_map_lookup_elem(&pkt_count_map, &zero);
+    __u32 max_idx = pkt_count ? *pkt_count : 1;
+    if (max_idx == 0)
+        max_idx = 1;
+    if (max_idx > MAX_PACKET_ENTRY)
+        max_idx = MAX_PACKET_ENTRY;
+
     __u32 *pidx = bpf_map_lookup_elem(&seq_state_map, &zero);
     __u32 idx = pidx ? *pidx : 0;
-    if (idx >= MAX_PACKET_ENTRY)
+    if (idx >= max_idx)
         idx = 0;
 
     struct pkt_template *pt = bpf_map_lookup_elem(&tx_override_map, &idx);
@@ -70,7 +78,7 @@ int xdp_tx(struct xdp_md *ctx)
     // next index
     if (pidx) {
         __u32 next = idx + 1;
-        if (next >= MAX_PACKET_ENTRY)
+        if (next >= max_idx)
             next = 0;
         *pidx = next;
     }

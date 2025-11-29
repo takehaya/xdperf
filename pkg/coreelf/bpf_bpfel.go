@@ -75,6 +75,7 @@ type BpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
+	PktCountMap   *ebpf.MapSpec `ebpf:"pkt_count_map"`
 	SeqStateMap   *ebpf.MapSpec `ebpf:"seq_state_map"`
 	StatsMap      *ebpf.MapSpec `ebpf:"stats_map"`
 	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
@@ -107,6 +108,7 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
+	PktCountMap   *ebpf.Map `ebpf:"pkt_count_map"`
 	SeqStateMap   *ebpf.Map `ebpf:"seq_state_map"`
 	StatsMap      *ebpf.Map `ebpf:"stats_map"`
 	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
@@ -115,6 +117,7 @@ type BpfMaps struct {
 
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
+		m.PktCountMap,
 		m.SeqStateMap,
 		m.StatsMap,
 		m.TxOverrideMap,

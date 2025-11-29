@@ -62,14 +62,29 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		payload,
 	)
 
-	// create response
+	// create response with variable template
+	// UDP source port is at offset 34 (Ethernet 14 + IP 20)
 	res := guest.GeneratorProcessResponse{
-		TemplateType: guest.GeneratorTemplateTypeRaw,
-		RawPacketTemplate: []guest.BasePacket{
-			{
-				Data:   packetBytes,
-				Length: uint16(len(packetBytes)),
+		TemplateType: guest.GeneratorTemplateTypeVariable,
+		VariablePacketTemplate: guest.PacketVariantSet{
+			Variants: []guest.PacketVariant{
+				{
+					Base: guest.BasePacket{
+						Data:   packetBytes,
+						Length: uint16(len(packetBytes)),
+					},
+					Params: []guest.VariableParams{
+						{
+							ByteStart:   34, // UDP src port offset
+							ByteSize:    2,
+							ByteRange:   guest.TemplateRange{Start: 1024, End: 1034},
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+					},
+					Weight: 1,
+				},
 			},
+			Pattern: guest.VariantSelectionModeSequential,
 		},
 	}
 
