@@ -100,6 +100,7 @@ func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 
 	parallelism := x.cfg.Parallelism
 	if parallelism <= 0 {
+		x.Logger.Warn("invalid parallelism config, defaulting to 1", zap.Int("configured_parallelism", parallelism))
 		parallelism = 1
 	}
 	if parallelism > numCpus {
