@@ -121,7 +121,7 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 		}
 	}
 
-	if err := x.initEbpfMap(entries, x.cfg.Parallelism); err != nil {
+	if err := x.initEbpfMap(entries); err != nil {
 		x.Logger.Error("failed to init ebpf map", zap.Error(err))
 		return err
 	}

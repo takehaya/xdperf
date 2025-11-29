@@ -16,8 +16,7 @@ type TxOverrideEntry struct {
 	Length uint16
 }
 
-// TX Override Map を初期化（PERCPU_ARRAY なので parallelism 分のCPUに書き込む）
-func (x *Xdperf) initTxOverrideMap(entry []*TxOverrideEntry, parallelism int) error {
+func (x *Xdperf) initTxOverrideMap(entry []*TxOverrideEntry) error {
 	if len(entry) == 0 {
 		return fmt.Errorf("no entry")
 	}
@@ -42,9 +41,9 @@ func (x *Xdperf) initTxOverrideMap(entry []*TxOverrideEntry, parallelism int) er
 		}
 		copy(pktTemplate.Data[:], e.Data)
 
-		// PERCPU_ARRAY: 全CPU分のスライスを作成し、parallelism分だけ値を設定
+		// PERCPU_ARRAY: 全CPU分のスライスを作成し、全CPUに同じテンプレートを設定
 		templates := make([]coreelf.BpfPktTemplate, numCpus)
-		for cpu := 0; cpu < parallelism && cpu < numCpus; cpu++ {
+		for cpu := 0; cpu < numCpus; cpu++ {
 			templates[cpu] = pktTemplate
 		}
 
@@ -77,18 +76,18 @@ func (x *Xdperf) initTemplateCountMap(count int) error {
 	return nil
 }
 
-func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry, parallelism int) error {
+func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 	if err := x.initSeqStateMap(); err != nil {
 		x.Logger.Error("failed to init seq state map", zap.Error(err))
 		return fmt.Errorf("failed to init seq state map: %w", err)
 	}
 	x.Logger.Info("seq state map initialized")
 
-	if err := x.initTxOverrideMap(entries, parallelism); err != nil {
+	if err := x.initTxOverrideMap(entries); err != nil {
 		x.Logger.Error("failed to init tx override map", zap.Error(err))
 		return fmt.Errorf("failed to init tx override map: %w", err)
 	}
-	x.Logger.Info("tx override map initialized", zap.Int("entry_count", len(entries)), zap.Int("parallelism", parallelism))
+	x.Logger.Info("tx override map initialized", zap.Int("entry_count", len(entries)))
 
 	if err := x.initTemplateCountMap(len(entries)); err != nil {
 		x.Logger.Error("failed to init template count map", zap.Error(err))
