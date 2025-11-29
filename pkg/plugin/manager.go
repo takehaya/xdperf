@@ -145,10 +145,8 @@ func (m *Manager) LoadPlugin(ctx context.Context, name string) error {
 		_ = metadataBytes
 	}
 
-	// WASMモジュールのコンパイルとインスタンス化
-	// デフォルト設定で初期化（_startは呼ばれるがselectでブロックする）
 	module, err := m.runtime.InstantiateWithConfig(ctx, wasmBytes,
-		wazero.NewModuleConfig().WithStartFunctions("_start"))
+		wazero.NewModuleConfig().WithStartFunctions("_initialize"))
 	if err != nil {
 		return fmt.Errorf("failed to instantiate module: %w", err)
 	}
@@ -163,8 +161,8 @@ func (m *Manager) LoadPlugin(ctx context.Context, name string) error {
 	plugin.functions.init = module.ExportedFunction("plugin_init")
 	plugin.functions.process = module.ExportedFunction("plugin_process")
 	plugin.functions.cleanup = module.ExportedFunction("plugin_cleanup")
-	plugin.functions.malloc = module.ExportedFunction("plugin_malloc")
-	plugin.functions.free = module.ExportedFunction("plugin_free")
+	plugin.functions.malloc = module.ExportedFunction("malloc")
+	plugin.functions.free = module.ExportedFunction("free")
 
 	// malloc/freeのチェック
 	if plugin.functions.malloc == nil || plugin.functions.free == nil {

@@ -32,58 +32,7 @@ plugins/simpleudp/
 ```
 
 ## 主な構造体
-`plugin_process` に対してのRequest/Responceの構造が以下に見えます。
-
-```go
-// 入力: パケットの生成要求
-type GeneratorRequest struct {
-  // ユーザー定義
-  SrcIP        string `json:"src_ip"`         // 送信元 IPv4
-  DstIP        string `json:"dst_ip"`         // 宛先 IPv4
-  SrcPort      uint16 `json:"src_port"`
-  DstPort      uint16 `json:"dst_port"`
-  PayloadSize  int    `json:"payload_size"`    // 生成するペイロード長
-
-  // どのテンプレートでも必須
-  Count        uint64 `json:"count"`           // 要求テンプレート数 (simpleudp は 0 の場合はraw templateモードで動作する)
-  DeviceMacAddr []byte `json:"device_mac_addr"` // ホストが注入 (送信元 MAC)
-}
-
-// テンプレート中のパケット本体
-type BasePacket struct {
-  Data   []byte `json:"data"`   // Ethernet 先頭からの生バイト列 (base64 で JSON 化)
-  Length uint16 `json:"length"` // 有効長
-}
-type TemplateRange struct {
-	Start uint16 `json:"start"`
-	End   uint16 `json:"end"`
-}
-type TemplateGeneraterParams struct {
-	ByteStart   uint64        `json:"byte_start"`
-	ByteSize    uint64        `json:"byte_size"`
-	ByteRange   TemplateRange `json:"byte_range"`
-	PatternType string        `json:"pattern_type"` // e.g., "sequential", "random"
-}
-type RawPacketTemplate struct {
-	BasePacket []BasePacket `json:"base_packet"`
-}
-type VariablePacketTemplate struct {
-	BasePacket        BasePacket              `json:"base_packet"`
-	TemplateGenerater TemplateGeneraterParams `json:"template_generater"`
-}
-
-// 出力: simpleudp は配列 []GeneratorResponse を返す
-// typeに合わせてどちらかのTemplateを追加して対応する必要がある
-//
-// raw: パケット列と長さの組みを返却し、そのままそれを送信し続ける
-// variable: パケット列と長さの組みと、そのパケットの変化を表現するパラメーターを返却し、xdpcap側で生成をする
-type GeneratorResponse struct {
-	TemplateType           string                   `json:"template_type"` // e.g., "raw", "variable"
-	RawPacketTemplate      []BasePacket             `json:"raw_packet_template"`
-	VariablePacketTemplate []VariablePacketTemplate `json:"variable_packet_template"`
-}
-```
-`plugin_process` は `[]GeneratorResponse` (配列) を JSON で返却。
+[pkg/guest/surface.go](https://github.com/takehaya/xdperf/tree/main/pkg/guest/surface.go) を見るとユーザーが返却するべき関数などがわかります。
 
 ## ホスト import
 いくつかの便利機能をhostから関数exportをしているのでSDK的に利用する事が可能です。
