@@ -119,6 +119,11 @@ type PacketVariant struct {
 	// Definitions of the variable byte regions within this packet.
 	Params []VariableParams `json:"variable_params"`
 
+	// Optional length range for varying packet size.
+	// If set, packet length will vary within this range.
+	// The base packet should be large enough to accommodate the maximum length.
+	LengthRange *TemplateRange `json:"length_range,omitempty"`
+
 	// Weight used during variant selection.
 	Weight uint32 `json:"weight"`
 }

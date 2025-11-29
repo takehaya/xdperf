@@ -48,8 +48,9 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	// dummy ethernet packet as base_packet
 	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
-	// ペイロードの生成（指定サイズ）
-	payload := make([]byte, req.PayloadSize)
+	// ペイロードの生成（最大サイズで作成、長さは LengthRange で変える）
+	maxPayloadSize := req.PayloadSize + 100 // extra space for length variation
+	payload := make([]byte, maxPayloadSize)
 	for i := range payload {
 		payload[i] = byte(i % 256)
 	}
@@ -63,7 +64,19 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	)
 
 	// create response with variable template
-	// UDP source port is at offset 34 (Ethernet 14 + IP 20)
+	// Packet structure:
+	//   Ethernet header: 14 bytes (offset 0-13)
+	//   IP header: 20 bytes (offset 14-33)
+	//     - Source IP: offset 26-29 (last octet at 29)
+	//   UDP header: 8 bytes (offset 34-41)
+	//     - Source port: offset 34-35
+	//     - Dst port: offset 36-37
+	//   Payload: offset 42+
+	//
+	// Base packet length: Ethernet(14) + IP(20) + UDP(8) + Payload
+	baseLen := uint16(14 + 20 + 8 + req.PayloadSize)
+	maxLen := uint16(len(packetBytes))
+
 	res := guest.GeneratorProcessResponse{
 		TemplateType: guest.GeneratorTemplateTypeVariable,
 		VariablePacketTemplate: guest.PacketVariantSet{
@@ -71,15 +84,26 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 				{
 					Base: guest.BasePacket{
 						Data:   packetBytes,
-						Length: uint16(len(packetBytes)),
+						Length: maxLen, // max length for base packet
 					},
 					Params: []guest.VariableParams{
 						{
 							ByteStart:   34, // UDP src port offset
 							ByteSize:    2,
-							ByteRange:   guest.TemplateRange{Start: 1024, End: 2048},
+							ByteRange:   guest.TemplateRange{Start: 1024, End: 1124},
 							PatternType: guest.ValuePatternTypeSequential,
 						},
+						{
+							ByteStart:   36, // UDP dst port offset
+							ByteSize:    2,
+							ByteRange:   guest.TemplateRange{Start: 5000, End: 5100},
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+					},
+					// Vary packet length from base to base+50 bytes
+					LengthRange: &guest.TemplateRange{
+						Start: baseLen,
+						End:   baseLen + 50,
 					},
 					Weight: 1,
 				},

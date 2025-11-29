@@ -56,6 +56,7 @@ func calculateVariantCounts(variants []guest.PacketVariant, totalCount uint64) [
 
 // expandVariant generates multiple packets from a single variant by applying variable params.
 // All VariableParams are incremented simultaneously.
+// If LengthRange is set, packet length also varies within that range.
 func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntry, error) {
 	if count == 0 {
 		return nil, nil
@@ -64,6 +65,7 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 	baseData := variant.Base.Data
 	baseLen := variant.Base.Length
 	params := variant.Params
+	lengthRange := variant.LengthRange
 
 	entries := make([]*TxOverrideEntry, 0, count)
 
@@ -71,6 +73,14 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 	currentValues := make([]uint16, len(params))
 	for i, p := range params {
 		currentValues[i] = p.ByteRange.Start
+	}
+
+	// Track current length if length range is set
+	var currentLength uint16
+	if lengthRange != nil {
+		currentLength = lengthRange.Start
+	} else {
+		currentLength = baseLen
 	}
 
 	for i := uint64(0); i < count; i++ {
@@ -91,9 +101,20 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 			}
 		}
 
+		// Determine packet length for this entry
+		packetLen := currentLength
+
+		// Increment length for next iteration if length range is set
+		if lengthRange != nil {
+			currentLength++
+			if currentLength > lengthRange.End {
+				currentLength = lengthRange.Start
+			}
+		}
+
 		entries = append(entries, &TxOverrideEntry{
 			Data:   data,
-			Length: baseLen,
+			Length: packetLen,
 		})
 	}
 
