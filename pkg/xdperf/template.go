@@ -184,11 +184,12 @@ func (x *Xdperf) convVariableTemplate(variantSet guest.PacketVariantSet, totalCo
 	var err error
 
 	switch variantSet.Pattern {
+	case guest.VariantSelectionModeSequential:
+		allEntries, err = x.convVariableTemplateSequential(variantSet, totalCount)
 	case guest.VariantSelectionModeMixed:
 		allEntries, err = x.convVariableTemplateMixed(variantSet, totalCount)
 	default:
-		// Sequential is the default
-		allEntries, err = x.convVariableTemplateSequential(variantSet, totalCount)
+		return nil, fmt.Errorf("unsupported variant selection pattern: %q", variantSet.Pattern)
 	}
 
 	if err != nil {
