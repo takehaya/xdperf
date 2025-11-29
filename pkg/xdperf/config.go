@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/takehaya/xdperf/pkg/logger"
@@ -34,6 +35,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Parallelism <= 0 {
 		return fmt.Errorf("parallelism must be positive")
+	}
+	numCPU := runtime.NumCPU()
+	if c.Parallelism > numCPU {
+		return fmt.Errorf("parallelism (%d) exceeds available CPU cores (%d)", c.Parallelism, numCPU)
 	}
 	if c.Count <= 0 {
 		return fmt.Errorf("count must be positive")
