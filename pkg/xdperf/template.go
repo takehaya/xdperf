@@ -65,69 +65,19 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 		return nil, nil
 	}
 
-	baseData := variant.Base.Data
-	baseLen := variant.Base.Length
-	params := variant.Params
-
-	entries := make([]*TxOverrideEntry, 0, count)
-
-	// Track current value for each param (used for sequential pattern)
-	currentValues := make([]uint16, len(params))
-	for i, p := range params {
+	// Initialize state for sequential params
+	currentValues := make([]uint16, len(variant.Params))
+	for i, p := range variant.Params {
 		currentValues[i] = p.ByteRange.Start
 	}
 
+	entries := make([]*TxOverrideEntry, 0, count)
 	for i := uint64(0); i < count; i++ {
-		// Copy base packet
-		data := make([]byte, len(baseData))
-		copy(data, baseData)
-
-		// Default packet length
-		packetLen := baseLen
-
-		// Apply each variable param
-		for j, p := range params {
-			// Get value based on pattern type
-			var value uint16
-			switch p.PatternType {
-			case guest.ValuePatternTypeMixed:
-				// Mixed: select value within range using randomization
-				rangeSize := int(p.ByteRange.End-p.ByteRange.Start) + 1
-				value = p.ByteRange.Start + uint16(rand.Intn(rangeSize))
-			default:
-				// Sequential (default)
-				value = currentValues[j]
-				// Increment for next iteration
-				currentValues[j]++
-				if currentValues[j] > p.ByteRange.End {
-					currentValues[j] = p.ByteRange.Start
-				}
-			}
-
-			if p.ByteStart == guest.ByteStartPacketLength {
-				// This param controls packet length
-				packetLen = value
-			} else {
-				// Normal byte modification
-				if err := applyVariableParam(data, p, value); err != nil {
-					return nil, fmt.Errorf("failed to apply variable param %d: %w", j, err)
-				}
-			}
+		entry, err := expandSinglePacket(variant, currentValues)
+		if err != nil {
+			return nil, fmt.Errorf("failed to expand packet %d: %w", i, err)
 		}
-
-		// If packet length changed, update headers using gopacket
-		if packetLen != baseLen {
-			var err error
-			data, err = updatePacketLength(data, packetLen)
-			if err != nil {
-				return nil, fmt.Errorf("failed to update packet length: %w", err)
-			}
-		}
-
-		entries = append(entries, &TxOverrideEntry{
-			Data:   data,
-			Length: packetLen,
-		})
+		entries = append(entries, entry)
 	}
 
 	return entries, nil

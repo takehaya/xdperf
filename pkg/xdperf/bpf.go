@@ -17,14 +17,9 @@ type TxOverrideEntry struct {
 // initTxOverrideMap initializes the TX Override Map with packet entries.
 // Each CPU receives only its assigned packets at indices 0..count-1.
 // This is memory efficient: only totalCount packets are stored, not totalCount * numCPUs.
-func (x *Xdperf) initTxOverrideMap(entries []*TxOverrideEntry, countsPerCPU []uint32) error {
+func (x *Xdperf) initTxOverrideMap(entries []*TxOverrideEntry, countsPerCPU []uint32, numCpus int) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("no entry")
-	}
-
-	numCpus, err := ebpf.PossibleCPU()
-	if err != nil {
-		return fmt.Errorf("failed get possible CPU: %w", err)
 	}
 
 	// Calculate starting offset for each CPU in the entries slice
@@ -84,17 +79,11 @@ func (x *Xdperf) initTxOverrideMap(entries []*TxOverrideEntry, countsPerCPU []ui
 	return nil
 }
 
-// pktState matches struct pkt_state in xdp_prog.h
-type pktState struct {
-	Count uint32
-	Idx   uint32
-}
-
 func (x *Xdperf) initPktStateMap(countsPerCPU []uint32) error {
 	key := uint32(0)
-	states := make([]pktState, len(countsPerCPU))
+	states := make([]coreelf.BpfPktState, len(countsPerCPU))
 	for i, count := range countsPerCPU {
-		states[i] = pktState{Count: count, Idx: 0}
+		states[i] = coreelf.BpfPktState{Count: count, Idx: 0}
 	}
 	if err := x.bpfobjs.BpfMaps.PktStateMap.Put(&key, states); err != nil {
 		return fmt.Errorf("failed put pkt state map: %w", err)
@@ -150,7 +139,7 @@ func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 	}
 	x.Logger.Info("pkt state map initialized")
 
-	if err := x.initTxOverrideMap(entries, countsPerCPU); err != nil {
+	if err := x.initTxOverrideMap(entries, countsPerCPU, numCpus); err != nil {
 		x.Logger.Error("failed to init tx override map", zap.Error(err))
 		return fmt.Errorf("failed to init tx override map: %w", err)
 	}
