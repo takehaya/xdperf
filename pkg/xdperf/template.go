@@ -317,10 +317,8 @@ func expandSinglePacket(variant guest.PacketVariant, currentValues []uint16) (*T
 
 		if p.ByteStart == guest.ByteStartPacketLength {
 			packetLen = value
-		} else {
-			if err := applyVariableParam(data, p, value); err != nil {
-				return nil, fmt.Errorf("failed to apply variable param %d: %w", j, err)
-			}
+		} else if err := applyVariableParam(data, p, value); err != nil {
+			return nil, fmt.Errorf("failed to apply variable param %d: %w", j, err)
 		}
 	}
 
