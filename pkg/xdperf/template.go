@@ -83,9 +83,9 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 	return entries, nil
 }
 
-// updatePacketLength updates packet headers (IP, transport) for a new packet length.
+// recalculatePacket recalculates packet headers (lengths, checksums) after modifications.
 // Uses gopacket to support any protocol stack.
-func updatePacketLength(data []byte, newLen uint16) ([]byte, error) {
+func recalculatePacket(data []byte, newLen uint16) ([]byte, error) {
 	packet := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.Default)
 
 	// Get network layer for checksum calculation
@@ -330,12 +330,12 @@ func expandSinglePacket(variant guest.PacketVariant, currentValues []uint64) (*T
 		}
 	}
 
-	// If packet length changed, update headers using gopacket
-	if packetLen != baseLen {
+	// Recalculate packet headers (lengths, checksums) if params were applied
+	if len(params) > 0 {
 		var err error
-		data, err = updatePacketLength(data, packetLen)
+		data, err = recalculatePacket(data, packetLen)
 		if err != nil {
-			return nil, fmt.Errorf("failed to update packet length: %w", err)
+			return nil, fmt.Errorf("failed to recalculate packet: %w", err)
 		}
 	}
 

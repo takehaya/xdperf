@@ -122,6 +122,22 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 					},
 					Weight: 1,
 				},
+				// Variant C: Varying source IP (4 bytes), Weight=1
+				{
+					Base: guest.BasePacket{
+						Data:   packetBytes,
+						Length: maxLen,
+					},
+					Params: []guest.VariableParams{
+						{
+							ByteStart:   26, // IPv4 src IP offset
+							ByteSize:    4,
+							ByteRange:   guest.TemplateRange{Start: 0xC0A80101, End: 0xC0A801FE}, // 192.168.1.1 - 192.168.1.254
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+					},
+					Weight: 1,
+				},
 			},
 			// VariantSelectionModeMixed: weighted selection (A=75%, B=25%)
 			Pattern: guest.VariantSelectionModeMixed,

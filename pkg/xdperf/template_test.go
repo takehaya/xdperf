@@ -90,6 +90,35 @@ func TestCalculateVariantCounts(t *testing.T) {
 	}
 }
 
+// makeTestUDPPacket creates a minimal valid UDP packet for testing.
+// Ethernet (14) + IPv4 (20) + UDP (8) + payload = 42+ bytes
+func makeTestUDPPacket(payloadSize int) []byte {
+	pkt := make([]byte, 42+payloadSize)
+	// Ethernet header (14 bytes)
+	copy(pkt[0:6], []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})   // dst MAC
+	copy(pkt[6:12], []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00})  // src MAC
+	pkt[12], pkt[13] = 0x08, 0x00                                 // EtherType: IPv4
+	// IPv4 header (20 bytes) at offset 14
+	pkt[14] = 0x45                                                // Version + IHL
+	pkt[15] = 0x00                                                // DSCP + ECN
+	totalLen := uint16(20 + 8 + payloadSize)
+	pkt[16], pkt[17] = byte(totalLen>>8), byte(totalLen)          // Total length
+	pkt[18], pkt[19] = 0x00, 0x00                                 // Identification
+	pkt[20], pkt[21] = 0x00, 0x00                                 // Flags + Fragment offset
+	pkt[22] = 0x40                                                // TTL
+	pkt[23] = 0x11                                                // Protocol: UDP
+	pkt[24], pkt[25] = 0x00, 0x00                                 // Header checksum (will be calculated)
+	copy(pkt[26:30], []byte{192, 168, 1, 1})                      // Src IP
+	copy(pkt[30:34], []byte{10, 0, 0, 1})                         // Dst IP
+	// UDP header (8 bytes) at offset 34
+	pkt[34], pkt[35] = 0x04, 0xd2                                 // Src port: 1234
+	pkt[36], pkt[37] = 0x16, 0x2e                                 // Dst port: 5678
+	udpLen := uint16(8 + payloadSize)
+	pkt[38], pkt[39] = byte(udpLen>>8), byte(udpLen)              // UDP length
+	pkt[40], pkt[41] = 0x00, 0x00                                 // UDP checksum
+	return pkt
+}
+
 func TestExpandVariant(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -102,12 +131,12 @@ func TestExpandVariant(t *testing.T) {
 			name: "single byte sequential",
 			variant: guest.PacketVariant{
 				Base: guest.BasePacket{
-					Data:   []byte{0x00, 0x01, 0x02, 0x03, 0x04},
-					Length: 5,
+					Data:   makeTestUDPPacket(10),
+					Length: 52,
 				},
 				Params: []guest.VariableParams{
 					{
-						ByteStart:   2,
+						ByteStart:   42, // first payload byte
 						ByteSize:    1,
 						ByteRange:   guest.TemplateRange{Start: 10, End: 12},
 						PatternType: guest.ValuePatternTypeSequential,
@@ -123,8 +152,8 @@ func TestExpandVariant(t *testing.T) {
 				// Values should cycle: 10, 11, 12, 10, 11
 				expectedVals := []byte{10, 11, 12, 10, 11}
 				for i, e := range entries {
-					if e.Data[2] != expectedVals[i] {
-						t.Errorf("entry[%d]: byte[2] = %d, want %d", i, e.Data[2], expectedVals[i])
+					if e.Data[42] != expectedVals[i] {
+						t.Errorf("entry[%d]: byte[42] = %d, want %d", i, e.Data[42], expectedVals[i])
 					}
 				}
 			},
@@ -133,12 +162,12 @@ func TestExpandVariant(t *testing.T) {
 			name: "two byte sequential (network byte order)",
 			variant: guest.PacketVariant{
 				Base: guest.BasePacket{
-					Data:   []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05},
-					Length: 6,
+					Data:   makeTestUDPPacket(10),
+					Length: 52,
 				},
 				Params: []guest.VariableParams{
 					{
-						ByteStart:   2,
+						ByteStart:   34, // UDP src port
 						ByteSize:    2,
 						ByteRange:   guest.TemplateRange{Start: 256, End: 258},
 						PatternType: guest.ValuePatternTypeSequential,
@@ -158,9 +187,9 @@ func TestExpandVariant(t *testing.T) {
 					{0x01, 0x02}, // 258
 				}
 				for i, e := range entries {
-					if e.Data[2] != expected[i][0] || e.Data[3] != expected[i][1] {
-						t.Errorf("entry[%d]: bytes[2:4] = [%02x, %02x], want [%02x, %02x]",
-							i, e.Data[2], e.Data[3], expected[i][0], expected[i][1])
+					if e.Data[34] != expected[i][0] || e.Data[35] != expected[i][1] {
+						t.Errorf("entry[%d]: bytes[34:36] = [%02x, %02x], want [%02x, %02x]",
+							i, e.Data[34], e.Data[35], expected[i][0], expected[i][1])
 					}
 				}
 			},
@@ -169,18 +198,18 @@ func TestExpandVariant(t *testing.T) {
 			name: "multiple params",
 			variant: guest.PacketVariant{
 				Base: guest.BasePacket{
-					Data:   []byte{0x00, 0x00, 0x00, 0x00},
-					Length: 4,
+					Data:   makeTestUDPPacket(10),
+					Length: 52,
 				},
 				Params: []guest.VariableParams{
 					{
-						ByteStart:   0,
+						ByteStart:   42, // payload byte 0
 						ByteSize:    1,
 						ByteRange:   guest.TemplateRange{Start: 1, End: 2},
 						PatternType: guest.ValuePatternTypeSequential,
 					},
 					{
-						ByteStart:   1,
+						ByteStart:   43, // payload byte 1
 						ByteSize:    1,
 						ByteRange:   guest.TemplateRange{Start: 10, End: 11},
 						PatternType: guest.ValuePatternTypeSequential,
@@ -202,9 +231,9 @@ func TestExpandVariant(t *testing.T) {
 					{2, 11},
 				}
 				for i, e := range entries {
-					if e.Data[0] != expected[i][0] || e.Data[1] != expected[i][1] {
-						t.Errorf("entry[%d]: bytes[0:2] = [%d, %d], want [%d, %d]",
-							i, e.Data[0], e.Data[1], expected[i][0], expected[i][1])
+					if e.Data[42] != expected[i][0] || e.Data[43] != expected[i][1] {
+						t.Errorf("entry[%d]: bytes[42:44] = [%d, %d], want [%d, %d]",
+							i, e.Data[42], e.Data[43], expected[i][0], expected[i][1])
 					}
 				}
 			},
@@ -213,8 +242,8 @@ func TestExpandVariant(t *testing.T) {
 			name: "zero count",
 			variant: guest.PacketVariant{
 				Base: guest.BasePacket{
-					Data:   []byte{0x00},
-					Length: 1,
+					Data:   makeTestUDPPacket(0),
+					Length: 42,
 				},
 			},
 			count: 0,
@@ -228,12 +257,12 @@ func TestExpandVariant(t *testing.T) {
 			name: "byte range out of bounds",
 			variant: guest.PacketVariant{
 				Base: guest.BasePacket{
-					Data:   []byte{0x00, 0x01},
-					Length: 2,
+					Data:   makeTestUDPPacket(0),
+					Length: 42,
 				},
 				Params: []guest.VariableParams{
 					{
-						ByteStart: 10, // out of bounds
+						ByteStart: 100, // out of bounds
 						ByteSize:  1,
 						ByteRange: guest.TemplateRange{Start: 0, End: 1},
 					},
