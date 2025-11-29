@@ -12,11 +12,11 @@ builds:
     main: ./cmd/xdperf
     goos: [ linux ]
     goarch: [ amd64 ]
-  - id: plugin-simpleudp
-    dir: ./plugins/simpleudp
+  - id: plugin-simpleudp.tinygo
+    dir: ./plugins/simpleudp.tinygo
     main: .
     tool: tinygo
-    binary: simpleudp.wasm
+    binary: simpleudp.tinygo.wasm
     ldflags:
       - -X main.version={{ .Version }}
       - -X main.commit={{ .Commit }}
@@ -28,6 +28,17 @@ builds:
       - -scheduler=none
       - -target=wasip1
       - -buildmode=c-shared
+  - id: plugin-simpleudp.go
+    dir: ./plugins/simpleudp.go
+    main: .
+    binary: simpleudp.go
+    goos: [ wasip1 ]
+    goarch: [ wasm ]
+    buildmode: c-shared
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
 archives:
   - id: xdperf
     formats:
