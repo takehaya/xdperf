@@ -22,7 +22,6 @@ type Manager struct {
 	plugins          map[string]*wasmPlugin
 	pluginDir        string
 	mu               sync.RWMutex
-	hostFuncs        map[string]interface{}
 	wasiP1HostModule *wasi_snapshot_preview1.Module
 	wasiSys          *wasi.System
 	pluginLang       string
@@ -65,13 +64,9 @@ func NewManager(pluginDir string, pluginCfg string, pluginLang string) (*Manager
 	}
 
 	m := &Manager{
-		runtime:   runtime,
-		plugins:   make(map[string]*wasmPlugin),
-		pluginDir: pluginDir,
-		hostFuncs: map[string]interface{}{
-			"logFunc":    logFunc,
-			"metricFunc": metricFunc,
-		},
+		runtime:          runtime,
+		plugins:          make(map[string]*wasmPlugin),
+		pluginDir:        pluginDir,
 		wasiP1HostModule: wasiP1HostModule,
 		wasiSys:          &sys,
 		pluginLang:       pluginLang,
@@ -96,6 +91,7 @@ func (m *Manager) registerHostAPIFunctions(ctx context.Context) error {
 
 	hostModule.NewFunctionBuilder().WithFunc(logFunc).Export("host_log")
 	hostModule.NewFunctionBuilder().WithFunc(metricFunc).Export("host_report_metric")
+	hostModule.NewFunctionBuilder().WithFunc(neighborResolveFunc).Export("host_neighbor_resolve")
 
 	_, err := hostModule.Instantiate(ctx)
 	return err

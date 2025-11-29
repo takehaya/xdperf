@@ -34,6 +34,16 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	// dummy ethernet packet as base_packet
 	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
+	dmac, err := guest.NeighborResolve(req.DstIP, req.DeviceName)
+	if err != nil {
+		guest.Log(3, "failed to lookup neighbor: "+err.Error())
+		return -4
+	}
+	if dmac != nil {
+		copy(dstMAC[:], dmac)
+		guest.Log(1, "resolved MAC address: "+string(dmac))
+	}
+
 	// ペイロードの生成（指定サイズ）
 	payload := make([]byte, req.PayloadSize)
 	for i := range payload {

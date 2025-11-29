@@ -158,6 +158,7 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessRespons
 	// require base config for plugin
 	pluginConfig["count"] = uint64(x.cfg.Count)
 	pluginConfig["device_mac_addr"] = x.Device.HardwareAddr
+	pluginConfig["device_name"] = x.Device.Name
 
 	x.Logger.Info("calling plugin", zap.Any("merged_config", pluginConfig))
 

@@ -21,6 +21,13 @@ curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/instal
 ## How To Use
 ```shell
 sudo ./out/bin/xdperf --plugin simpleudp --device enp138s0f0
+
+# local build case
+sudo ./out/bin/xdperf --plugin simpleudp.go --plugin-path ./out/bin \
+    --device ens4 -D 2 \
+    --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2"}'
+
+9c:a3:ba:32:35:c5
 ```
 
 ## For Developers
