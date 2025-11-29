@@ -84,35 +84,26 @@ func (x *Xdperf) initTxOverrideMap(entries []*TxOverrideEntry, countsPerCPU []ui
 	return nil
 }
 
-func (x *Xdperf) initSeqStateMap() error {
-	key := uint32(0)
-	numCpus, err := ebpf.PossibleCPU()
-	if err != nil {
-		return fmt.Errorf("failed get possible CPU: %w", err)
-	}
-	entrylist := make([]uint32, numCpus)
-	if err := x.bpfobjs.BpfMaps.SeqStateMap.Put(&key, entrylist); err != nil {
-		return fmt.Errorf("failed put seq state map: %w", err)
-	}
-	return nil
+// pktState matches struct pkt_state in xdp_prog.h
+type pktState struct {
+	Count uint32
+	Idx   uint32
 }
 
-func (x *Xdperf) initPktCountMap(countsPerCPU []uint32) error {
+func (x *Xdperf) initPktStateMap(countsPerCPU []uint32) error {
 	key := uint32(0)
-	if err := x.bpfobjs.BpfMaps.PktCountMap.Put(&key, countsPerCPU); err != nil {
-		return fmt.Errorf("failed put pkt count map: %w", err)
+	states := make([]pktState, len(countsPerCPU))
+	for i, count := range countsPerCPU {
+		states[i] = pktState{Count: count, Idx: 0}
+	}
+	if err := x.bpfobjs.BpfMaps.PktStateMap.Put(&key, states); err != nil {
+		return fmt.Errorf("failed put pkt state map: %w", err)
 	}
 	return nil
 }
 
 
 func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
-	if err := x.initSeqStateMap(); err != nil {
-		x.Logger.Error("failed to init seq state map", zap.Error(err))
-		return fmt.Errorf("failed to init seq state map: %w", err)
-	}
-	x.Logger.Info("seq state map initialized")
-
 	numCpus, err := ebpf.PossibleCPU()
 	if err != nil {
 		return fmt.Errorf("failed get possible CPU: %w", err)
@@ -153,11 +144,11 @@ func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 		zap.Any("counts_per_cpu", countsPerCPU[:parallelism]),
 	)
 
-	if err := x.initPktCountMap(countsPerCPU); err != nil {
-		x.Logger.Error("failed to init pkt count map", zap.Error(err))
-		return fmt.Errorf("failed to init pkt count map: %w", err)
+	if err := x.initPktStateMap(countsPerCPU); err != nil {
+		x.Logger.Error("failed to init pkt state map", zap.Error(err))
+		return fmt.Errorf("failed to init pkt state map: %w", err)
 	}
-	x.Logger.Info("pkt count map initialized")
+	x.Logger.Info("pkt state map initialized")
 
 	if err := x.initTxOverrideMap(entries, countsPerCPU); err != nil {
 		x.Logger.Error("failed to init tx override map", zap.Error(err))

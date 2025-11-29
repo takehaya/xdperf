@@ -37,21 +37,18 @@ struct {
     __type(value, struct pkt_template);
 } tx_override_map SEC(".maps");
 
-// mixed or sequential per-cpu state
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, __u32);
-} seq_state_map SEC(".maps");
+// per-CPU packet state (count and current index)
+struct pkt_state {
+    __u32 count; // number of valid packet entries
+    __u32 idx;   // current packet index
+};
 
-// number of valid packet entries per CPU in tx_override_map
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
-    __type(value, __u32);
-} pkt_count_map SEC(".maps");
+    __type(value, struct pkt_state);
+} pkt_state_map SEC(".maps");
 
 // https://github.com/cloudflare/xdpcap
 // struct bpf_map_def SEC("maps") xdpcap_hook = XDPCAP_HOOK();
