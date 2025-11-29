@@ -2,9 +2,9 @@ package xdperf
 
 import (
 	"fmt"
-	"runtime"
 	"strings"
 
+	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/logger"
 )
 
@@ -36,7 +36,10 @@ func (c *Config) Validate() error {
 	if c.Parallelism <= 0 {
 		return fmt.Errorf("parallelism must be positive")
 	}
-	numCPU := runtime.NumCPU()
+	numCPU, err := ebpf.PossibleCPU()
+	if err != nil {
+		return fmt.Errorf("failed to get possible CPU count: %w", err)
+	}
 	if c.Parallelism > numCPU {
 		return fmt.Errorf("parallelism (%d) exceeds available CPU cores (%d)", c.Parallelism, numCPU)
 	}
