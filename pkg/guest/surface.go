@@ -68,6 +68,10 @@ const (
 	// Values within the specified range are incremented sequentially.
 	PatternTypeSequential PatternType = "sequential"
 
+	// Random pattern.
+	// Values are randomly selected from the specified range.
+	PatternTypeRandom PatternType = "random"
+
 	// Mixed pattern.
 	// Intended for combinations of multiple patterns such as sequential,
 	// random, and others.

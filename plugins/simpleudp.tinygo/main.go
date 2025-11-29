@@ -90,21 +90,21 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 						{
 							ByteStart:   34, // UDP src port offset
 							ByteSize:    2,
-							ByteRange:   guest.TemplateRange{Start: 1024, End: 1124},
-							PatternType: guest.ValuePatternTypeSequential,
+							ByteRange:   guest.TemplateRange{Start: 1024, End: 65535},
+							PatternType: guest.ValuePatternTypeRandom,
 						},
 						{
 							ByteStart:   36, // UDP dst port offset
 							ByteSize:    2,
-							ByteRange:   guest.TemplateRange{Start: 5000, End: 5100},
-							PatternType: guest.ValuePatternTypeSequential,
+							ByteRange:   guest.TemplateRange{Start: 1, End: 65535},
+							PatternType: guest.ValuePatternTypeRandom,
 						},
 						{
 							// Special: vary packet length
 							ByteStart:   guest.ByteStartPacketLength,
 							ByteSize:    0, // ignored for packet length
 							ByteRange:   guest.TemplateRange{Start: baseLen, End: baseLen + 50},
-							PatternType: guest.PatternTypeSequential,
+							PatternType: guest.ValuePatternTypeRandom,
 						},
 					},
 					Weight: 1,

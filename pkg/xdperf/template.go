@@ -3,6 +3,7 @@ package xdperf
 import (
 	"encoding/binary"
 	"fmt"
+	"math/rand"
 
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
@@ -55,7 +56,7 @@ func calculateVariantCounts(variants []guest.PacketVariant, totalCount uint64) [
 }
 
 // expandVariant generates multiple packets from a single variant by applying variable params.
-// All VariableParams are incremented simultaneously.
+// Each param can be sequential or random based on its PatternType.
 // If a param has ByteStart == ByteStartPacketLength, it controls packet length.
 func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntry, error) {
 	if count == 0 {
@@ -68,7 +69,7 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 
 	entries := make([]*TxOverrideEntry, 0, count)
 
-	// Track current value for each param
+	// Track current value for each param (used for sequential pattern)
 	currentValues := make([]uint16, len(params))
 	for i, p := range params {
 		currentValues[i] = p.ByteRange.Start
@@ -84,20 +85,31 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 
 		// Apply each variable param
 		for j, p := range params {
-			if p.ByteStart == guest.ByteStartPacketLength {
-				// This param controls packet length
-				packetLen = currentValues[j]
-			} else {
-				// Normal byte modification
-				if err := applyVariableParam(data, p, currentValues[j]); err != nil {
-					return nil, fmt.Errorf("failed to apply variable param %d: %w", j, err)
+			// Get value based on pattern type
+			var value uint16
+			switch p.PatternType {
+			case guest.PatternTypeRandom:
+				// Random value within range
+				rangeSize := int(p.ByteRange.End-p.ByteRange.Start) + 1
+				value = p.ByteRange.Start + uint16(rand.Intn(rangeSize))
+			default:
+				// Sequential (default)
+				value = currentValues[j]
+				// Increment for next iteration
+				currentValues[j]++
+				if currentValues[j] > p.ByteRange.End {
+					currentValues[j] = p.ByteRange.Start
 				}
 			}
 
-			// Increment value for next iteration
-			currentValues[j]++
-			if currentValues[j] > p.ByteRange.End {
-				currentValues[j] = p.ByteRange.Start
+			if p.ByteStart == guest.ByteStartPacketLength {
+				// This param controls packet length
+				packetLen = value
+			} else {
+				// Normal byte modification
+				if err := applyVariableParam(data, p, value); err != nil {
+					return nil, fmt.Errorf("failed to apply variable param %d: %w", j, err)
+				}
 			}
 		}
 
