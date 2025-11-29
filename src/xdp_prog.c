@@ -26,8 +26,10 @@ int xdp_tx(struct xdp_md *ctx)
     }
 
     __u32 count = state->count;
-    if (count == 0)
-        count = 1;
+    if (count == 0) {
+        DEBUG_PRINT("count=0, skipping\n");
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
     if (count > MAX_PACKET_ENTRY)
         count = MAX_PACKET_ENTRY;
 
