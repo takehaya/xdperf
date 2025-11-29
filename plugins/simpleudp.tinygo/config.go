@@ -15,6 +15,7 @@ type GeneratorRequest struct {
 	SrcPort     uint16 `json:"src_port" default:"1234"`
 	DstPort     uint16 `json:"dst_port" default:"5678"`
 	PayloadSize int    `json:"payload_size" default:"1024"`
+
 	// required param
 	guest.BaseGeneratorRequest
 }
