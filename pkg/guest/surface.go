@@ -1,5 +1,16 @@
 package guest
 
+// plugin_init
+type GeneratorInitRequest struct {
+	// Configuration data specific to the packet generation plugin.
+	PluginConfig []byte `json:"plugin_config"`
+}
+type GeneratorInitResponse struct {
+	// Indicates whether the initialization was successful.
+	Success bool `json:"success"`
+}
+
+// plugin_process
 // BaseGeneratorRequest represents the common parameters passed to a packet
 // generation plugin.
 type BaseGeneratorRequest struct {
@@ -33,7 +44,7 @@ const (
 // generation plugin to simpleudp.
 // Depending on TemplateType, either RawPacketTemplate or
 // VariablePacketTemplate is used.
-type GeneratorResponse struct {
+type GeneratorProcessResponse struct {
 	// Template type.
 	TemplateType GeneratorTemplateType `json:"template_type"`
 
@@ -121,4 +132,14 @@ type BasePacket struct {
 
 	// Effective length of the data.
 	Length uint16 `json:"length"`
+}
+
+// plugin_cleanup
+type GeneratorCleanupRequest struct {
+	// Configuration data specific to the packet generation plugin.
+	PluginConfig []byte `json:"plugin_config"`
+}
+type GeneratorCleanupResponse struct {
+	// Indicates whether the cleanup was successful.
+	Success bool `json:"success"`
 }

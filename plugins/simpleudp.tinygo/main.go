@@ -6,9 +6,7 @@ import "C"
 import (
 	"encoding/json"
 	"time"
-	"unsafe"
 
-	"github.com/mcuadros/go-defaults"
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
@@ -16,33 +14,37 @@ import (
 func main() {}
 
 //go:wasmexport plugin_init
-func plugin_init(configPtr, configLen uint32) uint32 {
-	msg := PtrToString(configPtr, configLen)
-	log(1, "plugin initialized!: msg ->"+msg)
+func plugin_init(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
+	req, err := guest.ReadRequest[guest.GeneratorInitRequest](inputPtr, inputLen)
+	if err != nil {
+		log(3, "failed to read request: "+err.Error())
+		return -1
+	}
+	log(1, "plugin initialized!"+": msg ->"+string(req.PluginConfig))
 	log(1, "plugin version: "+version+", commit: "+commit+", date: "+date)
-	return 0
+
+	res, err := guest.WriteResponse(&guest.GeneratorInitResponse{
+		Success: true,
+	}, outputPtr, outputMaxLen)
+	if err != nil {
+		log(3, "failed to write response: "+err.Error())
+		return -3
+	}
+	log(1, "response sent")
+	return res
 }
 
 //go:wasmexport plugin_process
 func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
-	// read input
-	in := BytesFrom(inputPtr, inputLen)
-	if len(in) == 0 {
-		log(3, "empty input")
+	req, err := guest.ReadRequest[GeneratorRequest](inputPtr, inputLen)
+	if err != nil {
+		log(3, "failed to read request: "+err.Error())
 		return -1
 	}
-
-	// decode input JSON
-	var req GeneratorRequest
-	defaults.SetDefaults(&req)
-	if err := json.Unmarshal(in, &req); err != nil {
-		log(3, "json unmarshal failed: "+err.Error())
-		return -2
-	}
-
+	reqJSON, _ := json.Marshal(req)
 	// show input
 	log(1, "plugin_process called: count="+string(rune(req.Count)))
-	log(1, "show input: "+string(in))
+	log(1, "show input: "+string(reqJSON))
 
 	// dummy ethernet packet as base_packet
 	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
@@ -62,7 +64,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	)
 
 	// create response
-	res := guest.GeneratorResponse{
+	res := guest.GeneratorProcessResponse{
 		TemplateType: guest.GeneratorTemplateTypeRaw,
 		RawPacketTemplate: []guest.BasePacket{
 			{
@@ -73,56 +75,33 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	}
 
 	// marshal to JSON
-	out, err := json.Marshal(res)
+	wres, err := guest.WriteResponse(&res, outputPtr, outputMaxLen)
 	if err != nil {
-		log(3, "json marshal failed: "+err.Error())
+		log(3, "failed to write response: "+err.Error())
 		return -3
 	}
 
-	// write host memory
-	if uint32(len(out)) > outputMaxLen {
-		log(3, "output buffer too small")
-		return -4
-	}
-	dst := BytesFrom(outputPtr, outputMaxLen)
-	copy(dst, out)
-
-	report_metric("gen resp count", 1, time.Now().UnixNano())
+	report_metric("gen resp count", float64(len(res.RawPacketTemplate)), time.Now().UnixNano())
 	log(1, "response sent")
-	return int32(len(out))
+	return wres
 }
 
 //go:wasmexport plugin_cleanup
-func plugin_cleanup() {
-	log(1, "Hello plugin cleanup")
-}
+func plugin_cleanup(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
+	req, err := guest.ReadRequest[guest.GeneratorCleanupRequest](inputPtr, inputLen)
+	if err != nil {
+		log(3, "failed to read request: "+err.Error())
+		return -1
+	}
+	log(1, "plugin cleanup called: msg ->"+string(req.PluginConfig))
 
-// --- memutils.go ---
-func BytesFrom(ptr, size uint32) []byte {
-	return unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), size)
-}
-
-// PtrToString returns a string from WebAssembly compatible numeric types
-// representing its pointer and length.
-func PtrToString(ptr uint32, size uint32) string {
-	return unsafe.String((*byte)(unsafe.Pointer(uintptr(ptr))), size)
-}
-
-// StringToPtr returns a pointer and size pair for the given string in a way
-// compatible with WebAssembly numeric types.
-// The returned pointer aliases the string hence the string must be kept alive
-// until ptr is no longer needed.
-func StringToPtr(s string) (uint32, uint32) {
-	ptr := unsafe.Pointer(unsafe.StringData(s))
-	return uint32(uintptr(ptr)), uint32(len(s))
-}
-
-// StringToLeakedPtr returns a pointer and size pair for the given string in a way
-// compatible with WebAssembly numeric types.
-// The pointer is not automatically managed by TinyGo hence it must be freed by the host.
-func StringToLeakedPtr(s string) (uint32, uint32) {
-	size := C.ulong(len(s))
-	ptr := unsafe.Pointer(C.malloc(size))
-	copy(unsafe.Slice((*byte)(ptr), size), s)
-	return uint32(uintptr(ptr)), uint32(size)
+	res, err := guest.WriteResponse(&guest.GeneratorCleanupResponse{
+		Success: true,
+	}, outputPtr, outputMaxLen)
+	if err != nil {
+		log(3, "failed to write response: "+err.Error())
+		return -3
+	}
+	log(1, "cleanup response sent")
+	return res
 }
