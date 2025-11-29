@@ -19,6 +19,12 @@ type BpfDatarec struct {
 	RxBytes   uint64
 }
 
+type BpfPktState struct {
+	_     structs.HostLayout
+	Count uint32
+	Idx   uint32
+}
+
 type BpfPktTemplate struct {
 	_    structs.HostLayout
 	Len  uint32
@@ -75,7 +81,7 @@ type BpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
-	SeqStateMap   *ebpf.MapSpec `ebpf:"seq_state_map"`
+	PktStateMap   *ebpf.MapSpec `ebpf:"pkt_state_map"`
 	StatsMap      *ebpf.MapSpec `ebpf:"stats_map"`
 	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
 	XdpcapHook    *ebpf.MapSpec `ebpf:"xdpcap_hook"`
@@ -107,7 +113,7 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
-	SeqStateMap   *ebpf.Map `ebpf:"seq_state_map"`
+	PktStateMap   *ebpf.Map `ebpf:"pkt_state_map"`
 	StatsMap      *ebpf.Map `ebpf:"stats_map"`
 	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
 	XdpcapHook    *ebpf.Map `ebpf:"xdpcap_hook"`
@@ -115,7 +121,7 @@ type BpfMaps struct {
 
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
-		m.SeqStateMap,
+		m.PktStateMap,
 		m.StatsMap,
 		m.TxOverrideMap,
 		m.XdpcapHook,

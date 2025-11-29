@@ -57,28 +57,99 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		guest.Log(1, "resolved MAC address: "+string(dmac))
 	}
 
-	// ペイロードの生成（指定サイズ）
+	if req.PayloadSize <= 0 {
+		guest.Log(3, "invalid payload_size: must be positive")
+		return -1
+	}
 	payload := make([]byte, req.PayloadSize)
 	for i := range payload {
 		payload[i] = byte(i % 256)
 	}
 
-	// UDPパケットの構築
+	// Packet structure:
+	//   Ethernet header: 14 bytes (offset 0-13)
+	//   IP header: 20 bytes (offset 14-33)
+	//     - Dst IP: offset 30-33 (last octet at 33)
+	//   UDP header: 8 bytes (offset 34-41)
+	//     - Source port: offset 34-35
+	//     - Dst port: offset 36-37
+	//   Payload: offset 42+
+	// Both variants use the same base packet
 	packetBytes := BuildSimpleUDPPacket(
 		[6]byte(req.DeviceMacAddr), dstMAC,
 		req.SrcIP, req.DstIP,
 		req.SrcPort, req.DstPort,
 		payload,
 	)
+	maxLen := uint16(len(packetBytes))
 
-	// create response
 	res := guest.GeneratorProcessResponse{
-		TemplateType: guest.GeneratorTemplateTypeRaw,
-		RawPacketTemplate: []guest.BasePacket{
-			{
-				Data:   packetBytes,
-				Length: uint16(len(packetBytes)),
+		TemplateType: guest.GeneratorTemplateTypeVariable,
+		VariablePacketTemplate: guest.PacketVariantSet{
+			Variants: []guest.PacketVariant{
+				// Variant A: Short packets (64-84 bytes), SrcPort 1024-1124, Weight=3 (75%)
+				{
+					Base: guest.BasePacket{
+						Data:   packetBytes,
+						Length: maxLen,
+					},
+					Params: []guest.VariableParams{
+						{
+							ByteStart:   34, // UDP src port offset
+							ByteSize:    2,
+							ByteRange:   guest.TemplateRange{Start: 1024, End: 1124},
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+						{
+							ByteStart:   guest.ByteStartPacketLength,
+							ByteSize:    0,
+							ByteRange:   guest.TemplateRange{Start: 64, End: 84}, // Short: 64-84 bytes
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+					},
+					Weight: 3,
+				},
+				// Variant B: Long packets (200-220 bytes), SrcPort 2000-2100, Weight=1 (25%)
+				{
+					Base: guest.BasePacket{
+						Data:   packetBytes,
+						Length: maxLen,
+					},
+					Params: []guest.VariableParams{
+						{
+							ByteStart:   34, // UDP src port offset
+							ByteSize:    2,
+							ByteRange:   guest.TemplateRange{Start: 2000, End: 2100},
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+						{
+							ByteStart:   guest.ByteStartPacketLength,
+							ByteSize:    0,
+							ByteRange:   guest.TemplateRange{Start: 200, End: 220}, // Long: 200-220 bytes
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+					},
+					Weight: 1,
+				},
+				// Variant C: Varying source IP (4 bytes), Weight=1
+				{
+					Base: guest.BasePacket{
+						Data:   packetBytes,
+						Length: maxLen,
+					},
+					Params: []guest.VariableParams{
+						{
+							ByteStart:   26, // IPv4 src IP offset
+							ByteSize:    4,
+							ByteRange:   guest.TemplateRange{Start: 0xC0A80101, End: 0xC0A801FE}, // 192.168.1.1 - 192.168.1.254
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+					},
+					Weight: 1,
+				},
 			},
+			// VariantSelectionModeMixed: weighted selection (A=75%, B=25%)
+			Pattern: guest.VariantSelectionModeMixed,
 		},
 	}
 

@@ -60,46 +60,67 @@ type GeneratorProcessResponse struct {
 	VariablePacketTemplate PacketVariantSet `json:"variable_packet_template"`
 }
 
-// PatternType represents the pattern used when varying parts of a packet.
-type PatternType string
+// VariantSelectionMode represents how to select among multiple packet variants.
+type VariantSelectionMode string
+
+const (
+	// Unknown selection mode.
+	VariantSelectionModeUnknown VariantSelectionMode = ""
+
+	// Sequential selection.
+	// Variants are selected in order, with counts based on weight.
+	VariantSelectionModeSequential VariantSelectionMode = "sequential"
+
+	// Mixed selection.
+	// Variants are selected using weighted randomization.
+	VariantSelectionModeMixed VariantSelectionMode = "mixed"
+)
+
+// ValuePatternType represents how parameter values vary within a variant.
+type ValuePatternType string
 
 const (
 	// Unknown pattern type.
-	PatternTypeUnknown PatternType = ""
+	ValuePatternTypeUnknown ValuePatternType = ""
 
 	// Sequential pattern.
 	// Values within the specified range are incremented sequentially.
-	PatternTypeSequential PatternType = "sequential"
+	ValuePatternTypeSequential ValuePatternType = "sequential"
 
 	// Mixed pattern.
-	// Intended for combinations of multiple patterns such as sequential,
-	// random, and others.
-	PatternTypeMixed PatternType = "mixed"
+	// Values are selected randomly within the range.
+	ValuePatternTypeMixed ValuePatternType = "mixed"
 )
+
+// Special ByteStart value to indicate packet length modification
+const ByteStartPacketLength uint64 = 0xFFFFFFFFFFFFFFFF
 
 // VariableParams defines how a specific byte range in a packet should vary.
 type VariableParams struct {
 	// Start offset of the target byte range from the beginning of the packet.
+	// Use ByteStartPacketLength (0xFFFFFFFFFFFFFFFF) to vary packet length instead of byte content.
 	ByteStart uint64 `json:"byte_start"`
 
 	// Size of the byte range to modify.
+	// Ignored when ByteStart is ByteStartPacketLength.
 	ByteSize uint64 `json:"byte_size"`
 
 	// Value range used for applying variations.
+	// When ByteStart is ByteStartPacketLength, this specifies the packet length range.
 	ByteRange TemplateRange `json:"byte_range"`
 
-	// Pattern type used for variation.
-	PatternType PatternType `json:"pattern_type"`
+	// Pattern type used for value variation.
+	PatternType ValuePatternType `json:"pattern_type"`
 }
 
 // TemplateRange represents a simple numerical range used when generating
 // varying values.
 type TemplateRange struct {
 	// Start value.
-	Start uint16 `json:"start"`
+	Start uint64 `json:"start"`
 
 	// End value.
-	End uint16 `json:"end"`
+	End uint64 `json:"end"`
 }
 
 // PacketVariantSet represents a set of packet variants along with a pattern
@@ -108,9 +129,9 @@ type PacketVariantSet struct {
 	// List of packet variants.
 	Variants []PacketVariant `json:"variants"`
 
-	// Selection pattern for variants.
-	// Sequential selects in order, mixed may use weights or randomization.
-	Pattern PatternType `json:"pattern"`
+	// Selection mode for variants.
+	// Sequential selects in order, mixed uses weighted randomization.
+	Pattern VariantSelectionMode `json:"pattern"`
 }
 
 // PacketVariant represents a base packet, the variable regions inside it,
@@ -120,6 +141,7 @@ type PacketVariant struct {
 	Base BasePacket `json:"base_packet"`
 
 	// Definitions of the variable byte regions within this packet.
+	// To vary packet length, include a VariableParams with ByteStart set to ByteStartPacketLength.
 	Params []VariableParams `json:"variable_params"`
 
 	// Weight used during variant selection.

@@ -117,7 +117,6 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 		x.Logger.Error("failed to run TX packet", zap.Error(err))
 		return err
 	}
-	x.Logger.Info("TX packet processing started")
 
 	return nil
 }
@@ -184,8 +183,19 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessRespons
 }
 
 func (x *Xdperf) convToTxOverrideEntry(resp *guest.GeneratorProcessResponse) ([]*TxOverrideEntry, error) {
+	switch resp.TemplateType {
+	case guest.GeneratorTemplateTypeRaw:
+		return x.convRawTemplate(resp.RawPacketTemplate)
+	case guest.GeneratorTemplateTypeVariable:
+		return x.convVariableTemplate(resp.VariablePacketTemplate, uint64(x.cfg.Count), x.cfg.Parallelism)
+	default:
+		return nil, fmt.Errorf("unknown template type: %s", resp.TemplateType)
+	}
+}
+
+func (x *Xdperf) convRawTemplate(packets []guest.BasePacket) ([]*TxOverrideEntry, error) {
 	var entries []*TxOverrideEntry
-	for _, r := range resp.RawPacketTemplate {
+	for _, r := range packets {
 		data := []byte(r.Data)
 		if len(data) < int(r.Length) {
 			return nil, fmt.Errorf("invalid packet length: data size %d < length %d", len(data), r.Length)
@@ -238,6 +248,8 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	go x.ShowStats(ctx)
 	prog := x.choiceTXBPFProgram()
 
+	x.Logger.Info("TX packet processing started")
+
 	for i := range x.cfg.Parallelism {
 		p, err := prog.Clone()
 		if err != nil {
@@ -246,15 +258,13 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		wg.Add(1)
 		go func(cpu int) {
 			defer wg.Done()
-			go func() {
-				defer p.Close()
-				if err := x.run(ctx, cpu, p, runOpts); err != nil {
-					fmt.Printf("error in run: %v\n", err)
-				}
-			}()
-			<-ctx.Done()
+			defer p.Close()
+			if err := x.run(ctx, cpu, p, runOpts); err != nil {
+				x.Logger.Error("error in run", zap.Int("cpu", cpu), zap.Error(err))
+			}
 		}(i)
 	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig

@@ -18,10 +18,27 @@ int xdp_tx(struct xdp_md *ctx)
     void *data_end = (void *)(long)ctx->data_end;
     __u32 zero = 0;
 
-    __u32 *pidx = bpf_map_lookup_elem(&seq_state_map, &zero);
-    __u32 idx = pidx ? *pidx : 0;
-    if (idx >= MAX_PACKET_ENTRY)
-        idx = 0;
+    // Get per-CPU packet state
+    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
+    if (!state) {
+        DEBUG_PRINT("pkt_state_map lookup failed\n");
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    __u32 count = state->count;
+    if (count == 0) {
+        DEBUG_PRINT("count=0, skipping\n");
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+    if (count > MAX_PACKET_ENTRY)
+        count = MAX_PACKET_ENTRY;
+
+    __u32 local_idx = state->idx;
+    if (local_idx >= count)
+        local_idx = 0;
+
+    // Use local_idx directly (each CPU has its own packets at indices 0..count-1)
+    __u32 idx = local_idx;
 
     struct pkt_template *pt = bpf_map_lookup_elem(&tx_override_map, &idx);
     if (!pt) {
@@ -67,13 +84,11 @@ int xdp_tx(struct xdp_md *ctx)
         cursor++;
     }
 
-    // next index
-    if (pidx) {
-        __u32 next = idx + 1;
-        if (next >= MAX_PACKET_ENTRY)
-            next = 0;
-        *pidx = next;
-    }
+    // next local index (within this CPU's range)
+    __u32 next = local_idx + 1;
+    if (next >= count)
+        next = 0;
+    state->idx = next;
 
     // sended packet stats
     struct datarec *rec = bpf_map_lookup_elem(&stats_map, &zero);
@@ -83,7 +98,7 @@ int xdp_tx(struct xdp_md *ctx)
     }
     rec->rx_packets++;
     rec->rx_bytes += ctx->data_end - ctx->data;
-    DEBUG_PRINT("tx packet len=%u, iface=%d\n", ctx->data_end - ctx->data, ctx->ingress_ifindex);
+    DEBUG_PRINT("tx: cnt=%u idx=%u len=%u\n", count, idx, ctx->data_end - ctx->data);
     return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);
 };
 
