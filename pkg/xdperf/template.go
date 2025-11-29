@@ -180,16 +180,45 @@ func applyVariableParam(data []byte, param guest.VariableParams, value uint16) e
 }
 
 // convVariableTemplate converts a PacketVariantSet to TxOverrideEntries.
-// It generates totalCount packets total, distributed by weight.
+// It generates totalCount packets total, using the Pattern to determine variant selection.
 // These packets will be distributed across CPUs by initTxOverrideMap.
 func (x *Xdperf) convVariableTemplate(variantSet guest.PacketVariantSet, totalCount uint64, parallelism int) ([]*TxOverrideEntry, error) {
 	if len(variantSet.Variants) == 0 {
 		return nil, fmt.Errorf("no variants in packet variant set")
 	}
 
-	// Generate all packets (totalCount)
+	var allEntries []*TxOverrideEntry
+	var err error
+
+	switch variantSet.Pattern {
+	case guest.PatternTypeRandom:
+		allEntries, err = x.convVariableTemplateRandom(variantSet, totalCount)
+	default:
+		// Sequential is the default
+		allEntries, err = x.convVariableTemplateSequential(variantSet, totalCount)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	x.Logger.Info("generated variable template packets",
+		zap.Int("total_entries", len(allEntries)),
+		zap.Uint64("total_count", totalCount),
+		zap.Int("parallelism", parallelism),
+		zap.String("pattern", string(variantSet.Pattern)),
+	)
+
+	return allEntries, nil
+}
+
+// convVariableTemplateSequential generates packets by expanding each variant fully
+// before moving to the next one. Weight determines how many packets each variant gets.
+func (x *Xdperf) convVariableTemplateSequential(variantSet guest.PacketVariantSet, totalCount uint64) ([]*TxOverrideEntry, error) {
+	// Calculate packet count for each variant based on weight
 	variantCounts := calculateVariantCounts(variantSet.Variants, totalCount)
 
+	// Expand each variant sequentially
 	var allEntries []*TxOverrideEntry
 	for i, variant := range variantSet.Variants {
 		entries, err := expandVariant(variant, variantCounts[i])
@@ -199,11 +228,115 @@ func (x *Xdperf) convVariableTemplate(variantSet guest.PacketVariantSet, totalCo
 		allEntries = append(allEntries, entries...)
 	}
 
-	x.Logger.Info("generated variable template packets",
-		zap.Int("total_entries", len(allEntries)),
-		zap.Uint64("total_count", totalCount),
-		zap.Int("parallelism", parallelism),
-	)
-
 	return allEntries, nil
+}
+
+// convVariableTemplateRandom generates packets by randomly selecting a variant for each packet.
+// Selection is weighted by the variant's Weight field.
+func (x *Xdperf) convVariableTemplateRandom(variantSet guest.PacketVariantSet, totalCount uint64) ([]*TxOverrideEntry, error) {
+	variants := variantSet.Variants
+
+	// Calculate total weight
+	var totalWeight uint64
+	for _, v := range variants {
+		totalWeight += uint64(v.Weight)
+	}
+	// If all weights are zero, treat as equal weight
+	if totalWeight == 0 {
+		totalWeight = uint64(len(variants))
+	}
+
+	// Track current values for each variant's params (for sequential VariableParams)
+	variantStates := make([][]uint16, len(variants))
+	for i, v := range variants {
+		variantStates[i] = make([]uint16, len(v.Params))
+		for j, p := range v.Params {
+			variantStates[i][j] = p.ByteRange.Start
+		}
+	}
+
+	entries := make([]*TxOverrideEntry, 0, totalCount)
+	for i := uint64(0); i < totalCount; i++ {
+		// Select variant by weighted random
+		variantIdx := selectVariantByWeight(variants, totalWeight)
+
+		// Generate one packet from the selected variant
+		entry, err := expandSinglePacket(variants[variantIdx], variantStates[variantIdx])
+		if err != nil {
+			return nil, fmt.Errorf("failed to expand packet %d from variant %d: %w", i, variantIdx, err)
+		}
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
+}
+
+// selectVariantByWeight selects a variant index based on weighted random selection.
+func selectVariantByWeight(variants []guest.PacketVariant, totalWeight uint64) int {
+	if len(variants) == 1 {
+		return 0
+	}
+
+	r := rand.Uint64() % totalWeight
+	var cumulative uint64
+	for i, v := range variants {
+		weight := uint64(v.Weight)
+		if weight == 0 {
+			weight = 1 // treat zero weight as 1 for equal distribution
+		}
+		cumulative += weight
+		if r < cumulative {
+			return i
+		}
+	}
+	return len(variants) - 1
+}
+
+// expandSinglePacket generates a single packet from a variant, updating the state for sequential params.
+func expandSinglePacket(variant guest.PacketVariant, currentValues []uint16) (*TxOverrideEntry, error) {
+	baseData := variant.Base.Data
+	baseLen := variant.Base.Length
+	params := variant.Params
+
+	// Copy base packet
+	data := make([]byte, len(baseData))
+	copy(data, baseData)
+
+	// Default packet length
+	packetLen := baseLen
+
+	// Apply each variable param
+	for j, p := range params {
+		var value uint16
+		switch p.PatternType {
+		case guest.PatternTypeRandom:
+			rangeSize := int(p.ByteRange.End-p.ByteRange.Start) + 1
+			value = p.ByteRange.Start + uint16(rand.Intn(rangeSize))
+		default:
+			// Sequential
+			value = currentValues[j]
+			currentValues[j]++
+			if currentValues[j] > p.ByteRange.End {
+				currentValues[j] = p.ByteRange.Start
+			}
+		}
+
+		if p.ByteStart == guest.ByteStartPacketLength {
+			packetLen = value
+		} else {
+			if err := applyVariableParam(data, p, value); err != nil {
+				return nil, fmt.Errorf("failed to apply variable param %d: %w", j, err)
+			}
+		}
+	}
+
+	// If packet length changed, update IP and UDP headers
+	if packetLen != baseLen {
+		updatePacketLengthHeaders(data, packetLen)
+	}
+
+	return &TxOverrideEntry{
+		Data:   data,
+		Length: packetLen,
+	}, nil
 }

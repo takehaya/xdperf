@@ -48,69 +48,81 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	// dummy ethernet packet as base_packet
 	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
-	// ペイロードの生成（最大サイズで作成、長さは LengthRange で変える）
-	maxPayloadSize := req.PayloadSize + 100 // extra space for length variation
+	// Variant B uses up to 220 bytes, so payload needs: 220 - 14(eth) - 20(ip) - 8(udp) = 178 bytes
+	maxPayloadSize := 200 // enough for 220 byte packets
 	payload := make([]byte, maxPayloadSize)
 	for i := range payload {
 		payload[i] = byte(i % 256)
 	}
 
-	// UDPパケットの構築
+	// Packet structure:
+	//   Ethernet header: 14 bytes (offset 0-13)
+	//   IP header: 20 bytes (offset 14-33)
+	//     - Dst IP: offset 30-33 (last octet at 33)
+	//   UDP header: 8 bytes (offset 34-41)
+	//     - Source port: offset 34-35
+	//     - Dst port: offset 36-37
+	//   Payload: offset 42+
+	// Both variants use the same base packet
 	packetBytes := BuildSimpleUDPPacket(
 		[6]byte(req.DeviceMacAddr), dstMAC,
 		req.SrcIP, req.DstIP,
 		req.SrcPort, req.DstPort,
 		payload,
 	)
-
-	// create response with variable template
-	// Packet structure:
-	//   Ethernet header: 14 bytes (offset 0-13)
-	//   IP header: 20 bytes (offset 14-33)
-	//     - Source IP: offset 26-29 (last octet at 29)
-	//   UDP header: 8 bytes (offset 34-41)
-	//     - Source port: offset 34-35
-	//     - Dst port: offset 36-37
-	//   Payload: offset 42+
-	//
-	// Base packet length: Ethernet(14) + IP(20) + UDP(8) + Payload
-	baseLen := uint16(14 + 20 + 8 + req.PayloadSize)
 	maxLen := uint16(len(packetBytes))
 
 	res := guest.GeneratorProcessResponse{
 		TemplateType: guest.GeneratorTemplateTypeVariable,
 		VariablePacketTemplate: guest.PacketVariantSet{
 			Variants: []guest.PacketVariant{
+				// Variant A: Short packets (64-84 bytes), SrcPort 1024-1124, Weight=3 (75%)
 				{
 					Base: guest.BasePacket{
 						Data:   packetBytes,
-						Length: maxLen, // max length for base packet
+						Length: maxLen,
 					},
 					Params: []guest.VariableParams{
 						{
 							ByteStart:   34, // UDP src port offset
 							ByteSize:    2,
-							ByteRange:   guest.TemplateRange{Start: 1024, End: 2048},
+							ByteRange:   guest.TemplateRange{Start: 1024, End: 1124},
 							PatternType: guest.ValuePatternTypeSequential,
 						},
 						{
-							ByteStart:   36, // UDP dst port offset
-							ByteSize:    2,
-							ByteRange:   guest.TemplateRange{Start: 5000, End: 6024},
-							PatternType: guest.ValuePatternTypeSequential,
-						},
-						{
-							// Special: vary packet length
 							ByteStart:   guest.ByteStartPacketLength,
-							ByteSize:    0, // ignored for packet length
-							ByteRange:   guest.TemplateRange{Start: baseLen, End: baseLen + 50},
+							ByteSize:    0,
+							ByteRange:   guest.TemplateRange{Start: 64, End: 84}, // Short: 64-84 bytes
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+					},
+					Weight: 3,
+				},
+				// Variant B: Long packets (200-220 bytes), SrcPort 2000-2100, Weight=1 (25%)
+				{
+					Base: guest.BasePacket{
+						Data:   packetBytes,
+						Length: maxLen,
+					},
+					Params: []guest.VariableParams{
+						{
+							ByteStart:   34, // UDP src port offset
+							ByteSize:    2,
+							ByteRange:   guest.TemplateRange{Start: 2000, End: 2100},
+							PatternType: guest.ValuePatternTypeSequential,
+						},
+						{
+							ByteStart:   guest.ByteStartPacketLength,
+							ByteSize:    0,
+							ByteRange:   guest.TemplateRange{Start: 200, End: 220}, // Long: 200-220 bytes
 							PatternType: guest.ValuePatternTypeSequential,
 						},
 					},
 					Weight: 1,
 				},
 			},
-			Pattern: guest.VariantSelectionModeSequential,
+			// VariantSelectionModeRandom: weighted random selection (A=75%, B=25%)
+			Pattern: guest.VariantSelectionModeRandom,
 		},
 	}
 
