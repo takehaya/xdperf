@@ -18,6 +18,8 @@ type Config struct {
 	Device             string
 	Parallelism        int
 	Count              int
+
+	DebugMode int
 }
 
 func (c *Config) Validate() error {

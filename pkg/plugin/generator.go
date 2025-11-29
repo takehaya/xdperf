@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/takehaya/xdperf/pkg/guest"
 )
 
 // GeneratorAdapter はGeneratorPluginのアダプター
@@ -35,13 +37,8 @@ func (g *GeneratorAdapter) Cleanup(ctx context.Context) error {
 	return err
 }
 
-func (g *GeneratorAdapter) GenerateTemplate(ctx context.Context, seq uint64, args []byte) (*GeneratorOutput, error) {
+func (g *GeneratorAdapter) GenerateTemplate(ctx context.Context, input map[string]interface{}) (*guest.GeneratorResponse, error) {
 	// input data serialization
-	input := map[string]interface{}{
-		"sequence": seq,
-		"args":     args,
-	}
-
 	inputBytes, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
@@ -52,7 +49,7 @@ func (g *GeneratorAdapter) GenerateTemplate(ctx context.Context, seq uint64, arg
 		return nil, fmt.Errorf("failed to call plugin: %w", err)
 	}
 
-	var output GeneratorOutput
+	var output guest.GeneratorResponse
 	if err := json.Unmarshal(outputBytes, &output); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal output: %w", err)
 	}
@@ -62,12 +59,4 @@ func (g *GeneratorAdapter) GenerateTemplate(ctx context.Context, seq uint64, arg
 
 func (g *GeneratorAdapter) Call(ctx context.Context, input []byte) ([]byte, error) {
 	return g.plugin.CallProcess(ctx, input)
-}
-
-func (g *GeneratorAdapter) CallWithJSON(ctx context.Context, input interface{}) ([]byte, error) {
-	inputBytes, err := json.Marshal(input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal input: %w", err)
-	}
-	return g.plugin.CallProcess(ctx, inputBytes)
 }

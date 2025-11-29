@@ -47,7 +47,7 @@ func newApp(version string) *cli.App {
 		},
 		cli.StringFlag{
 			Name:  "plugin-config, cfg",
-			Usage: "plugin configuration file (JSON or YAML)",
+			Usage: "plugin configuration file (JSON format)",
 		},
 		cli.BoolFlag{
 			Name:  "server, s",
@@ -68,6 +68,11 @@ func newApp(version string) *cli.App {
 			Value: 1,
 			Usage: "number of packets to send",
 		},
+		cli.IntFlag{
+			Name:  "debugmode, D",
+			Value: 0,
+			Usage: "debug mode level (0: none, 1: on, 2: full verbose)",
+		},
 	}
 	app.Action = run
 	return app
@@ -86,6 +91,12 @@ func run(ctx *cli.Context) error {
 	c.Device = ctx.String("device")
 	c.Parallelism = ctx.Int("parallelism")
 	c.Count = ctx.Int("count")
+	c.DebugMode = ctx.Int("debugmode")
+
+	if c.DebugMode > 0 {
+		// set verbose logging
+		c.LoggerConfig.Verbose = 1
+	}
 
 	// Validate config
 	if err := c.Validate(); err != nil {

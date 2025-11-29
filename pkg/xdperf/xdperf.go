@@ -16,6 +16,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/takehaya/xdperf/pkg/coreelf"
+	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/takehaya/xdperf/pkg/logger"
 	"github.com/takehaya/xdperf/pkg/plugin"
 	"go.uber.org/zap"
@@ -76,34 +77,6 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 	}, nil
 }
 
-// TODO: あとで整理してpkg/pluginにから呼び出せるようにする
-type GeneratorResponse struct {
-	TemplateType           string                   `json:"template_type"` // e.g., "raw", "variable"
-	RawPacketTemplate      []BasePacket             `json:"raw_packet_template"`
-	VariablePacketTemplate []VariablePacketTemplate `json:"variable_packet_template"`
-}
-
-type TemplateRange struct {
-	Start uint16 `json:"start"`
-	End   uint16 `json:"end"`
-}
-type TemplateGeneraterParams struct {
-	ByteStart   uint64        `json:"byte_start"`
-	ByteSize    uint64        `json:"byte_size"`
-	ByteRange   TemplateRange `json:"byte_range"`
-	PatternType string        `json:"pattern_type"` // e.g., "sequential", "random"
-}
-
-type VariablePacketTemplate struct {
-	BasePacket        BasePacket              `json:"base_packet"`
-	TemplateGenerater TemplateGeneraterParams `json:"template_generater"`
-}
-
-type BasePacket struct {
-	Data   []byte `json:"data"`
-	Length uint16 `json:"length"`
-}
-
 func (x *Xdperf) StartClient(ctx context.Context) error {
 	x.Logger.Info("start client mode")
 
@@ -112,7 +85,9 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 		x.Logger.Error("failed to load plugin", zap.Error(err))
 		return err
 	}
-	x.Logger.Info("plugin call successful", zap.Any("response", resp))
+	x.Logger.Info("plugin call successful")
+
+	x.Logger.Debug("plugin call successful for verbose logging", zap.Any("response", resp))
 
 	entries, err := x.convToTxOverrideEntry(resp)
 	if err != nil {
@@ -121,11 +96,14 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 	}
 	x.Logger.Info("conversion to tx override entry successful", zap.Int("entry_count", len(entries)))
 
-	for i, e := range entries {
-		packet := gopacket.NewPacket(e.Data, layers.LayerTypeEthernet, gopacket.Default)
-		x.Logger.Info("constructed packet from entry", zap.Int("entry_index", i))
-		for _, layer := range packet.Layers() {
-			x.Logger.Info("packet layer", zap.String("layer_type", fmt.Sprintf("%T", layer)), zap.Any("layer", layer))
+	if x.cfg.DebugMode > 0 {
+		x.Logger.Debug("debug mode is enabled, dumping packets...")
+		for i, e := range entries {
+			packet := gopacket.NewPacket(e.Data, layers.LayerTypeEthernet, gopacket.Default)
+			x.Logger.Debug("constructed packet from entry", zap.Int("entry_index", i))
+			for _, layer := range packet.Layers() {
+				x.Logger.Debug("packet layer", zap.String("layer_type", fmt.Sprintf("%T", layer)), zap.Any("layer", layer))
+			}
 		}
 	}
 
@@ -144,7 +122,7 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 	return nil
 }
 
-func (x *Xdperf) callPlugin(ctx context.Context) (*GeneratorResponse, error) {
+func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorResponse, error) {
 	wasmPlugin, err := x.PluginManager.GetPlugin(x.cfg.PluginName)
 	if err != nil {
 		return nil, fmt.Errorf("failed get plugin: %w", err)
@@ -153,41 +131,50 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*GeneratorResponse, error) {
 	generator := plugin.NewGeneratorAdapter(x.cfg.PluginName, wasmPlugin)
 	x.Logger.Info("testing simple plugin communication")
 
-	// test input
-	input := map[string]interface{}{
-		"count":           x.cfg.Count,
-		"device_mac_addr": x.Device.HardwareAddr,
+	if err := generator.Initialize(ctx, []byte(x.cfg.PluginConfig)); err != nil {
+		x.Logger.Error("plugin initialization failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to initialize plugin: %w", err)
+	}
+	x.Logger.Info("plugin initialized successfully")
+
+	var pluginConfig map[string]interface{}
+	if x.cfg.PluginConfig != "" {
+		if err := json.Unmarshal([]byte(x.cfg.PluginConfig), &pluginConfig); err != nil {
+			x.Logger.Error("failed to unmarshal plugin config", zap.Error(err))
+			return nil, fmt.Errorf("failed to unmarshal plugin config: %w", err)
+		}
+	} else {
+		pluginConfig = make(map[string]interface{})
 	}
 
-	x.Logger.Info("calling plugin", zap.Any("input", input))
+	// require base config for plugin
+	pluginConfig["count"] = uint64(x.cfg.Count)
+	pluginConfig["device_mac_addr"] = x.Device.HardwareAddr
+
+	x.Logger.Info("calling plugin", zap.Any("merged_config", pluginConfig))
 
 	// call plugin
-	outputBytes, err := generator.CallWithJSON(ctx, input)
+	resp, err := generator.GenerateTemplate(ctx, pluginConfig)
 	if err != nil {
-		x.Logger.Error("CallWithJSON failed", zap.Error(err))
+		x.Logger.Error("GenerateTemplate failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to call plugin (counter=%d): %w", x.cfg.Count, err)
 	}
-	x.Logger.Info("after CallWithJSON success")
+	x.Logger.Info("after GenerateTemplate success")
 
 	x.Logger.Info("received response",
-		zap.Int("counter", x.cfg.Count),
-		zap.Int("output_size", len(outputBytes)),
-		zap.String("output", string(outputBytes)),
+		zap.String("pattern", string(resp.VariablePacketTemplate.Pattern)),
+		zap.Int("raw_packet_template_count", len(resp.RawPacketTemplate)),
+		zap.Int("variable_packet_template_count", len(resp.VariablePacketTemplate.Variants)),
 	)
-
-	var response GeneratorResponse
-	if err := json.Unmarshal(outputBytes, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
 
 	x.Logger.Debug("parsed response",
-		zap.Any("response", response),
+		zap.Any("response", resp),
 	)
 
-	return &response, nil
+	return resp, nil
 }
 
-func (x *Xdperf) convToTxOverrideEntry(resp *GeneratorResponse) ([]*TxOverrideEntry, error) {
+func (x *Xdperf) convToTxOverrideEntry(resp *guest.GeneratorResponse) ([]*TxOverrideEntry, error) {
 	var entries []*TxOverrideEntry
 	for _, r := range resp.RawPacketTemplate {
 		data := []byte(r.Data)
