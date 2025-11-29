@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/takehaya/xdperf/compare/v0.5.0...v0.5.1) (2025-11-29)
+
+
+### 🐛 Bug Fixes
+
+* ci code ([67e7cc8](https://github.com/takehaya/xdperf/commit/67e7cc8ffe46862239f0e565b5f18fc6d7576f90))
+* ci code ([7fd7ce3](https://github.com/takehaya/xdperf/commit/7fd7ce3a2a087c4ff0c36175c4a6c1fb07f7d320))
+
 ## [0.5.0](https://github.com/takehaya/xdperf/compare/v0.4.0...v0.5.0) (2025-11-29)
 
 
