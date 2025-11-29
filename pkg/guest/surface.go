@@ -74,15 +74,21 @@ const (
 	PatternTypeMixed PatternType = "mixed"
 )
 
+// Special ByteStart value to indicate packet length modification
+const ByteStartPacketLength uint64 = 0xFFFFFFFFFFFFFFFF
+
 // VariableParams defines how a specific byte range in a packet should vary.
 type VariableParams struct {
 	// Start offset of the target byte range from the beginning of the packet.
+	// Use ByteStartPacketLength (0xFFFFFFFFFFFFFFFF) to vary packet length instead of byte content.
 	ByteStart uint64 `json:"byte_start"`
 
 	// Size of the byte range to modify.
+	// Ignored when ByteStart is ByteStartPacketLength.
 	ByteSize uint64 `json:"byte_size"`
 
 	// Value range used for applying variations.
+	// When ByteStart is ByteStartPacketLength, this specifies the packet length range.
 	ByteRange TemplateRange `json:"byte_range"`
 
 	// Pattern type used for variation.
@@ -117,12 +123,8 @@ type PacketVariant struct {
 	Base BasePacket `json:"base_packet"`
 
 	// Definitions of the variable byte regions within this packet.
+	// To vary packet length, include a VariableParams with ByteStart set to ByteStartPacketLength.
 	Params []VariableParams `json:"variable_params"`
-
-	// Optional length range for varying packet size.
-	// If set, packet length will vary within this range.
-	// The base packet should be large enough to accommodate the maximum length.
-	LengthRange *TemplateRange `json:"length_range,omitempty"`
 
 	// Weight used during variant selection.
 	Weight uint32 `json:"weight"`

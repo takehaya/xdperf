@@ -56,7 +56,7 @@ func calculateVariantCounts(variants []guest.PacketVariant, totalCount uint64) [
 
 // expandVariant generates multiple packets from a single variant by applying variable params.
 // All VariableParams are incremented simultaneously.
-// If LengthRange is set, packet length also varies within that range.
+// If a param has ByteStart == ByteStartPacketLength, it controls packet length.
 func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntry, error) {
 	if count == 0 {
 		return nil, nil
@@ -65,7 +65,6 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 	baseData := variant.Base.Data
 	baseLen := variant.Base.Length
 	params := variant.Params
-	lengthRange := variant.LengthRange
 
 	entries := make([]*TxOverrideEntry, 0, count)
 
@@ -75,23 +74,24 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 		currentValues[i] = p.ByteRange.Start
 	}
 
-	// Track current length if length range is set
-	var currentLength uint16
-	if lengthRange != nil {
-		currentLength = lengthRange.Start
-	} else {
-		currentLength = baseLen
-	}
-
 	for i := uint64(0); i < count; i++ {
 		// Copy base packet
 		data := make([]byte, len(baseData))
 		copy(data, baseData)
 
+		// Default packet length
+		packetLen := baseLen
+
 		// Apply each variable param
 		for j, p := range params {
-			if err := applyVariableParam(data, p, currentValues[j]); err != nil {
-				return nil, fmt.Errorf("failed to apply variable param %d: %w", j, err)
+			if p.ByteStart == guest.ByteStartPacketLength {
+				// This param controls packet length
+				packetLen = currentValues[j]
+			} else {
+				// Normal byte modification
+				if err := applyVariableParam(data, p, currentValues[j]); err != nil {
+					return nil, fmt.Errorf("failed to apply variable param %d: %w", j, err)
+				}
 			}
 
 			// Increment value for next iteration
@@ -101,15 +101,9 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 			}
 		}
 
-		// Determine packet length for this entry
-		packetLen := currentLength
-
-		// Increment length for next iteration if length range is set
-		if lengthRange != nil {
-			currentLength++
-			if currentLength > lengthRange.End {
-				currentLength = lengthRange.Start
-			}
+		// If packet length changed, update IP and UDP headers
+		if packetLen != baseLen {
+			updatePacketLengthHeaders(data, packetLen)
 		}
 
 		entries = append(entries, &TxOverrideEntry{
@@ -119,6 +113,36 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 	}
 
 	return entries, nil
+}
+
+// updatePacketLengthHeaders updates IP Total Length and UDP Length fields
+// based on the new packet length.
+// Assumes standard Ethernet + IPv4 + UDP packet structure.
+func updatePacketLengthHeaders(data []byte, packetLen uint16) {
+	// Ethernet header: 14 bytes
+	// IP header starts at offset 14
+	// IP Total Length is at offset 16-17 (2 bytes from IP header start)
+	// UDP header starts at offset 34 (assuming 20-byte IP header)
+	// UDP Length is at offset 38-39 (4 bytes from UDP header start)
+
+	if len(data) < 40 {
+		return // packet too short
+	}
+
+	// IP Total Length = packet length - Ethernet header (14 bytes)
+	ipTotalLen := packetLen - 14
+	binary.BigEndian.PutUint16(data[16:18], ipTotalLen)
+
+	// UDP Length = packet length - Ethernet (14) - IP header (20) = packet length - 34
+	udpLen := packetLen - 34
+	binary.BigEndian.PutUint16(data[38:40], udpLen)
+
+	// Note: We're not recalculating checksums here.
+	// IP checksum at offset 24-25 and UDP checksum at offset 40-41
+	// would need to be recalculated for full correctness.
+	// For testing purposes, setting checksums to 0 disables validation.
+	binary.BigEndian.PutUint16(data[24:26], 0) // IP checksum = 0
+	binary.BigEndian.PutUint16(data[40:42], 0) // UDP checksum = 0 (valid for UDP)
 }
 
 // applyVariableParam applies a single variable param to packet data.
