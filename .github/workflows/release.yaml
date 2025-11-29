@@ -57,6 +57,8 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
+      - name: Install build tools
+        run: make install-build-tools
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
