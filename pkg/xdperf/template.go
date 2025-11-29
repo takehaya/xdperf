@@ -123,20 +123,15 @@ func applyVariableParam(data []byte, param guest.VariableParams, value uint16) e
 }
 
 // convVariableTemplate converts a PacketVariantSet to TxOverrideEntries.
-// It generates (totalCount / parallelism) packets total, distributed by weight.
+// It generates totalCount packets total, distributed by weight.
+// These packets will be distributed across CPUs by initTxOverrideMap.
 func (x *Xdperf) convVariableTemplate(variantSet guest.PacketVariantSet, totalCount uint64, parallelism int) ([]*TxOverrideEntry, error) {
 	if len(variantSet.Variants) == 0 {
 		return nil, fmt.Errorf("no variants in packet variant set")
 	}
 
-	// Calculate packets per CPU
-	packetsPerCPU := totalCount / uint64(parallelism)
-	if packetsPerCPU == 0 {
-		packetsPerCPU = 1
-	}
-
-	// Calculate count for each variant
-	variantCounts := calculateVariantCounts(variantSet.Variants, packetsPerCPU)
+	// Generate all packets (totalCount)
+	variantCounts := calculateVariantCounts(variantSet.Variants, totalCount)
 
 	var allEntries []*TxOverrideEntry
 	for i, variant := range variantSet.Variants {
@@ -149,7 +144,7 @@ func (x *Xdperf) convVariableTemplate(variantSet guest.PacketVariantSet, totalCo
 
 	x.Logger.Info("generated variable template packets",
 		zap.Int("total_entries", len(allEntries)),
-		zap.Uint64("packets_per_cpu", packetsPerCPU),
+		zap.Uint64("total_count", totalCount),
 		zap.Int("parallelism", parallelism),
 	)
 

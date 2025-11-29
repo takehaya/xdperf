@@ -77,7 +77,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 						{
 							ByteStart:   34, // UDP src port offset
 							ByteSize:    2,
-							ByteRange:   guest.TemplateRange{Start: 1024, End: 1034},
+							ByteRange:   guest.TemplateRange{Start: 1024, End: 2048},
 							PatternType: guest.ValuePatternTypeSequential,
 						},
 					},

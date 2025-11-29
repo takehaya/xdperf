@@ -72,10 +72,18 @@ func (x *Xdperf) initSeqStateMap() error {
 	return nil
 }
 
-func (x *Xdperf) initPktCountMap(count uint32) error {
+func (x *Xdperf) initPktCountMap(countsPerCPU []uint32) error {
 	key := uint32(0)
-	if err := x.bpfobjs.BpfMaps.PktCountMap.Put(&key, &count); err != nil {
+	if err := x.bpfobjs.BpfMaps.PktCountMap.Put(&key, countsPerCPU); err != nil {
 		return fmt.Errorf("failed put pkt count map: %w", err)
+	}
+	return nil
+}
+
+func (x *Xdperf) initPktOffsetMap(offsetsPerCPU []uint32) error {
+	key := uint32(0)
+	if err := x.bpfobjs.BpfMaps.PktOffsetMap.Put(&key, offsetsPerCPU); err != nil {
+		return fmt.Errorf("failed put pkt offset map: %w", err)
 	}
 	return nil
 }
@@ -87,11 +95,63 @@ func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 	}
 	x.Logger.Info("seq state map initialized")
 
-	if err := x.initPktCountMap(uint32(len(entries))); err != nil {
+	numCpus, err := ebpf.PossibleCPU()
+	if err != nil {
+		return fmt.Errorf("failed get possible CPU: %w", err)
+	}
+
+	parallelism := x.cfg.Parallelism
+	if parallelism <= 0 {
+		parallelism = 1
+	}
+	if parallelism > numCpus {
+		parallelism = numCpus
+	}
+
+	// Distribute packets across CPUs that will be used
+	totalEntries := len(entries)
+	entriesPerCPU := totalEntries / parallelism
+	remainder := totalEntries % parallelism
+
+	countsPerCPU := make([]uint32, numCpus)
+	offsetsPerCPU := make([]uint32, numCpus)
+	currentOffset := uint32(0)
+
+	for cpu := 0; cpu < numCpus; cpu++ {
+		if cpu < parallelism {
+			count := entriesPerCPU
+			if cpu < remainder {
+				count++
+			}
+			countsPerCPU[cpu] = uint32(count)
+			offsetsPerCPU[cpu] = currentOffset
+			currentOffset += uint32(count)
+		} else {
+			// CPUs not in use get 0 count
+			countsPerCPU[cpu] = 0
+			offsetsPerCPU[cpu] = 0
+		}
+	}
+
+	x.Logger.Info("packet distribution calculated",
+		zap.Int("total_entries", totalEntries),
+		zap.Int("parallelism", parallelism),
+		zap.Int("num_cpus", numCpus),
+		zap.Any("counts_per_cpu", countsPerCPU[:parallelism]),
+		zap.Any("offsets_per_cpu", offsetsPerCPU[:parallelism]),
+	)
+
+	if err := x.initPktCountMap(countsPerCPU); err != nil {
 		x.Logger.Error("failed to init pkt count map", zap.Error(err))
 		return fmt.Errorf("failed to init pkt count map: %w", err)
 	}
-	x.Logger.Info("pkt count map initialized", zap.Int("count", len(entries)))
+	x.Logger.Info("pkt count map initialized")
+
+	if err := x.initPktOffsetMap(offsetsPerCPU); err != nil {
+		x.Logger.Error("failed to init pkt offset map", zap.Error(err))
+		return fmt.Errorf("failed to init pkt offset map: %w", err)
+	}
+	x.Logger.Info("pkt offset map initialized")
 
 	if err := x.initTxOverrideMap(entries); err != nil {
 		x.Logger.Error("failed to init tx override map", zap.Error(err))
