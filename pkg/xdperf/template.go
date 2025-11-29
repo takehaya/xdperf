@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math/rand"
 
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
 )
@@ -113,9 +115,13 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 			}
 		}
 
-		// If packet length changed, update IP and UDP headers
+		// If packet length changed, update headers using gopacket
 		if packetLen != baseLen {
-			updatePacketLengthHeaders(data, packetLen)
+			var err error
+			data, err = updatePacketLength(data, packetLen)
+			if err != nil {
+				return nil, fmt.Errorf("failed to update packet length: %w", err)
+			}
 		}
 
 		entries = append(entries, &TxOverrideEntry{
@@ -127,34 +133,71 @@ func expandVariant(variant guest.PacketVariant, count uint64) ([]*TxOverrideEntr
 	return entries, nil
 }
 
-// updatePacketLengthHeaders updates IP Total Length and UDP Length fields
-// based on the new packet length.
-// Assumes standard Ethernet + IPv4 + UDP packet structure.
-func updatePacketLengthHeaders(data []byte, packetLen uint16) {
-	// Ethernet header: 14 bytes
-	// IP header starts at offset 14
-	// IP Total Length is at offset 16-17 (2 bytes from IP header start)
-	// UDP header starts at offset 34 (assuming 20-byte IP header)
-	// UDP Length is at offset 38-39 (4 bytes from UDP header start)
+// updatePacketLength updates packet headers (IP, transport) for a new packet length.
+// Uses gopacket to support any protocol stack.
+func updatePacketLength(data []byte, newLen uint16) ([]byte, error) {
+	packet := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.Default)
 
-	if len(data) < 40 {
-		return // packet too short
+	// Get network layer for checksum calculation
+	networkLayer := packet.NetworkLayer()
+
+	// Collect all serializable layers except payload
+	var serializableLayers []gopacket.SerializableLayer
+	for _, layer := range packet.Layers() {
+		if layer.LayerType() == gopacket.LayerTypePayload {
+			break
+		}
+		sl, ok := layer.(gopacket.SerializableLayer)
+		if !ok {
+			continue
+		}
+		// Set network layer for transport checksum calculation
+		switch l := layer.(type) {
+		case *layers.UDP:
+			if networkLayer != nil {
+				_ = l.SetNetworkLayerForChecksum(networkLayer)
+			}
+		case *layers.TCP:
+			if networkLayer != nil {
+				_ = l.SetNetworkLayerForChecksum(networkLayer)
+			}
+		}
+		serializableLayers = append(serializableLayers, sl)
 	}
 
-	// IP Total Length = packet length - Ethernet header (14 bytes)
-	ipTotalLen := packetLen - 14
-	binary.BigEndian.PutUint16(data[16:18], ipTotalLen)
+	// Adjust payload to new length
+	headerLen := calculateHeaderLength(packet)
+	payloadLen := int(newLen) - headerLen
+	if payloadLen < 0 {
+		payloadLen = 0
+	}
+	payload := make([]byte, payloadLen)
+	if appLayer := packet.ApplicationLayer(); appLayer != nil {
+		copy(payload, appLayer.Payload())
+	}
+	serializableLayers = append(serializableLayers, gopacket.Payload(payload))
 
-	// UDP Length = packet length - Ethernet (14) - IP header (20) = packet length - 34
-	udpLen := packetLen - 34
-	binary.BigEndian.PutUint16(data[38:40], udpLen)
+	// Serialize with automatic length and checksum calculation
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	if err := gopacket.SerializeLayers(buf, opts, serializableLayers...); err != nil {
+		return nil, fmt.Errorf("failed to serialize packet: %w", err)
+	}
 
-	// Note: We're not recalculating checksums here.
-	// IP checksum at offset 24-25 and UDP checksum at offset 40-41
-	// would need to be recalculated for full correctness.
-	// For testing purposes, setting checksums to 0 disables validation.
-	binary.BigEndian.PutUint16(data[24:26], 0) // IP checksum = 0
-	binary.BigEndian.PutUint16(data[40:42], 0) // UDP checksum = 0 (valid for UDP)
+	return buf.Bytes(), nil
+}
+
+// calculateHeaderLength calculates the total header length of a packet
+// by summing all layer contents except the payload.
+func calculateHeaderLength(packet gopacket.Packet) int {
+	length := 0
+	for _, layer := range packet.Layers() {
+		if layer.LayerType() == gopacket.LayerTypePayload {
+			break
+		}
+		length += len(layer.LayerContents())
+	}
+	return length
 }
 
 // applyVariableParam applies a single variable param to packet data.
@@ -330,9 +373,13 @@ func expandSinglePacket(variant guest.PacketVariant, currentValues []uint16) (*T
 		}
 	}
 
-	// If packet length changed, update IP and UDP headers
+	// If packet length changed, update headers using gopacket
 	if packetLen != baseLen {
-		updatePacketLengthHeaders(data, packetLen)
+		var err error
+		data, err = updatePacketLength(data, packetLen)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update packet length: %w", err)
+		}
 	}
 
 	return &TxOverrideEntry{
