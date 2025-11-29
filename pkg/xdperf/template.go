@@ -111,6 +111,10 @@ func updatePacketLength(data []byte, newLen uint16) ([]byte, error) {
 			if networkLayer != nil {
 				_ = l.SetNetworkLayerForChecksum(networkLayer)
 			}
+		case *layers.ICMPv6:
+			if networkLayer != nil {
+				_ = l.SetNetworkLayerForChecksum(networkLayer)
+			}
 		}
 		serializableLayers = append(serializableLayers, sl)
 	}
