@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/takehaya/xdperf/compare/v0.3.0...v0.4.0) (2025-11-29)
+
+
+### 🎉 Features
+
+* add guest lib for neighborResolveFunc ([4274423](https://github.com/takehaya/xdperf/commit/4274423e0b88766e2b6d48840475829cf0505dfa))
+* add guest lib for neighborResolveFunc ([3d84ee7](https://github.com/takehaya/xdperf/commit/3d84ee7c4850ba8806c76cb59b3cbbadf7fd5219))
+
 ## [0.3.0](https://github.com/takehaya/xdperf/compare/v0.2.0...v0.3.0) (2025-11-29)
 
 
