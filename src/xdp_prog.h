@@ -53,14 +53,6 @@ struct {
     __type(value, __u32);
 } pkt_count_map SEC(".maps");
 
-// starting index offset per CPU in tx_override_map
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, __u32);
-} pkt_offset_map SEC(".maps");
-
 // https://github.com/cloudflare/xdpcap
 // struct bpf_map_def SEC("maps") xdpcap_hook = XDPCAP_HOOK();
 struct xdpcap_hook {

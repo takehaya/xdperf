@@ -18,11 +18,9 @@ int xdp_tx(struct xdp_md *ctx)
     void *data_end = (void *)(long)ctx->data_end;
     __u32 zero = 0;
 
-    // Get per-CPU packet count and offset
+    // Get per-CPU packet count
     __u32 *pkt_count = bpf_map_lookup_elem(&pkt_count_map, &zero);
-    __u32 *pkt_offset = bpf_map_lookup_elem(&pkt_offset_map, &zero);
     __u32 count = pkt_count ? *pkt_count : 1;
-    __u32 offset = pkt_offset ? *pkt_offset : 0;
     if (count == 0)
         count = 1;
     if (count > MAX_PACKET_ENTRY)
@@ -33,10 +31,8 @@ int xdp_tx(struct xdp_md *ctx)
     if (local_idx >= count)
         local_idx = 0;
 
-    // Calculate actual index in tx_override_map
-    __u32 idx = offset + local_idx;
-    if (idx >= MAX_PACKET_ENTRY)
-        idx = offset;
+    // Use local_idx directly (each CPU has its own packets at indices 0..count-1)
+    __u32 idx = local_idx;
 
     struct pkt_template *pt = bpf_map_lookup_elem(&tx_override_map, &idx);
     if (!pt) {
@@ -98,7 +94,7 @@ int xdp_tx(struct xdp_md *ctx)
     }
     rec->rx_packets++;
     rec->rx_bytes += ctx->data_end - ctx->data;
-    DEBUG_PRINT("tx: off=%u cnt=%u lidx=%u idx=%u len=%u\n", offset, count, local_idx, idx, ctx->data_end - ctx->data);
+    DEBUG_PRINT("tx: cnt=%u idx=%u len=%u\n", count, idx, ctx->data_end - ctx->data);
     return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);
 };
 

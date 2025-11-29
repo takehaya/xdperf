@@ -15,9 +15,9 @@ type TxOverrideEntry struct {
 }
 
 // initTxOverrideMap initializes the TX Override Map with packet entries.
-// Each entry is stored at a separate key (0, 1, 2, ..., N-1).
-// All CPUs receive the same packet for each key.
-func (x *Xdperf) initTxOverrideMap(entries []*TxOverrideEntry) error {
+// Each CPU receives only its assigned packets at indices 0..count-1.
+// This is memory efficient: only totalCount packets are stored, not totalCount * numCPUs.
+func (x *Xdperf) initTxOverrideMap(entries []*TxOverrideEntry, countsPerCPU []uint32) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("no entry")
 	}
@@ -27,33 +27,58 @@ func (x *Xdperf) initTxOverrideMap(entries []*TxOverrideEntry) error {
 		return fmt.Errorf("failed get possible CPU: %w", err)
 	}
 
-	for i, e := range entries {
-		ld := int(e.Length)
-		if ld <= 0 {
-			return fmt.Errorf("invalid entry length at index %d: %d", i, e.Length)
-		}
-		if ld > len(e.Data) {
-			return fmt.Errorf("length %d exceeds data size %d at index %d", e.Length, len(e.Data), i)
-		}
+	// Calculate starting offset for each CPU in the entries slice
+	cpuOffsets := make([]uint32, numCpus)
+	for cpu := 1; cpu < numCpus; cpu++ {
+		cpuOffsets[cpu] = cpuOffsets[cpu-1] + countsPerCPU[cpu-1]
+	}
 
-		// Create per-CPU array with the same packet for all CPUs
+	// Find maximum count across all CPUs
+	var maxCount uint32
+	for _, c := range countsPerCPU {
+		if c > maxCount {
+			maxCount = c
+		}
+	}
+
+	// For each local index (0..maxCount-1), store the appropriate packet for each CPU
+	for localIdx := uint32(0); localIdx < maxCount; localIdx++ {
 		entrylist := make([]coreelf.BpfPktTemplate, numCpus)
+
 		for cpu := 0; cpu < numCpus; cpu++ {
-			entrylist[cpu] = coreelf.BpfPktTemplate{
-				Len: uint32(e.Length),
+			if localIdx < countsPerCPU[cpu] {
+				globalIdx := cpuOffsets[cpu] + localIdx
+				if int(globalIdx) >= len(entries) {
+					return fmt.Errorf("globalIdx %d out of range for entries (len=%d)", globalIdx, len(entries))
+				}
+
+				e := entries[globalIdx]
+				ld := int(e.Length)
+				if ld <= 0 {
+					return fmt.Errorf("invalid entry length at globalIdx %d: %d", globalIdx, e.Length)
+				}
+				if ld > len(e.Data) {
+					return fmt.Errorf("length %d exceeds data size %d at globalIdx %d", e.Length, len(e.Data), globalIdx)
+				}
+
+				entrylist[cpu] = coreelf.BpfPktTemplate{
+					Len: uint32(e.Length),
+				}
+				copy(entrylist[cpu].Data[:], e.Data)
 			}
-			copy(entrylist[cpu].Data[:], e.Data)
+			// else: CPU not using this index, leave as zero value
 		}
 
-		key := uint32(i)
+		key := localIdx
 		if err := x.bpfobjs.BpfMaps.TxOverrideMap.Put(&key, entrylist); err != nil {
-			return fmt.Errorf("failed put tx override map at key %d: %w", i, err)
+			return fmt.Errorf("failed put tx override map at key %d: %w", localIdx, err)
 		}
 	}
 
 	x.Logger.Info("tx override map populated",
 		zap.Int("num_entries", len(entries)),
 		zap.Int("num_cpus", numCpus),
+		zap.Uint32("max_count_per_cpu", maxCount),
 	)
 
 	return nil
@@ -80,13 +105,6 @@ func (x *Xdperf) initPktCountMap(countsPerCPU []uint32) error {
 	return nil
 }
 
-func (x *Xdperf) initPktOffsetMap(offsetsPerCPU []uint32) error {
-	key := uint32(0)
-	if err := x.bpfobjs.BpfMaps.PktOffsetMap.Put(&key, offsetsPerCPU); err != nil {
-		return fmt.Errorf("failed put pkt offset map: %w", err)
-	}
-	return nil
-}
 
 func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 	if err := x.initSeqStateMap(); err != nil {
@@ -114,8 +132,6 @@ func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 	remainder := totalEntries % parallelism
 
 	countsPerCPU := make([]uint32, numCpus)
-	offsetsPerCPU := make([]uint32, numCpus)
-	currentOffset := uint32(0)
 
 	for cpu := 0; cpu < numCpus; cpu++ {
 		if cpu < parallelism {
@@ -124,12 +140,9 @@ func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 				count++
 			}
 			countsPerCPU[cpu] = uint32(count)
-			offsetsPerCPU[cpu] = currentOffset
-			currentOffset += uint32(count)
 		} else {
 			// CPUs not in use get 0 count
 			countsPerCPU[cpu] = 0
-			offsetsPerCPU[cpu] = 0
 		}
 	}
 
@@ -138,7 +151,6 @@ func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 		zap.Int("parallelism", parallelism),
 		zap.Int("num_cpus", numCpus),
 		zap.Any("counts_per_cpu", countsPerCPU[:parallelism]),
-		zap.Any("offsets_per_cpu", offsetsPerCPU[:parallelism]),
 	)
 
 	if err := x.initPktCountMap(countsPerCPU); err != nil {
@@ -147,13 +159,7 @@ func (x *Xdperf) initEbpfMap(entries []*TxOverrideEntry) error {
 	}
 	x.Logger.Info("pkt count map initialized")
 
-	if err := x.initPktOffsetMap(offsetsPerCPU); err != nil {
-		x.Logger.Error("failed to init pkt offset map", zap.Error(err))
-		return fmt.Errorf("failed to init pkt offset map: %w", err)
-	}
-	x.Logger.Info("pkt offset map initialized")
-
-	if err := x.initTxOverrideMap(entries); err != nil {
+	if err := x.initTxOverrideMap(entries, countsPerCPU); err != nil {
 		x.Logger.Error("failed to init tx override map", zap.Error(err))
 		return fmt.Errorf("failed to init tx override map: %w", err)
 	}
