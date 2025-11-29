@@ -21,6 +21,9 @@ type BaseGeneratorRequest struct {
 	// Source MAC address.
 	// Injected by the host based on the interface MAC.
 	DeviceMacAddr []byte `json:"device_mac_addr"`
+
+	// Network device name to send packets through.
+	DeviceName string `json:"device_name"`
 }
 
 // GeneratorTemplateType represents the type of packet template.
