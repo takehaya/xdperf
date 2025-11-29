@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/takehaya/xdperf/compare/v0.4.0...v0.5.0) (2025-11-29)
+
+
+### 🎉 Features
+
+* implement variable template feature ([7ba8a49](https://github.com/takehaya/xdperf/commit/7ba8a49b74c5e18d931e9582a85366b2f6c45803))
+
 ## [0.4.0](https://github.com/takehaya/xdperf/compare/v0.3.0...v0.4.0) (2025-11-29)
 
 
