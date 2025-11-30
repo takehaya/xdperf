@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.7.0](https://github.com/takehaya/xdperf/compare/v0.6.0...v0.7.0) (2025-11-30)
+
+
+### 🎉 Features
+
+* add option to show NIC-level statistics ([adbd5f7](https://github.com/takehaya/xdperf/commit/adbd5f77ac9f6a63b7e0f2bf573e72120ba6e22e))
+* add pps param ([3feb04e](https://github.com/takehaya/xdperf/commit/3feb04e3328579a2875e380dc3fdabf91e7d2267))
+* fix count and pps parsing and validation ([5f274d4](https://github.com/takehaya/xdperf/commit/5f274d48a0657a196534ae79a50e4b1a44b0454d))
+* specify pps ([5088e16](https://github.com/takehaya/xdperf/commit/5088e1653f5361d26e464f4a177e7ebf93a957f0))
+
+
+### 🐛 Bug Fixes
+
+* remove redundant args ([6a8ce43](https://github.com/takehaya/xdperf/commit/6a8ce4353999a879a63706ba876735b3c19a9670))
+* use pprintf in stats.go ([66390cd](https://github.com/takehaya/xdperf/commit/66390cd8036ffd6b502c5054149db7de4a470b39))
+
+
+### 🔧 Miscellaneous Chores
+
+* delete unneccesary default value ([849de3c](https://github.com/takehaya/xdperf/commit/849de3c91797771736e4e57fcd621094523fdea2))
+* fix inproper error handling ([de3a19d](https://github.com/takehaya/xdperf/commit/de3a19dc1e99cb55b9a78bea76ffee6dc826355f))
+* update readme ([0cd347b](https://github.com/takehaya/xdperf/commit/0cd347b47a42facbd6d9cfa02950d482df9fb425))
+* update README ([1af1994](https://github.com/takehaya/xdperf/commit/1af19940f81819e4738209b77763c3be92e984cf))
+
 ## [0.6.0](https://github.com/takehaya/xdperf/compare/v0.5.2...v0.6.0) (2025-11-30)
 
 
