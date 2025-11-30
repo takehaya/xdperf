@@ -44,19 +44,45 @@ tinygo build -scheduler=none -target=wasip1 -buildmode=c-shared -o ../../out/bin
 ```
 Key flags: `-target=wasip1` / `-buildmode=c-shared` / `-scheduler=none`.
 
-Using Makefile from the project root:
+## Build (Go)
 ```bash
-# Build all plugins
+cd plugins/simpleudp.go
+GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ../../out/bin/simpleudp.go.wasm .
+```
+Key flags: `GOOS=wasip1` / `GOARCH=wasm` / `-buildmode=c-shared`.
+
+## Using Makefile
+
+From the project root:
+```bash
+# Build all plugins (both TinyGo and Go versions)
 make build-plugins
 
 # Build a specific plugin
-make simpleudp.tinygo
+make simpleudp.tinygo  # TinyGo version
+make simpleudp.go      # Go version
 ```
 
-## Memory Helpers (Example)
-```go
-func BytesFrom(ptr, size uint32) []byte { return unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), size) }
-func PtrToString(ptr, size uint32) string { return unsafe.String((*byte)(unsafe.Pointer(uintptr(ptr))), size) }
-func StringToPtr(s string) (uint32, uint32) { p := unsafe.Pointer(unsafe.StringData(s)); return uint32(uintptr(p)), uint32(len(s)) }
+## Examples
+
+For implementation details including memory helpers and packet generation, see the sample plugins:
+- [simpleudp.tinygo](./simpleudp.tinygo/) - TinyGo-based plugin
+- [simpleudp.go](./simpleudp.go/) - Go-based plugin
+
+## simpleudp Plugin Configuration
+
+The `simpleudp` plugin accepts the following configuration parameters via `--plugin-config` or `--plugin-config-path`:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `src_ip` | string | `192.168.1.1` | Source IP address |
+| `dst_ip` | string | `192.168.1.2` | Destination IP address |
+| `src_port` | uint16 | `1234` | Source port |
+| `dst_port` | uint16 | `5678` | Destination port |
+| `payload_size` | int | `1024` | UDP payload size in bytes |
+
+**Example:**
+```shell
+sudo xdperf --device eth0 --count 1m \
+    --cfg '{"src_ip": "10.0.0.1", "dst_ip": "10.0.0.2", "dst_port": 9999, "payload_size": 512}'
 ```
-Don't forget to use `runtime.KeepAlive` to maintain lifetime of referenced data.

@@ -7,16 +7,17 @@ In addition, xdperf provides a flexible mechanism for transmitting arbitrary pac
 Furthermore, since xdperf is implemented in Go, it runs as a single binary, making deployment simple and convenient.
 
 ## Install
+
 Note: You need to install `jq` beforehand.
 ```shell
 # latest install
-curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/install_xdperf.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/install_xdperf.sh | sudo bash
 
 # extra: select version mode
-curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/install_xdperf.sh | sudo sh -s -- --version v0.5.3
+curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/install_xdperf.sh | sudo bash -s -- --version v0.5.3
 ```
 
-## CLI Options
+## Usage
 
 ### Basic Syntax
 
@@ -27,6 +28,140 @@ sudo xdperf --device <interface> [options]
 By default, `simpleudp.tinygo` plugin is used (installed at `/usr/local/share/xdperf/plugins`).
 For custom plugin development, see [Plugin Development Guide](./plugins/README.md).
 
+### Operating Modes
+
+xdperf has two primary operating modes:
+
+| Mode | Flags | Description |
+|------|-------|-------------|
+| **Client Mode** | `--send=true` (default) | Send packets using WASM plugin |
+| **Server Mode** | `--send=false --recv=true` | Receive and count packets |
+| **Both Mode** | `--send=true --recv=true` | Send packets and count received packets |
+
+**Client Mode** loads a WASM plugin to generate packet templates, writes them to eBPF maps, and transmits packets via XDP. Supports PPS rate limiting and parallel execution.
+
+**Server Mode** attaches an XDP program to the NIC to count incoming packets. With `--swap-resp`, it acts as an echo server (swaps MAC/IP and sends back). No plugin required.
+
+| `--send` | `--recv` | `--swap-resp` | Behavior |
+|----------|----------|---------------|----------|
+| true | false | - | Send only (default) |
+| true | true | false | Send + count received |
+| true | true | true | Send + echo received |
+| false | true | false | Count received only |
+| false | true | true | Echo server |
+
+### Basic Examples
+
+```shell
+# Send 10,000 packets with default settings
+sudo xdperf --device eth0 --count 10k
+
+# Send packets for 30 seconds at 100k pps
+sudo xdperf --device eth0 --duration 30s --pps 100k
+```
+
+### High-Performance Traffic Generation
+
+```shell
+# High-throughput: 1M packets with 8 parallel threads at max speed
+sudo xdperf --device eth0 --count 1m --parallelism 8
+
+# Rate-limited: 10 seconds at 500k pps with 4 threads
+sudo xdperf --device eth0 --duration 10s --pps 500k --parallelism 4
+```
+
+### Custom Packet Configuration
+
+```shell
+# Small packets for PPS testing
+sudo xdperf --device eth0 --count 1m --parallelism 4 \
+    --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 64}'
+
+# Large packets for throughput testing
+sudo xdperf --device eth0 --count 100k \
+    --cfg '{"payload_size": 1400}'
+```
+
+### Server Mode (Receive Only)
+
+```shell
+# Receive only (server mode)
+sudo xdperf --device eth0 --send=false --recv
+
+# Echo server with swap
+sudo xdperf --device eth0 --send=false --recv --swap-resp
+```
+
+### Development and Debugging
+
+```shell
+# Local build with verbose debugging
+sudo ./out/bin/xdperf \
+    --plugin simpleudp.go \
+    --plugin-path ./out/bin \
+    --device eth0 \
+    --count 100 \
+    --debugmode 2
+
+# With NIC statistics
+sudo xdperf --device eth0 --count 1m --show-nic-stats
+```
+
+## For Developers
+
+The following information describes what is required to build the project.
+
+### Prepare
+
+On a Debian-based Linux environment, make sure the following tools are installed:
+* make
+* [mise](https://github.com/jdx/mise)
+* docker
+
+### Development Setup
+
+```shell
+make install-dev-pkg
+make install-dev-tools
+make install-build-tools
+
+# Used by lefthook (explained later)
+make install-lint-tools
+
+# Equivalent to pre-commit
+lefthook install
+```
+
+### Go Binary Build
+
+```shell
+# Development build (includes xdperf binary and plugins)
+make build
+
+# Build plugins only
+make build-plugins
+
+# Build a specific plugin
+make simpleudp.tinygo  # TinyGo version
+make simpleudp.go      # Go version
+
+# Build release snapshot with goreleaser
+make goreleaser
+
+# Run build test (check for panics)
+make test-runnable
+```
+
+### BPF Binary Build
+
+```shell
+make bpf-gen
+# debug pattern
+# CEXTRA_FLAGS="-DXDPERF_DEBUG" make bpf-gen
+```
+
+## CLI Options Reference
+
 ### Option Reference
 
 | Option | Short | Required | Default | Description |
@@ -34,15 +169,17 @@ For custom plugin development, see [Plugin Development Guide](./plugins/README.m
 | `--device` | `-d` | **Yes** | - | Network interface name (e.g., `eth0`, `ens4`) |
 | `--count` | `-c` | *Conditional* | - | Number of packets to send (e.g., `1000`, `100k`, `1m`) |
 | `--duration` | `-t` | *Conditional* | - | Duration to send packets (e.g., `10s`, `1m`, `500ms`) |
-| `--pps` | `-r` | No | unlimited | Target packets per second (e.g., `100k`, `1m`) |
+| `--pps` | - | No | unlimited | Target packets per second (e.g., `100k`, `1m`) |
 | `--parallelism` | `-l` | No | `1` | Number of parallel sending threads |
+| `--send` | `-s` | No | `true` | Run in send mode |
+| `--recv` | `-r` | No | `false` | Run in receive mode |
+| `--swap-resp` | `--swap` | No | `false` | Swap response packets (for echo server) |
+| `--show-nic-stats` | - | No | `false` | Show NIC-level statistics |
 | `--plugin` | `-p` | No | `simpleudp.tinygo` | Plugin name in format `<name>.<language>` |
 | `--plugin-path` | `-P` | No | `/usr/local/share/xdperf/plugins` | Directory containing plugin files |
 | `--plugin-language` | `-L` | No | (auto-detected) | Plugin language (`go` or `tinygo`) |
 | `--plugin-config` | `--cfg` | No | - | Plugin configuration in JSON format |
 | `--plugin-config-path` | `--cfgpath` | No | - | Path to JSON configuration file |
-| `--server` | `-s` | No | `false` | Run in server mode (WIP) |
-| `--show-nic-stats` | - | No | `false` | Show NIC-level statistics |
 | `--debugmode` | `-D` | No | `0` | Debug level (0: off, 1: on, 2: verbose) |
 
 ### Option Details
@@ -87,7 +224,7 @@ sudo xdperf --device eth0 --duration 10s --pps 100k
 sudo xdperf --device eth0 --count 1000 --duration 10s
 ```
 
-#### `--pps`, `-r`
+#### `--pps`
 
 Target packets per second. Supports the same suffixes as `--count` (`k`, `m`).
 If not specified, packets are sent at maximum speed.
@@ -128,6 +265,35 @@ sudo xdperf --device eth0 --count 100k --parallelism 16
 sudo xdperf --device eth0 --count 5 --parallelism 10
 ```
 
+#### `--send`, `-s` / `--recv`, `-r`
+
+Control send and receive modes. By default, `--send` is enabled and `--recv` is disabled.
+
+| Mode | `--send` | `--recv` | Description |
+|------|----------|----------|-------------|
+| Send only | `true` (default) | `false` (default) | Send packets only |
+| Send + Receive | `true` | `true` | Send packets and measure received packets |
+| Receive only | `false` | `true` | Server mode - receive and measure incoming traffic |
+
+```shell
+# Send only (default)
+sudo xdperf --device eth0 --count 1m
+
+# Send and receive
+sudo xdperf --device eth0 --count 1m --recv
+
+# Receive only (server mode)
+sudo xdperf --device eth0 --send=false --recv
+```
+
+#### `--swap-resp`, `--swap`
+
+When enabled, swap source and destination in response packets. Useful for echo server scenarios.
+
+```shell
+sudo xdperf --device eth0 --send=false --recv --swap-resp
+```
+
 #### `--plugin`, `-p`
 
 Plugin name must follow the format `<name>.<language>`.
@@ -149,6 +315,8 @@ sudo xdperf --device eth0 --count 1000 --plugin simpleudp.go
 
 Explicitly specify the plugin language. If omitted, it is automatically detected from the plugin name suffix.
 
+This option is required because the host runtime handles Go and TinyGo plugins differently (e.g., memory management, initialization sequences). Specifying the correct language ensures proper interaction between the host and the WASM module.
+
 ```shell
 # Explicit language specification
 sudo xdperf --device eth0 --count 1000 --plugin myplug --plugin-language go
@@ -158,20 +326,7 @@ sudo xdperf --device eth0 --count 1000 --plugin myplug --plugin-language go
 
 Pass plugin configuration as a JSON string. The available parameters depend on the plugin.
 
-**simpleudp plugin configuration:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `src_ip` | string | `192.168.1.1` | Source IP address |
-| `dst_ip` | string | `192.168.1.2` | Destination IP address |
-| `src_port` | uint16 | `1234` | Source port |
-| `dst_port` | uint16 | `5678` | Destination port |
-| `payload_size` | int | `1024` | UDP payload size in bytes |
-
-```shell
-sudo xdperf --device eth0 --count 1m \
-    --cfg '{"src_ip": "10.0.0.1", "dst_ip": "10.0.0.2", "dst_port": 9999, "payload_size": 512}'
-```
+For plugin-specific configuration options, see [Plugin Development Guide](./plugins/README.md#simpleudp-plugin-configuration).
 
 #### `--plugin-config-path`, `--cfgpath`
 
@@ -201,21 +356,10 @@ Set debug output level.
 | Level | Description |
 |-------|-------------|
 | `0` | Debug output disabled (default) |
-| `1` | Basic debug logging enabled |
-| `2` | Full verbose logging (includes packet dumps) |
+| `1` | Debug logging enabled |
 
 ```shell
 sudo xdperf --device eth0 --count 100 --debugmode 2
-```
-
-#### `--server`, `-s`
-
-Run xdperf in server mode to receive and measure incoming traffic.
-
-**Note:** Server mode is currently a work in progress (WIP).
-
-```shell
-sudo xdperf --device eth0 --server
 ```
 
 ### Option Constraints Summary
@@ -229,100 +373,3 @@ sudo xdperf --device eth0 --server
 | `--count` >= `--parallelism` | Total packets must be at least equal to thread count |
 | `--parallelism` <= CPU cores | Cannot exceed available CPU cores |
 | Plugin name format | Must be `<name>.<language>` unless `--plugin-language` is specified |
-
-## Usage Examples
-
-### Basic Usage
-
-```shell
-# Send 10,000 packets with default settings
-sudo xdperf --device eth0 --count 10k
-
-# Send packets for 30 seconds at 100k pps
-sudo xdperf --device eth0 --duration 30s --pps 100k
-```
-
-### High-Performance Traffic Generation
-
-```shell
-# High-throughput: 1M packets with 8 parallel threads at max speed
-sudo xdperf --device eth0 --count 1m --parallelism 8
-
-# Rate-limited: 10 seconds at 500k pps with 4 threads
-sudo xdperf --device eth0 --duration 10s --pps 500k --parallelism 4
-```
-
-### Custom Packet Configuration
-
-```shell
-# Small packets for PPS testing
-sudo xdperf --device eth0 --count 1m --parallelism 4 \
-    --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 64}'
-
-# Large packets for throughput testing
-sudo xdperf --device eth0 --count 100k \
-    --cfg '{"payload_size": 1400}'
-```
-
-### Development and Debugging
-
-```shell
-# Local build with verbose debugging
-sudo ./out/bin/xdperf \
-    --plugin simpleudp.go \
-    --plugin-path ./out/bin \
-    --device eth0 \
-    --count 100 \
-    --debugmode 2
-
-# With NIC statistics
-sudo xdperf --device eth0 --count 1m --show-nic-stats
-```
-
-## For Developers
-The following information describes what is required to build the project.
-
-### Prepare
-On a Debian-based Linux environment, make sure the following tools are installed:
-* make
-* [mise](https://github.com/jdx/mise)
-* docker
-
-### Development Setup
-```shell
-make install-dev-pkg
-make install-dev-tools
-make install-build-tools
-
-# Used by lefthook (explained later)
-make install-lint-tools
-
-# Equivalent to pre-commit
-lefthook install
-```
-
-### Go Binary Build
-```shell
-# Development build (includes xdperf binary and plugins)
-make build
-
-# Build plugins only
-make build-plugins
-
-# Build a specific plugin
-make simpleudp.tinygo  # TinyGo version
-make simpleudp.go      # Go version
-
-# Build release snapshot with goreleaser
-make goreleaser
-
-# Run build test (check for panics)
-make test-runnable
-```
-
-### BPF Binary Build
-```shell
-make bpf-gen
-# debug pattern
-# CEXTRA_FLAGS="-DXDPERF_DEBUG" make bpf-gen
-```
