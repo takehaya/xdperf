@@ -22,15 +22,17 @@ curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/instal
 ```shell
 sudo ./out/bin/xdperf --plugin simpleudp.go --device enp138s0f0
 
-sudo ./out/bin/xdperf --plugin simpleudp.go --plugin-path ./out/bin \
-    --device ens4 --count 10 --parallelism 10
-
-# local build case
+# use client mode (send only mode)
 sudo ./out/bin/xdperf --plugin simpleudp.go --plugin-path ./out/bin --device ens4 --count 10000 --parallelism 10 \
     --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 512 }'
 
-# use servermode
-sudo ./out/bin/xdperf -s --device ens4
+# use client mode (send/recv both mode)
+sudo ./out/bin/xdperf --recv --plugin simpleudp.go --plugin-path ./out/bin --device ens4 --count 10000 --parallelism 10 \
+    --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 512 }'
+
+
+# use server mode (recv only mode)
+sudo ./out/bin/xdperf --send=false --recv=true --device ens4
 ```
 
 ## For Developers

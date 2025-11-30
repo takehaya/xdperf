@@ -41,7 +41,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 	}
 	cleanupFnList = append(cleanupFnList, cleanup)
 	var pm *plugin.Manager
-	if !cfg.ServerFlag {
+	if cfg.Sender {
 		pm, err = plugin.NewManager(cfg.PluginPath, cfg.PluginConfig, cfg.PluginLanguage)
 		if err != nil {
 			return nil, fmt.Errorf("failed init plugin manager: %w", err)
@@ -56,7 +56,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 
 	consts := map[string]interface{}{
 		"swap_resp": func() uint32 {
-			if cfg.ServerFlag && cfg.ServerSwapResp {
+			if cfg.Receiver && cfg.SwapResp {
 				return 1
 			}
 			return 0
@@ -232,10 +232,15 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to build sample packet: %w", err)
 	}
-
+	ttype := TrafficTypeTX
+	rxprog := x.bpfobjs.XdpPassDummy
+	if x.cfg.Sender && x.cfg.Receiver {
+		ttype = TrafficTypeBoth
+		rxprog = x.bpfobjs.XdpRx
+	}
 	// dummy XDP Prog attachment
 	l, err := link.AttachXDP(link.XDPOptions{
-		Program:   x.bpfobjs.XdpPassDummy,
+		Program:   rxprog,
 		Interface: x.Device.Index,
 	})
 	if err != nil {
@@ -257,7 +262,8 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go x.ShowStats(ctx, TrafficTypeTX)
+
+	go x.ShowStats(ctx, ttype)
 	prog := x.choiceTXBPFProgram()
 
 	x.Logger.Info("TX packet processing started")

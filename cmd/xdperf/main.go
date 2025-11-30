@@ -56,9 +56,17 @@ func newApp(version string) *cli.App {
 			Name:  "plugin-config-path, cfgpath",
 			Usage: "plugin configuration file path (JSON format)",
 		},
+		cli.BoolTFlag{
+			Name:  "send, s",
+			Usage: "run as send mode",
+		},
 		cli.BoolFlag{
-			Name:  "server, s",
-			Usage: "run as server mode",
+			Name:  "recv, r",
+			Usage: "run as receive mode",
+		},
+		cli.BoolFlag{
+			Name:  "swap-resp, swap",
+			Usage: "swap response packets (for echo server)",
 		},
 		cli.StringFlag{
 			Name:     "device, d",
@@ -80,10 +88,6 @@ func newApp(version string) *cli.App {
 			Value: 0,
 			Usage: "debug mode level (0: none, 1: on, 2: full verbose)",
 		},
-		cli.BoolFlag{
-			Name:  "server-swap-resp, swap",
-			Usage: "server mode: swap response packets (for echo server)",
-		},
 	}
 	app.Action = run
 	return app
@@ -99,13 +103,14 @@ func run(ctx *cli.Context) error {
 	c.PluginPath = ctx.String("plugin-path")
 	c.PluginConfig = ctx.String("plugin-config")
 	c.PluginConfigPath = ctx.String("plugin-config-path")
-	c.ServerFlag = ctx.Bool("server")
+	c.Sender = ctx.Bool("send")
+	c.Receiver = ctx.Bool("recv")
 	c.Device = ctx.String("device")
 	c.Parallelism = ctx.Int("parallelism")
 	c.Count = ctx.Int("count")
 	c.DebugMode = ctx.Int("debugmode")
 	c.PluginLanguage = ctx.String("plugin-language")
-	c.ServerSwapResp = ctx.Bool("server-swap-resp")
+	c.SwapResp = ctx.Bool("swap-resp")
 
 	if c.DebugMode > 0 {
 		// set verbose logging
@@ -132,7 +137,7 @@ func run(ctx *cli.Context) error {
 	}
 	defer xdp.Close()
 
-	if c.ServerFlag {
+	if c.Receiver && !c.Sender {
 		err = xdp.StartServer(context.Background())
 		if err != nil {
 			return fmt.Errorf("xdperf server start failed: %w", err)

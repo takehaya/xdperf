@@ -18,11 +18,12 @@ type Config struct {
 	PluginConfig     string
 	PluginConfigPath string
 
-	ServerFlag     bool
-	ServerSwapResp bool
-	Device         string
-	Parallelism    int
-	Count          int
+	Sender      bool
+	Receiver    bool
+	SwapResp    bool
+	Device      string
+	Parallelism int
+	Count       int
 
 	DebugMode int
 }
