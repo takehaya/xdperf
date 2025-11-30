@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/takehaya/xdperf/compare/v0.7.0...v0.7.1) (2025-11-30)
+
+
+### 🐛 Bug Fixes
+
+* argument validation for receiver mode ([08187b6](https://github.com/takehaya/xdperf/commit/08187b608b194e45f85bd322d381bab160fa5e24))
+* argument validation for receiver mode ([e36afba](https://github.com/takehaya/xdperf/commit/e36afbaaf7400a42cf5d9a2f8f6b4f02e7f7ed0f))
+
 ## [0.7.0](https://github.com/takehaya/xdperf/compare/v0.6.0...v0.7.0) (2025-11-30)
 
 
