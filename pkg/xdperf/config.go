@@ -3,6 +3,7 @@ package xdperf
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/logger"
@@ -24,6 +25,8 @@ type Config struct {
 	Device      string
 	Parallelism int
 	Count       int
+	PPS         uint64        // 0 = unlimited (max speed)
+	Duration    time.Duration // 0 = not specified (use count instead)
 
 	DebugMode int
 }
@@ -45,9 +48,28 @@ func (c *Config) Validate() error {
 	if c.Parallelism > numCPU {
 		return fmt.Errorf("parallelism (%d) exceeds available CPU cores (%d)", c.Parallelism, numCPU)
 	}
-	if c.Count <= 0 {
-		return fmt.Errorf("count must be positive")
+	if c.Count < 0 {
+		return fmt.Errorf("count must be non-negative")
 	}
+	if c.Duration < 0 {
+		return fmt.Errorf("duration must be non-negative")
+	}
+
+	// Either count or duration must be specified
+	if c.Count == 0 && c.Duration == 0 {
+		return fmt.Errorf("either --count or --duration must be specified")
+	}
+
+	// Cannot specify both count and duration
+	if c.Count > 0 && c.Duration > 0 {
+		return fmt.Errorf("cannot specify both --count and --duration")
+	}
+
+	// Duration requires PPS
+	if c.Duration > 0 && c.PPS == 0 {
+		return fmt.Errorf("--duration requires --pps to be specified")
+	}
+
 	if c.PluginLanguage == "" {
 		sp := strings.Split(c.PluginName, ".")
 		if len(sp) != 2 {
@@ -56,11 +78,11 @@ func (c *Config) Validate() error {
 		c.PluginLanguage = strings.ToLower(sp[1])
 	}
 
-	// parallelism and count check
+	// parallelism and count check (only when count is specified)
 	// count は全体の投げるパケットの数
 	// parallelism は並列数
-	// なので、 count >= parallelism である必要があります
-	if c.Count < c.Parallelism {
+	// なので、 count > 0 の場合は count >= parallelism である必要があります
+	if c.Count > 0 && c.Count < c.Parallelism {
 		return fmt.Errorf("count must be greater than or equal to parallelism")
 	}
 
