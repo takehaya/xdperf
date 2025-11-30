@@ -94,13 +94,13 @@ int xdp_tx(struct xdp_md *ctx)
     state->idx = next;
 
     // sended packet stats
-    struct datarec *rec = bpf_map_lookup_elem(&stats_map, &zero);
+    struct datarec *rec = bpf_map_lookup_elem(&tx_stats_map, &zero);
     if (!rec) {
         DEBUG_PRINT("stats_map lookup failed\n");
         return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
     }
-    rec->rx_packets++;
-    rec->rx_bytes += ctx->data_end - ctx->data;
+    rec->packets++;
+    rec->bytes += ctx->data_end - ctx->data;
     DEBUG_PRINT("tx: cnt=%u idx=%u len=%u\n", count, idx, ctx->data_end - ctx->data);
     return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);
 };
@@ -114,7 +114,7 @@ SEC("xdp")
 int xdp_rx(struct xdp_md *ctx)
 {
     int key = 0;
-    struct datarec *rec = bpf_map_lookup_elem(&stats_map, &key);
+    struct datarec *rec = bpf_map_lookup_elem(&rx_stats_map, &key);
     if (!rec)
         return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
 
@@ -162,8 +162,8 @@ int xdp_rx(struct xdp_md *ctx)
         swap_mac(eth);
         swap_ipv4(iph);
 
-        rec->rx_packets++;
-        rec->rx_bytes += (__u64)(data_end - data);
+        rec->packets++;
+        rec->bytes += (__u64)(data_end - data);
     } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
         ip6h = l3_hdr;
         if ((void *)ip6h + sizeof(*ip6h) > data_end)
@@ -173,12 +173,12 @@ int xdp_rx(struct xdp_md *ctx)
         swap_mac(eth);
         swap_ipv6(ip6h);
 
-        rec->rx_packets++;
-        rec->rx_bytes += (__u64)(data_end - data);
+        rec->packets++;
+        rec->bytes += (__u64)(data_end - data);
     } else {
         return xdpcap_exit(ctx, &xdpcap_hook, XDP_PASS);
     }
-    if (server_mode == 0) {
+    if (swap_resp == 0) {
         return xdpcap_exit(ctx, &xdpcap_hook, XDP_DROP);
     }
     return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);

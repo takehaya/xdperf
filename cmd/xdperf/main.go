@@ -80,6 +80,10 @@ func newApp(version string) *cli.App {
 			Value: 0,
 			Usage: "debug mode level (0: none, 1: on, 2: full verbose)",
 		},
+		cli.BoolFlag{
+			Name:  "server-swap-resp, swap",
+			Usage: "server mode: swap response packets (for echo server)",
+		},
 	}
 	app.Action = run
 	return app
@@ -101,6 +105,7 @@ func run(ctx *cli.Context) error {
 	c.Count = ctx.Int("count")
 	c.DebugMode = ctx.Int("debugmode")
 	c.PluginLanguage = ctx.String("plugin-language")
+	c.ServerSwapResp = ctx.Bool("server-swap-resp")
 
 	if c.DebugMode > 0 {
 		// set verbose logging
@@ -128,8 +133,10 @@ func run(ctx *cli.Context) error {
 	defer xdp.Close()
 
 	if c.ServerFlag {
-		// TODO: サーバーモードの実装
-		xdp.Logger.Info("server mode not implemented yet")
+		err = xdp.StartServer(context.Background())
+		if err != nil {
+			return fmt.Errorf("xdperf server start failed: %w", err)
+		}
 		return nil
 	}
 

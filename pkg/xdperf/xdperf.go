@@ -50,8 +50,15 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		return nil, fmt.Errorf("failed load plugin: %w", err)
 	}
 	cleanupFnList = append(cleanupFnList, pm.Close)
-
-	obj, err := coreelf.ReadCollection()
+	consts := map[string]interface{}{
+		"swap_resp": func() uint32 {
+			if cfg.ServerFlag && cfg.ServerSwapResp {
+				return 1
+			}
+			return 0
+		}(),
+	}
+	obj, err := coreelf.ReadCollection(consts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load eBPF objects: %w", err)
 	}
@@ -245,7 +252,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go x.ShowStats(ctx)
+	go x.ShowStats(ctx, x.bpfobjs.TxStatsMap)
 	prog := x.choiceTXBPFProgram()
 
 	x.Logger.Info("TX packet processing started")

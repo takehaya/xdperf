@@ -14,9 +14,9 @@ import (
 )
 
 type BpfDatarec struct {
-	_         structs.HostLayout
-	RxPackets uint64
-	RxBytes   uint64
+	_       structs.HostLayout
+	Packets uint64
+	Bytes   uint64
 }
 
 type BpfPktState struct {
@@ -74,6 +74,7 @@ type BpfSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
 	XdpPassDummy *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
+	XdpRx        *ebpf.ProgramSpec `ebpf:"xdp_rx"`
 	XdpTx        *ebpf.ProgramSpec `ebpf:"xdp_tx"`
 }
 
@@ -82,8 +83,9 @@ type BpfProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
 	PktStateMap   *ebpf.MapSpec `ebpf:"pkt_state_map"`
-	StatsMap      *ebpf.MapSpec `ebpf:"stats_map"`
+	RxStatsMap    *ebpf.MapSpec `ebpf:"rx_stats_map"`
 	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
+	TxStatsMap    *ebpf.MapSpec `ebpf:"tx_stats_map"`
 	XdpcapHook    *ebpf.MapSpec `ebpf:"xdpcap_hook"`
 }
 
@@ -91,7 +93,7 @@ type BpfMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfVariableSpecs struct {
-	ServerMode *ebpf.VariableSpec `ebpf:"server_mode"`
+	SwapResp *ebpf.VariableSpec `ebpf:"swap_resp"`
 }
 
 // BpfObjects contains all objects after they have been loaded into the kernel.
@@ -115,16 +117,18 @@ func (o *BpfObjects) Close() error {
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
 	PktStateMap   *ebpf.Map `ebpf:"pkt_state_map"`
-	StatsMap      *ebpf.Map `ebpf:"stats_map"`
+	RxStatsMap    *ebpf.Map `ebpf:"rx_stats_map"`
 	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
+	TxStatsMap    *ebpf.Map `ebpf:"tx_stats_map"`
 	XdpcapHook    *ebpf.Map `ebpf:"xdpcap_hook"`
 }
 
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
 		m.PktStateMap,
-		m.StatsMap,
+		m.RxStatsMap,
 		m.TxOverrideMap,
+		m.TxStatsMap,
 		m.XdpcapHook,
 	)
 }
@@ -133,7 +137,7 @@ func (m *BpfMaps) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfVariables struct {
-	ServerMode *ebpf.Variable `ebpf:"server_mode"`
+	SwapResp *ebpf.Variable `ebpf:"swap_resp"`
 }
 
 // BpfPrograms contains all programs after they have been loaded into the kernel.
@@ -141,12 +145,14 @@ type BpfVariables struct {
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
 	XdpPassDummy *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpRx        *ebpf.Program `ebpf:"xdp_rx"`
 	XdpTx        *ebpf.Program `ebpf:"xdp_tx"`
 }
 
 func (p *BpfPrograms) Close() error {
 	return _BpfClose(
 		p.XdpPassDummy,
+		p.XdpRx,
 		p.XdpTx,
 	)
 }

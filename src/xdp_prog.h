@@ -13,8 +13,8 @@
 #endif
 
 struct datarec {
-    __u64 rx_packets;
-    __u64 rx_bytes;
+    __u64 packets;
+    __u64 bytes;
 };
 
 struct {
@@ -22,7 +22,14 @@ struct {
     __type(key, __u32);
     __type(value, struct datarec);
     __uint(max_entries, 1);
-} stats_map SEC(".maps");
+} tx_stats_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct datarec);
+    __uint(max_entries, 1);
+} rx_stats_map SEC(".maps");
 
 #define MAX_PACKET_ENTRY 1024 * 128
 #define MAX_TEMPLATE_SIZE 2048

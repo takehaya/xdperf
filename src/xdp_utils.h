@@ -6,7 +6,7 @@
 #include <linux/ipv6.h>
 #include <linux/in.h>
 
-volatile int server_mode = 0;
+volatile __u32 swap_resp = 0;
 
 struct vlan_hdr {
     __be16 h_vlan_TCI;
@@ -15,7 +15,7 @@ struct vlan_hdr {
 
 static __always_inline void swap_mac(struct ethhdr *eth)
 {
-     if (server_mode == 0) {
+    if (swap_resp == 0) {
         return;
     }
     __u8 tmp[ETH_ALEN];
@@ -26,7 +26,7 @@ static __always_inline void swap_mac(struct ethhdr *eth)
 
 static __always_inline void swap_ipv4(struct iphdr *iph)
 {
-    if (server_mode == 0) {
+    if (swap_resp == 0) {
         return;
     }
     __be32 tmp = iph->saddr;
@@ -36,7 +36,7 @@ static __always_inline void swap_ipv4(struct iphdr *iph)
 
 static __always_inline void swap_ipv6(struct ipv6hdr *ip6h)
 {
-     if (server_mode == 0) {
+    if (swap_resp == 0) {
         return;
     }
     struct in6_addr tmp = ip6h->saddr;
