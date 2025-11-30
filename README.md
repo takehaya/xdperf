@@ -1,6 +1,6 @@
 # XDPerf
 
-<img src="./docs/imgs/logo.png" alt="XDPerf image" style="max-width: 500px; width: 100%;">
+<img src="./docs/imgs/logo.png" alt="XDPerf image" style="max-width: 300px; width: 100%;">
 
 XDPerf is a high-performance network traffic generation tool that leverages XDP (eXpress Data Path). It can operate in both client and server modes, enabling measurement of network throughput and packet rate.
 
@@ -29,28 +29,6 @@ sudo xdperf --device <interface> [options]
 
 By default, `simpleudp.tinygo` plugin is used (installed at `/usr/local/share/xdperf/plugins`).
 For custom plugin development, see [Plugin Development Guide](./plugins/README.md).
-
-### Operating Modes
-
-xdperf has two primary operating modes:
-
-| Mode | Flags | Description |
-|------|-------|-------------|
-| **Client Mode** | `--send=true` (default) | Send packets using WASM plugin |
-| **Server Mode** | `--send=false --recv=true` | Receive and count packets |
-| **Both Mode** | `--send=true --recv=true` | Send packets and count received packets |
-
-**Client Mode** loads a WASM plugin to generate packet templates, writes them to eBPF maps, and transmits packets via XDP. Supports PPS rate limiting and parallel execution.
-
-**Server Mode** attaches an XDP program to the NIC to count incoming packets. With `--swap-resp`, it acts as an echo server (swaps MAC/IP and sends back). No plugin required.
-
-| `--send` | `--recv` | `--swap-resp` | Behavior |
-|----------|----------|---------------|----------|
-| true | false | - | Send only (default) |
-| true | true | false | Send + count received |
-| true | true | true | Send + echo received |
-| false | true | false | Count received only |
-| false | true | true | Echo server |
 
 ### Basic Examples
 
@@ -163,6 +141,27 @@ make bpf-gen
 ```
 
 ## CLI Options Reference
+### Operating Modes
+
+xdperf has two primary operating modes:
+
+| Mode | Flags | Description |
+|------|-------|-------------|
+| **Client Mode** | `--send=true` (default) | Send packets using WASM plugin |
+| **Server Mode** | `--send=false --recv=true` | Receive and count packets |
+| **Both Mode** | `--send=true --recv=true` | Send packets and count received packets |
+
+**Client Mode** loads a WASM plugin to generate packet templates, writes them to eBPF maps, and transmits packets via XDP. Supports PPS rate limiting and parallel execution.
+
+**Server Mode** attaches an XDP program to the NIC to count incoming packets. With `--swap-resp`, it acts as an echo server (swaps MAC/IP and sends back). No plugin required.
+
+| `--send` | `--recv` | `--swap-resp` | Behavior |
+|----------|----------|---------------|----------|
+| true | false | - | Send only (default) |
+| true | true | false | Send + count received |
+| true | true | true | Send + echo received |
+| false | true | false | Count received only |
+| false | true | true | Echo server |
 
 ### Option Reference
 
