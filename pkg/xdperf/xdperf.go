@@ -40,24 +40,36 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		return nil, fmt.Errorf("failed init logger: %w", err)
 	}
 	cleanupFnList = append(cleanupFnList, cleanup)
+	var pm *plugin.Manager
+	if cfg.Sender {
+		pm, err = plugin.NewManager(cfg.PluginPath, cfg.PluginConfig, cfg.PluginLanguage)
+		if err != nil {
+			return nil, fmt.Errorf("failed init plugin manager: %w", err)
+		}
 
-	pm, err := plugin.NewManager(cfg.PluginPath, cfg.PluginConfig, cfg.PluginLanguage)
-	if err != nil {
-		return nil, fmt.Errorf("failed init plugin manager: %w", err)
+		if err = pm.LoadPlugin(context.Background(), cfg.PluginName); err != nil {
+			return nil, fmt.Errorf("failed load plugin: %w", err)
+		}
+		cleanupFnList = append(cleanupFnList, pm.Close)
+		logger.Info("xdperf wasm plugin loader initialized")
 	}
 
-	if err = pm.LoadPlugin(context.Background(), cfg.PluginName); err != nil {
-		return nil, fmt.Errorf("failed load plugin: %w", err)
+	consts := map[string]interface{}{
+		"swap_resp": func() uint32 {
+			if cfg.Receiver && cfg.SwapResp {
+				return 1
+			}
+			return 0
+		}(),
 	}
-	cleanupFnList = append(cleanupFnList, pm.Close)
-
-	obj, err := coreelf.ReadCollection()
+	obj, err := coreelf.ReadCollection(consts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load eBPF objects: %w", err)
 	}
 	cleanupFnList = append(cleanupFnList, func(ctx context.Context) error {
 		return obj.Close()
 	})
+	logger.Info("xdperf xdp code loader initialized")
 
 	if cfg.Device == "" {
 		return nil, fmt.Errorf("device is required")
@@ -220,10 +232,15 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to build sample packet: %w", err)
 	}
-
+	ttype := TrafficTypeTX
+	rxprog := x.bpfobjs.XdpPassDummy
+	if x.cfg.Sender && x.cfg.Receiver {
+		ttype = TrafficTypeBoth
+		rxprog = x.bpfobjs.XdpRx
+	}
 	// dummy XDP Prog attachment
 	l, err := link.AttachXDP(link.XDPOptions{
-		Program:   x.bpfobjs.XdpPassDummy,
+		Program:   rxprog,
 		Interface: x.Device.Index,
 	})
 	if err != nil {
@@ -245,7 +262,8 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go x.ShowStats(ctx)
+
+	go x.ShowStats(ctx, ttype)
 	prog := x.choiceTXBPFProgram()
 
 	x.Logger.Info("TX packet processing started")
