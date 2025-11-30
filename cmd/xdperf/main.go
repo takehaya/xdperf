@@ -78,15 +78,26 @@ func newApp(version string) *cli.App {
 			Value: 1,
 			Usage: "number of parallel packet sending threads",
 		},
-		cli.IntFlag{
+		cli.StringFlag{
 			Name:  "count, c",
-			Value: 1,
-			Usage: "number of packets to send",
+			Usage: "number of packets to send (e.g., 100k, 1m). Required if --duration not specified",
+		},
+		cli.DurationFlag{
+			Name:  "duration, t",
+			Usage: "duration to send packets (e.g., 10s, 1m). Required if --count not specified",
 		},
 		cli.IntFlag{
 			Name:  "debugmode, D",
 			Value: 0,
 			Usage: "debug mode level (0: none, 1: on, 2: full verbose)",
+		},
+		cli.StringFlag{
+			Name:  "pps",
+			Usage: "target packets per second (e.g., 100k, 1m). Empty for max speed",
+		},
+		cli.BoolFlag{
+			Name:  "show-nic-stats",
+			Usage: "show NIC-level statistics (may include other traffic on the same interface)",
 		},
 	}
 	app.Action = run
@@ -107,10 +118,27 @@ func run(ctx *cli.Context) error {
 	c.Receiver = ctx.Bool("recv")
 	c.Device = ctx.String("device")
 	c.Parallelism = ctx.Int("parallelism")
-	c.Count = ctx.Int("count")
+	c.Duration = ctx.Duration("duration")
 	c.DebugMode = ctx.Int("debugmode")
 	c.PluginLanguage = ctx.String("plugin-language")
 	c.SwapResp = ctx.Bool("swap-resp")
+	c.ShowNICStats = ctx.Bool("show-nic-stats")
+
+	// Parse count
+	countStr := ctx.String("count")
+	count, err := xdperf.ParseCount(countStr)
+	if err != nil {
+		return fmt.Errorf("invalid count value: %w", err)
+	}
+	c.Count = count
+
+	// Parse PPS
+	ppsStr := ctx.String("pps")
+	pps, err := xdperf.ParsePPS(ppsStr)
+	if err != nil {
+		return fmt.Errorf("invalid PPS value: %w", err)
+	}
+	c.PPS = pps
 
 	if c.DebugMode > 0 {
 		// set verbose logging
@@ -120,6 +148,17 @@ func run(ctx *cli.Context) error {
 	// Validate config
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
+	}
+
+	// Calculate count from duration if specified (after validation)
+	// Use float64 to support sub-second durations (e.g., 0.5s, 500ms)
+	if c.Duration > 0 && c.PPS > 0 {
+		c.Count = uint64(float64(c.PPS) * c.Duration.Seconds())
+	}
+
+	// Post-validation: check count >= parallelism after duration calculation
+	if c.Count > 0 && c.Count < uint64(c.Parallelism) {
+		return fmt.Errorf("calculated count (%d) must be greater than or equal to parallelism (%d)", c.Count, c.Parallelism)
 	}
 
 	// plugin config load

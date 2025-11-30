@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -167,7 +168,7 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessRespons
 	}
 
 	// require base config for plugin
-	pluginConfig["count"] = uint64(x.cfg.Count)
+	pluginConfig["count"] = x.cfg.Count
 	pluginConfig["device_mac_addr"] = x.Device.HardwareAddr
 	pluginConfig["device_name"] = x.Device.Name
 
@@ -199,7 +200,7 @@ func (x *Xdperf) convToTxOverrideEntry(resp *guest.GeneratorProcessResponse) ([]
 	case guest.GeneratorTemplateTypeRaw:
 		return x.convRawTemplate(resp.RawPacketTemplate)
 	case guest.GeneratorTemplateTypeVariable:
-		return x.convVariableTemplate(resp.VariablePacketTemplate, uint64(x.cfg.Count), x.cfg.Parallelism)
+		return x.convVariableTemplate(resp.VariablePacketTemplate, x.cfg.Count, x.cfg.Parallelism)
 	default:
 		return nil, fmt.Errorf("unknown template type: %s", resp.TemplateType)
 	}
@@ -252,11 +253,21 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		DataEnd:        uint32(len(in)),
 		IngressIfindex: uint32(x.Device.Index),
 	}
+
+	// Calculate batch parameters based on PPS setting
+	repeatPerBatch, interval, totalBatches := x.calculateBatchParams()
+
 	runOpts := &ebpf.RunOptions{
 		Data:    in,
-		Repeat:  uint32(x.cfg.Count / x.cfg.Parallelism),
+		Repeat:  repeatPerBatch,
 		Flags:   unix.BPF_F_TEST_XDP_LIVE_FRAMES,
 		Context: xdpmd,
+	}
+
+	// Get NIC stats before sending (only if flag is set)
+	var nicStatsBefore NICStats
+	if x.cfg.ShowNICStats {
+		nicStatsBefore = x.GetNICStats()
 	}
 
 	var wg sync.WaitGroup
@@ -266,7 +277,22 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	go x.ShowStats(ctx, ttype)
 	prog := x.choiceTXBPFProgram()
 
-	x.Logger.Info("TX packet processing started")
+	mode := "max speed"
+	if x.cfg.PPS > 0 {
+		mode = "rate limited"
+	}
+	x.Logger.Info("TX packet processing started ("+mode+")",
+		zap.Int("parallelism", x.cfg.Parallelism),
+		zap.Uint64("total_count", x.cfg.Count),
+		zap.Uint64("target_pps", x.cfg.PPS),
+		zap.Uint32("repeat_per_batch", repeatPerBatch),
+		zap.Uint32("total_batches_per_cpu", totalBatches),
+		zap.Duration("batch_interval", interval),
+	)
+
+	// Fail Fast: cancel all goroutines on first error
+	var once sync.Once
+	var firstErr error
 
 	for i := range x.cfg.Parallelism {
 		p, err := prog.Clone()
@@ -277,54 +303,144 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		go func(cpu int) {
 			defer wg.Done()
 			defer p.Close()
-			if err := x.run(ctx, cpu, p, runOpts); err != nil {
+			if err := x.run(ctx, cpu, p, runOpts, interval, totalBatches); err != nil {
 				x.Logger.Error("error in run", zap.Int("cpu", cpu), zap.Error(err))
+				// Fail Fast: cancel all other goroutines on first error
+				once.Do(func() {
+					firstErr = err
+					cancel()
+				})
 			}
 		}(i)
 	}
 
+	// Wait for either signal or all goroutines to complete
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-	x.Logger.Info("Exec done. Shutting down client...")
+
+	select {
+	case <-sig:
+		x.Logger.Info("Received signal. Shutting down client...")
+	case <-done:
+		if firstErr != nil {
+			x.Logger.Error("Shutting down due to worker error...")
+		} else {
+			x.Logger.Info("All packets sent. Shutting down client...")
+		}
+	}
 	cancel()
 	wg.Wait()
 
+	// Show final statistics with NIC stats comparison
+	x.ShowFinalStats(nicStatsBefore)
+
+	if firstErr != nil {
+		return fmt.Errorf("worker failed: %w", firstErr)
+	}
 	return nil
 }
 
-func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts *ebpf.RunOptions) error {
+// calculateBatchParams calculates the repeat count per batch, interval between batches, and total batches.
+// Returns (repeatPerBatch, interval, totalBatches)
+// - repeatPerBatch: number of packets per bpf_prog_run call
+// - interval: time between batches (0 means no rate limiting, run as fast as possible)
+// - totalBatches: total number of batches to send per CPU
+func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32) {
+	packetsPerCPU := uint32(x.cfg.Count / uint64(x.cfg.Parallelism))
+
+	if x.cfg.PPS == 0 {
+		// Max speed: send all packets in one batch
+		return packetsPerCPU, 0, 1
+	}
+
+	// PPS limited: calculate batch parameters
+	ppsPerCPU := x.cfg.PPS / uint64(x.cfg.Parallelism)
+	if ppsPerCPU == 0 {
+		ppsPerCPU = 1
+	}
+
+	// Target batch interval: 100ms for good balance between precision and overhead
+	const targetBatchIntervalMs = 100
+	packetsPerBatch := uint32(ppsPerCPU * targetBatchIntervalMs / 1000)
+
+	if packetsPerBatch < 1 {
+		packetsPerBatch = 1
+	}
+	if packetsPerBatch > packetsPerCPU {
+		packetsPerBatch = packetsPerCPU
+	}
+
+	// Calculate total batches needed to send all packets
+	totalBatches := packetsPerCPU / packetsPerBatch
+	if totalBatches < 1 {
+		totalBatches = 1
+	}
+
+	// Calculate interval based on packets per batch and target PPS
+	// interval = packetsPerBatch / ppsPerCPU (in seconds)
+	intervalNs := float64(packetsPerBatch) * float64(time.Second) / float64(ppsPerCPU)
+	interval := time.Duration(intervalNs)
+
+	// Minimum interval to avoid busy loop
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+
+	return packetsPerBatch, interval, totalBatches
+}
+
+func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts *ebpf.RunOptions, interval time.Duration, totalBatches uint32) error {
 	runtime.LockOSThread()
 	var cpuset unix.CPUSet
 	cpuset.Set(cpu)
 	if err := unix.SchedSetaffinity(unix.Gettid(), &cpuset); err != nil {
 		return fmt.Errorf("failed to set CPU affinity: %v", err)
 	}
-	ret, err := xdpProg.Run(runOpts)
-	if err != nil {
-		return fmt.Errorf("bpf_prog_run failed: %w", err)
-	}
-	if ret != 0 {
-		return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
+
+	// Unlimited mode: single batch execution
+	if interval == 0 {
+		ret, err := xdpProg.Run(runOpts)
+		if err != nil {
+			return fmt.Errorf("bpf_prog_run failed: %w", err)
+		}
+		if ret != 0 {
+			return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
+		}
+		return nil
 	}
 
-	// interval := float64(time.Second) * float64(x.cfg.Count) * float64(x.cfg.Parallelism) / float64(x.cfg.PPS)
-	// ticker := time.NewTicker(time.Duration(interval))
-	// defer ticker.Stop()
-	// for {
-	// 	select {
-	// 	case <-ticker.C:
-	// 		ret, err := xdpProg.Run(runOpts)
-	// 		if err != nil {
-	// 			return fmt.Errorf("bpf_prog_run failed: %w", err)
-	// 		}
-	// 		if ret != 0 {
-	// 			return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
-	// 		}
-	// 	case <-ctx.Done():
-	// 		return nil
-	// 	}
-	// }
+	// PPS mode: rate-limited batch execution
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	var sentBatches uint32
+	for sentBatches < totalBatches {
+		// Send batch
+		ret, err := xdpProg.Run(runOpts)
+		if err != nil {
+			return fmt.Errorf("bpf_prog_run failed: %w", err)
+		}
+		if ret != 0 {
+			return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
+		}
+		sentBatches++
+
+		// Wait for next tick (unless this was the last batch)
+		if sentBatches < totalBatches {
+			select {
+			case <-ticker.C:
+				// continue to next batch
+			case <-ctx.Done():
+				return nil
+			}
+		}
+	}
 	return nil
 }
 

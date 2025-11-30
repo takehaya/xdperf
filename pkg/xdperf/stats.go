@@ -3,11 +3,16 @@ package xdperf
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"golang.org/x/text/message"
+	"go.uber.org/zap"
 )
 
 type TrafficType string
@@ -72,4 +77,91 @@ func (x *Xdperf) getStats(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPack
 	*prevPackets = sumPackets
 	*prevBytes = sumBytes
 	return deltaPackets, deltaBytes
+}
+
+// NICStats holds NIC-level statistics for XDP
+type NICStats struct {
+	TxXdpPackets uint64
+	TxXdpDropped uint64
+}
+
+// GetNICStats reads XDP-related statistics from /sys/class/net/<device>/statistics/
+func (x *Xdperf) GetNICStats() NICStats {
+	var stats NICStats
+	basePath := filepath.Join("/sys/class/net", x.Device.Name, "statistics")
+
+	// Read tx_packets
+	txPacketsPath := filepath.Join(basePath, "tx_packets")
+	if data, err := os.ReadFile(txPacketsPath); err != nil {
+		x.Logger.Debug("failed to read NIC stats", zap.String("path", txPacketsPath), zap.Error(err))
+	} else {
+		if v, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err != nil {
+			x.Logger.Debug("failed to parse NIC stats", zap.String("path", txPacketsPath), zap.Error(err))
+		} else {
+			stats.TxXdpPackets = v
+		}
+	}
+
+	// Read tx_dropped
+	txDroppedPath := filepath.Join(basePath, "tx_dropped")
+	if data, err := os.ReadFile(txDroppedPath); err != nil {
+		x.Logger.Debug("failed to read NIC stats", zap.String("path", txDroppedPath), zap.Error(err))
+	} else {
+		if v, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err != nil {
+			x.Logger.Debug("failed to parse NIC stats", zap.String("path", txDroppedPath), zap.Error(err))
+		} else {
+			stats.TxXdpDropped = v
+		}
+	}
+
+	return stats
+}
+
+// ShowFinalStats displays the final statistics after all packets have been sent.
+func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
+	possibleCPUs := ebpf.MustPossibleCPU()
+	recs := make([]coreelf.BpfDatarec, possibleCPUs)
+
+	var key uint32
+	err := x.bpfobjs.TxStatsMap.Lookup(&key, &recs)
+	if err != nil {
+		x.Logger.Error("failed to lookup stats_map", zap.Error(err))
+		return
+	}
+	var sumPackets uint64
+	var sumBytes uint64
+	for _, rec := range recs {
+		sumPackets += rec.Packets
+		sumBytes += rec.Bytes
+	}
+
+	x.Logger.Info("final statistics",
+		zap.Uint64("packets_processed", sumPackets),
+		zap.Uint64("total_bytes", sumBytes),
+		zap.Float64("total_megabytes", float64(sumBytes)/1024/1024),
+	)
+
+	// NIC statistics (only if flag is set)
+	if x.cfg.ShowNICStats {
+		nicStatsAfter := x.GetNICStats()
+		nicTxDelta := nicStatsAfter.TxXdpPackets - nicStatsBefore.TxXdpPackets
+		nicDropDelta := nicStatsAfter.TxXdpDropped - nicStatsBefore.TxXdpDropped
+
+		fields := []zap.Field{
+			zap.Uint64("nic_tx_packets", nicTxDelta),
+			zap.Uint64("nic_tx_dropped", nicDropDelta),
+		}
+
+		// Calculate actual drop rate based on XDP processed vs NIC TX
+		if sumPackets > nicTxDelta {
+			droppedPackets := sumPackets - nicTxDelta
+			dropRate := float64(droppedPackets) / float64(sumPackets) * 100
+			fields = append(fields,
+				zap.Uint64("xdp_to_nic_dropped", droppedPackets),
+				zap.Float64("drop_rate_percent", dropRate),
+			)
+		}
+
+		x.Logger.Info("NIC statistics (may include other traffic on the same interface)", fields...)
+	}
 }
