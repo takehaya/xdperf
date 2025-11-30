@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
+	"golang.org/x/text/message"
 	"go.uber.org/zap"
 )
 
@@ -24,6 +26,7 @@ const (
 func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 	possibleCPUs := ebpf.MustPossibleCPU()
 	recs := make([]coreelf.BpfDatarec, possibleCPUs)
+	p := message.NewPrinter(message.MatchLanguage("en"))
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -36,37 +39,18 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 			switch ty {
 			case TrafficTypeTX:
 				deltaPackets, deltaBytes := x.getStats(x.bpfobjs.TxStatsMap, recs, &prevTxPackets, &prevTxBytes)
-				if x.cfg.PPS > 0 {
-					achievedRatio := float64(deltaPackets) / float64(x.cfg.PPS) * 100
-					x.Logger.Info("stats",
-						zap.Uint64("xmit_per_sec", deltaPackets),
-						zap.Float64("achieved_ratio_percent", achievedRatio),
-						zap.Uint64("target_pps", x.cfg.PPS),
-						zap.Float64("mbps", float64(deltaBytes*8)/1024/1024),
-					)
-				} else {
-					x.Logger.Info("stats",
-						zap.Uint64("xmit_per_sec", deltaPackets),
-						zap.Float64("mbps", float64(deltaBytes*8)/1024/1024),
-					)
-				}
+				p.Printf("%d xmit/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
 			case TrafficTypeRX:
 				deltaPackets, deltaBytes := x.getStats(x.bpfobjs.RxStatsMap, recs, &prevRxPackets, &prevRxBytes)
-				x.Logger.Info("stats",
-					zap.Uint64("recv_per_sec", deltaPackets),
-					zap.Float64("mbps", float64(deltaBytes*8)/1024/1024),
-				)
+				p.Printf("%d recv/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
 			case TrafficTypeBoth:
 				txDeltaPackets, txDeltaBytes := x.getStats(x.bpfobjs.TxStatsMap, recs, &prevTxPackets, &prevTxBytes)
 				rxDeltaPackets, rxDeltaBytes := x.getStats(x.bpfobjs.RxStatsMap, recs, &prevRxPackets, &prevRxBytes)
-				x.Logger.Info("stats",
-					zap.Uint64("xmit_per_sec", txDeltaPackets),
-					zap.Float64("mbps_xmit", float64(txDeltaBytes*8)/1024/1024),
-					zap.Uint64("recv_per_sec", rxDeltaPackets),
-					zap.Float64("mbps_recv", float64(rxDeltaBytes*8)/1024/1024),
-				)
+				p.Printf("%d xmit/s, %.2f Mbps(xmit), %d recv/s, %.2f Mbps(recv)\n",
+					txDeltaPackets, float64(txDeltaBytes*8)/1024/1024,
+					rxDeltaPackets, float64(rxDeltaBytes*8)/1024/1024)
 			default:
-				x.Logger.Error("unknown traffic type", zap.String("type", string(ty)))
+				fmt.Printf("unknown traffic type: %s\n", ty)
 				return
 			}
 		case <-ctx.Done():
@@ -79,7 +63,7 @@ func (x *Xdperf) getStats(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPack
 	var key uint32
 	err := statMap.Lookup(&key, &recs)
 	if err != nil {
-		x.Logger.Error("failed to lookup stats_map", zap.Error(err))
+		fmt.Printf("failed to lookup stats_map: %v\n", err)
 		return 0, 0
 	}
 	var sumPackets uint64
