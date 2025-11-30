@@ -21,7 +21,7 @@ func (x *Xdperf) StartServer(ctx context.Context) error {
 		x.Logger.Info("detaching XDP program")
 		return l.Close()
 	})
-	go x.ShowStats(ctx, x.bpfobjs.RxStatsMap)
+	go x.ShowStats(ctx, TrafficTypeRX)
 	// Wait for termination signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

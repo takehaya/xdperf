@@ -10,7 +10,14 @@ import (
 	"golang.org/x/text/message"
 )
 
-func (x *Xdperf) ShowStats(ctx context.Context, statMap *ebpf.Map) {
+type TrafficType string
+
+const (
+	TrafficTypeTX TrafficType = "tx"
+	TrafficTypeRX TrafficType = "rx"
+)
+
+func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 	var prevPackets uint64
 	var prevBytes uint64
 	possibleCPUs := ebpf.MustPossibleCPU()
@@ -18,7 +25,19 @@ func (x *Xdperf) ShowStats(ctx context.Context, statMap *ebpf.Map) {
 	p := message.NewPrinter(message.MatchLanguage("en"))
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
-
+	var statMap *ebpf.Map
+	showSuffix := ""
+	switch ty {
+	case TrafficTypeTX:
+		statMap = x.bpfobjs.TxStatsMap
+		showSuffix = "xmit"
+	case TrafficTypeRX:
+		statMap = x.bpfobjs.RxStatsMap
+		showSuffix = "recv"
+	default:
+		fmt.Printf("unknown traffic type: %s\n", ty)
+		return
+	}
 	for {
 		select {
 		case <-ticker.C:
@@ -38,7 +57,7 @@ func (x *Xdperf) ShowStats(ctx context.Context, statMap *ebpf.Map) {
 			deltaBytes := sumBytes - prevBytes
 			prevPackets = sumPackets
 			prevBytes = sumBytes
-			p.Printf("%d xmit/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
+			p.Printf("%d %s/s, %.2f Mbps\n", deltaPackets, showSuffix, float64(deltaBytes*8)/1024/1024)
 		case <-ctx.Done():
 			return
 		}
