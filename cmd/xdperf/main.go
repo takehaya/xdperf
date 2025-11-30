@@ -79,9 +79,9 @@ func newApp(version string) *cli.App {
 			Value: 1,
 			Usage: "number of parallel packet sending threads",
 		},
-		cli.IntFlag{
+		cli.StringFlag{
 			Name:  "count, c",
-			Usage: "number of packets to send (required if --duration not specified)",
+			Usage: "number of packets to send (e.g., 100k, 1m). Required if --duration not specified",
 		},
 		cli.DurationFlag{
 			Name:  "duration, t",
@@ -116,11 +116,18 @@ func run(ctx *cli.Context) error {
 	c.Receiver = ctx.Bool("recv")
 	c.Device = ctx.String("device")
 	c.Parallelism = ctx.Int("parallelism")
-	c.Count = ctx.Int("count")
 	c.Duration = ctx.Duration("duration")
 	c.DebugMode = ctx.Int("debugmode")
 	c.PluginLanguage = ctx.String("plugin-language")
 	c.SwapResp = ctx.Bool("swap-resp")
+
+	// Parse count
+	countStr := ctx.String("count")
+	count, err := xdperf.ParseCount(countStr)
+	if err != nil {
+		return fmt.Errorf("invalid count value: %w", err)
+	}
+	c.Count = int(count)
 
 	// Parse PPS
 	ppsStr := ctx.String("pps")
@@ -130,19 +137,19 @@ func run(ctx *cli.Context) error {
 	}
 	c.PPS = pps
 
-	// Calculate count from duration if specified
-	if c.Duration > 0 && c.PPS > 0 {
-		c.Count = int(c.PPS * uint64(c.Duration/time.Second))
-	}
-
 	if c.DebugMode > 0 {
 		// set verbose logging
 		c.LoggerConfig.Verbose = 1
 	}
 
-	// Validate config
+	// Validate config (before calculating count from duration)
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
+	}
+
+	// Calculate count from duration if specified (after validation)
+	if c.Duration > 0 && c.PPS > 0 {
+		c.Count = int(c.PPS * uint64(c.Duration/time.Second))
 	}
 
 	// plugin config load

@@ -6,10 +6,10 @@ import (
 	"strings"
 )
 
-// ParsePPS parses a PPS string with optional suffix (k, m).
+// ParseCount parses a count string with optional suffix (k, m).
 // Examples: "100k" -> 100000, "1m" -> 1000000, "50000" -> 50000
-// Returns 0 if empty string (meaning unlimited/max speed)
-func ParsePPS(s string) (uint64, error) {
+// Returns 0 if empty string.
+func ParseCount(s string) (uint64, error) {
 	if s == "" {
 		return 0, nil
 	}
@@ -30,13 +30,19 @@ func ParsePPS(s string) (uint64, error) {
 
 	value, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("invalid PPS value: %s", s)
+		return 0, fmt.Errorf("invalid value: %s", s)
 	}
 
-	result := value * multiplier
-	if result == 0 {
-		return 0, fmt.Errorf("PPS must be greater than 0 when specified")
-	}
+	return value * multiplier, nil
+}
 
+// ParsePPS parses a PPS string with optional suffix (k, m).
+// Examples: "100k" -> 100000, "1m" -> 1000000, "50000" -> 50000
+// Returns 0 if empty string (meaning unlimited/max speed)
+func ParsePPS(s string) (uint64, error) {
+	result, err := ParseCount(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid PPS value: %w", err)
+	}
 	return result, nil
 }
