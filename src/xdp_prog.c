@@ -128,7 +128,7 @@ int xdp_rx(struct xdp_md *ctx)
     void *l3_hdr;
 
     if (data + sizeof(*eth) > data_end)
-        return  xdpcap_exit(ctx, &xdpcap_hook, XDP_PASS);
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_PASS);
 
     eth_proto = eth->h_proto;
     l3_hdr = data + sizeof(*eth);

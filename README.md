@@ -15,7 +15,7 @@ Note: You need to install `jq` beforehand.
 curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/install_xdperf.sh | sudo sh
 
 # extra: select version mode
-curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/install_xdperf.sh | sudo sh -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/takehaya/xdperf/main/scripts/install_xdperf.sh | sudo sh -s -- --version v0.5.3
 ```
 
 ## How To Use
