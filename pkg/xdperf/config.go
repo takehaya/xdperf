@@ -33,11 +33,18 @@ type Config struct {
 }
 
 func (c *Config) Validate() error {
-	if c.PluginName == "" {
-		return fmt.Errorf("plugin name is required")
-	}
 	if c.Device == "" {
 		return fmt.Errorf("device is required")
+	}
+
+	// Server mode (recv only) doesn't require sender-specific validations
+	if !c.Sender && c.Receiver {
+		return nil
+	}
+
+	// Sender-specific validations
+	if c.PluginName == "" {
+		return fmt.Errorf("plugin name is required")
 	}
 	if c.Parallelism <= 0 {
 		return fmt.Errorf("parallelism must be positive")
