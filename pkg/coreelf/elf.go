@@ -4,12 +4,18 @@ import (
 	"fmt"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/pkg/errors"
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -I ./src -I /usr/include/x86_64-linux-gnu
 
 func ReadCollection() (*BpfObjects, error) {
+	// Remove memory limit for BPF
+	if err := rlimit.RemoveMemlock(); err != nil {
+		return nil, fmt.Errorf("failed to remove memory limit: %w", err)
+	}
+
 	objs := &BpfObjects{}
 	// TODO: BPF log level remove hardcoding. yaml in config?
 	spec, err := LoadBpf()

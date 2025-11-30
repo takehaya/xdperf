@@ -1,11 +1,14 @@
 #include "xdp_prog.h"
 #include "xdpcap.h"
+#include "xdp_utils.h"
 
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
-#include <linux/if_vlan.h>
+#include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <linux/in.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -107,3 +110,76 @@ int xdp_pass_dummy(struct xdp_md *ctx)
 {
     return XDP_PASS;
 };
+SEC("xdp")
+int xdp_rx(struct xdp_md *ctx)
+{
+    int key = 0;
+    struct datarec *rec = bpf_map_lookup_elem(&stats_map, &key);
+    if (!rec)
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(long)ctx->data;
+    struct ethhdr *eth = data;
+    struct iphdr *iph;
+    struct ipv6hdr *ip6h;
+    struct vlan_hdr *vlan;
+    __u16 eth_proto;
+    void *l3_hdr;
+
+    if (data + sizeof(*eth) > data_end)
+        return  xdpcap_exit(ctx, &xdpcap_hook, XDP_PASS);
+
+    eth_proto = eth->h_proto;
+    l3_hdr = data + sizeof(*eth);
+
+    // Handle VLAN (single or double tagging)
+    if (eth_proto == bpf_htons(ETH_P_8021Q) || eth_proto == bpf_htons(ETH_P_8021AD)) {
+        vlan = l3_hdr;
+        if ((void *)vlan + sizeof(*vlan) > data_end)
+            return xdpcap_exit(ctx, &xdpcap_hook, XDP_PASS);
+
+        eth_proto = vlan->h_vlan_encapsulated_proto;
+        l3_hdr = (void *)vlan + sizeof(*vlan);
+
+        // Check for double VLAN (QinQ)
+        if (eth_proto == bpf_htons(ETH_P_8021Q)) {
+            vlan = l3_hdr;
+            if ((void *)vlan + sizeof(*vlan) > data_end)
+                return xdpcap_exit(ctx, &xdpcap_hook, XDP_PASS);
+
+            eth_proto = vlan->h_vlan_encapsulated_proto;
+            l3_hdr = (void *)vlan + sizeof(*vlan);
+        }
+    }
+
+    if (eth_proto == bpf_htons(ETH_P_IP)) {
+        iph = l3_hdr;
+        if ((void *)iph + sizeof(*iph) > data_end)
+            return xdpcap_exit(ctx, &xdpcap_hook, XDP_PASS);
+
+        // Swap MAC and IP addresses
+        swap_mac(eth);
+        swap_ipv4(iph);
+
+        rec->rx_packets++;
+        rec->rx_bytes += (__u64)(data_end - data);
+    } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
+        ip6h = l3_hdr;
+        if ((void *)ip6h + sizeof(*ip6h) > data_end)
+            return xdpcap_exit(ctx, &xdpcap_hook, XDP_PASS);
+
+        // Swap MAC and IPv6 addresses
+        swap_mac(eth);
+        swap_ipv6(ip6h);
+
+        rec->rx_packets++;
+        rec->rx_bytes += (__u64)(data_end - data);
+    } else {
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_PASS);
+    }
+    if (server_mode == 0) {
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_DROP);
+    }
+    return xdpcap_exit(ctx, &xdpcap_hook, XDP_TX);
+}
