@@ -92,7 +92,7 @@ func newApp(version string) *cli.App {
 			Usage: "debug mode level (0: none, 1: on, 2: full verbose)",
 		},
 		cli.StringFlag{
-			Name:  "pps, r",
+			Name:  "pps",
 			Value: "",
 			Usage: "target packets per second (e.g., 100k, 1m). Empty for max speed",
 		},
