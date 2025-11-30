@@ -1,6 +1,6 @@
 # XDPerf
 
-<img src="./docs/imgs/logo.png" alt="XDPerf image" style="max-width: 300px; width: 100%;">
+<img src="./docs/imgs/logo.png" alt="XDPerf image" style="max-width: 300px;">
 
 XDPerf is a high-performance network traffic generation tool that leverages XDP (eXpress Data Path). It can operate in both client and server modes, enabling measurement of network throughput and packet rate.
 
