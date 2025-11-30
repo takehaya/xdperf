@@ -1,5 +1,5 @@
-#ifndef XDP_UTILS_H
-#define XDP_UTILS_H
+#ifndef XDP_PROG_H
+#define XDP_PROG_H
 #include <linux/types.h>
 
 #include <bpf/bpf_helpers.h>
@@ -24,7 +24,7 @@ struct {
     __uint(max_entries, 1);
 } stats_map SEC(".maps");
 
-#define MAX_PACKET_ENTRY 2048
+#define MAX_PACKET_ENTRY 1024 * 128
 #define MAX_TEMPLATE_SIZE 2048
 struct pkt_template {
     __u32 len;                    // actual length of data
@@ -59,4 +59,4 @@ struct xdpcap_hook {
     __uint(max_entries, 5);
 } xdpcap_hook SEC(".maps");
 
-#endif // XDP_UTILS_H
+#endif // XDP_PROG_H

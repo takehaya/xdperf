@@ -91,6 +91,7 @@ type BpfMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfVariableSpecs struct {
+	ServerMode *ebpf.VariableSpec `ebpf:"server_mode"`
 }
 
 // BpfObjects contains all objects after they have been loaded into the kernel.
@@ -132,6 +133,7 @@ func (m *BpfMaps) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfVariables struct {
+	ServerMode *ebpf.Variable `ebpf:"server_mode"`
 }
 
 // BpfPrograms contains all programs after they have been loaded into the kernel.
