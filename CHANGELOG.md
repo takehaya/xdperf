@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.2](https://github.com/takehaya/xdperf/compare/v0.5.1...v0.5.2) (2025-11-30)
+
+
+### 🐛 Bug Fixes
+
+* pkt entry size and lookup mac logic ([9755f5c](https://github.com/takehaya/xdperf/commit/9755f5ca7c2cea7d2ef86e40be2739a1a7d2b8cf))
+* pkt entry size and lookup mac logic ([35b7d63](https://github.com/takehaya/xdperf/commit/35b7d6353bc199e6a2e0ead3818c7a7155352f09))
+
 ## [0.5.1](https://github.com/takehaya/xdperf/compare/v0.5.0...v0.5.1) (2025-11-29)
 
 
