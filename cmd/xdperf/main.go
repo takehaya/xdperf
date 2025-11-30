@@ -93,7 +93,6 @@ func newApp(version string) *cli.App {
 		},
 		cli.StringFlag{
 			Name:  "pps",
-			Value: "",
 			Usage: "target packets per second (e.g., 100k, 1m). Empty for max speed",
 		},
 		cli.BoolFlag{
