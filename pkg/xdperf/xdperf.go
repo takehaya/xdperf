@@ -168,7 +168,7 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessRespons
 	}
 
 	// require base config for plugin
-	pluginConfig["count"] = uint64(x.cfg.Count)
+	pluginConfig["count"] = x.cfg.Count
 	pluginConfig["device_mac_addr"] = x.Device.HardwareAddr
 	pluginConfig["device_name"] = x.Device.Name
 
@@ -200,7 +200,7 @@ func (x *Xdperf) convToTxOverrideEntry(resp *guest.GeneratorProcessResponse) ([]
 	case guest.GeneratorTemplateTypeRaw:
 		return x.convRawTemplate(resp.RawPacketTemplate)
 	case guest.GeneratorTemplateTypeVariable:
-		return x.convVariableTemplate(resp.VariablePacketTemplate, uint64(x.cfg.Count), x.cfg.Parallelism)
+		return x.convVariableTemplate(resp.VariablePacketTemplate, x.cfg.Count, x.cfg.Parallelism)
 	default:
 		return nil, fmt.Errorf("unknown template type: %s", resp.TemplateType)
 	}
@@ -283,12 +283,16 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	}
 	x.Logger.Info("TX packet processing started ("+mode+")",
 		zap.Int("parallelism", x.cfg.Parallelism),
-		zap.Int("total_count", x.cfg.Count),
+		zap.Uint64("total_count", x.cfg.Count),
 		zap.Uint64("target_pps", x.cfg.PPS),
 		zap.Uint32("repeat_per_batch", repeatPerBatch),
 		zap.Uint32("total_batches_per_cpu", totalBatches),
 		zap.Duration("batch_interval", interval),
 	)
+
+	// Fail Fast: cancel all goroutines on first error
+	var once sync.Once
+	var firstErr error
 
 	for i := range x.cfg.Parallelism {
 		p, err := prog.Clone()
@@ -301,6 +305,11 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 			defer p.Close()
 			if err := x.run(ctx, cpu, p, runOpts, interval, totalBatches); err != nil {
 				x.Logger.Error("error in run", zap.Int("cpu", cpu), zap.Error(err))
+				// Fail Fast: cancel all other goroutines on first error
+				once.Do(func() {
+					firstErr = err
+					cancel()
+				})
 			}
 		}(i)
 	}
@@ -319,7 +328,11 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	case <-sig:
 		x.Logger.Info("Received signal. Shutting down client...")
 	case <-done:
-		x.Logger.Info("All packets sent. Shutting down client...")
+		if firstErr != nil {
+			x.Logger.Error("Shutting down due to worker error...")
+		} else {
+			x.Logger.Info("All packets sent. Shutting down client...")
+		}
 	}
 	cancel()
 	wg.Wait()
@@ -327,6 +340,9 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	// Show final statistics with NIC stats comparison
 	x.ShowFinalStats(nicStatsBefore)
 
+	if firstErr != nil {
+		return fmt.Errorf("worker failed: %w", firstErr)
+	}
 	return nil
 }
 
@@ -336,7 +352,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 // - interval: time between batches (0 means no rate limiting, run as fast as possible)
 // - totalBatches: total number of batches to send per CPU
 func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32) {
-	packetsPerCPU := uint32(x.cfg.Count / x.cfg.Parallelism)
+	packetsPerCPU := uint32(x.cfg.Count / uint64(x.cfg.Parallelism))
 
 	if x.cfg.PPS == 0 {
 		// Max speed: send all packets in one batch

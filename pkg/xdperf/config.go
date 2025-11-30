@@ -24,7 +24,7 @@ type Config struct {
 	SwapResp    bool
 	Device      string
 	Parallelism int
-	Count       int
+	Count       uint64        // total packets to send
 	PPS         uint64        // 0 = unlimited (max speed)
 	Duration    time.Duration // 0 = not specified (use count instead)
 
@@ -48,9 +48,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Parallelism > numCPU {
 		return fmt.Errorf("parallelism (%d) exceeds available CPU cores (%d)", c.Parallelism, numCPU)
-	}
-	if c.Count < 0 {
-		return fmt.Errorf("count must be non-negative")
 	}
 	if c.Duration < 0 {
 		return fmt.Errorf("duration must be non-negative")
@@ -83,7 +80,7 @@ func (c *Config) Validate() error {
 	// count は全体の投げるパケットの数
 	// parallelism は並列数
 	// なので、 count > 0 の場合は count >= parallelism である必要があります
-	if c.Count > 0 && c.Count < c.Parallelism {
+	if c.Count > 0 && c.Count < uint64(c.Parallelism) {
 		return fmt.Errorf("count must be greater than or equal to parallelism")
 	}
 

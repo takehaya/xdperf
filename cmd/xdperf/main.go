@@ -131,7 +131,7 @@ func run(ctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("invalid count value: %w", err)
 	}
-	c.Count = int(count)
+	c.Count = count
 
 	// Parse PPS
 	ppsStr := ctx.String("pps")
@@ -146,7 +146,7 @@ func run(ctx *cli.Context) error {
 		c.LoggerConfig.Verbose = 1
 	}
 
-	// Validate config (before calculating count from duration)
+	// Validate config
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
@@ -154,7 +154,12 @@ func run(ctx *cli.Context) error {
 	// Calculate count from duration if specified (after validation)
 	// Use float64 to support sub-second durations (e.g., 0.5s, 500ms)
 	if c.Duration > 0 && c.PPS > 0 {
-		c.Count = int(float64(c.PPS) * c.Duration.Seconds())
+		c.Count = uint64(float64(c.PPS) * c.Duration.Seconds())
+	}
+
+	// Post-validation: check count >= parallelism after duration calculation
+	if c.Count > 0 && c.Count < uint64(c.Parallelism) {
+		return fmt.Errorf("calculated count (%d) must be greater than or equal to parallelism (%d)", c.Count, c.Parallelism)
 	}
 
 	// plugin config load

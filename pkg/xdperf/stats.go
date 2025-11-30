@@ -2,7 +2,6 @@ package xdperf
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,7 +10,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
-	"golang.org/x/text/message"
+	"go.uber.org/zap"
 )
 
 type TrafficType string
@@ -25,7 +24,6 @@ const (
 func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 	possibleCPUs := ebpf.MustPossibleCPU()
 	recs := make([]coreelf.BpfDatarec, possibleCPUs)
-	p := message.NewPrinter(message.MatchLanguage("en"))
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -40,22 +38,35 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 				deltaPackets, deltaBytes := x.getStats(x.bpfobjs.TxStatsMap, recs, &prevTxPackets, &prevTxBytes)
 				if x.cfg.PPS > 0 {
 					achievedRatio := float64(deltaPackets) / float64(x.cfg.PPS) * 100
-					p.Printf("%d xmit/s (%.1f%% of target %d), %.2f Mbps\n",
-						deltaPackets, achievedRatio, x.cfg.PPS, float64(deltaBytes*8)/1024/1024)
+					x.Logger.Info("stats",
+						zap.Uint64("xmit_per_sec", deltaPackets),
+						zap.Float64("achieved_ratio_percent", achievedRatio),
+						zap.Uint64("target_pps", x.cfg.PPS),
+						zap.Float64("mbps", float64(deltaBytes*8)/1024/1024),
+					)
 				} else {
-					p.Printf("%d xmit/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
+					x.Logger.Info("stats",
+						zap.Uint64("xmit_per_sec", deltaPackets),
+						zap.Float64("mbps", float64(deltaBytes*8)/1024/1024),
+					)
 				}
 			case TrafficTypeRX:
 				deltaPackets, deltaBytes := x.getStats(x.bpfobjs.RxStatsMap, recs, &prevRxPackets, &prevRxBytes)
-				p.Printf("%d recv/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
+				x.Logger.Info("stats",
+					zap.Uint64("recv_per_sec", deltaPackets),
+					zap.Float64("mbps", float64(deltaBytes*8)/1024/1024),
+				)
 			case TrafficTypeBoth:
 				txDeltaPackets, txDeltaBytes := x.getStats(x.bpfobjs.TxStatsMap, recs, &prevTxPackets, &prevTxBytes)
 				rxDeltaPackets, rxDeltaBytes := x.getStats(x.bpfobjs.RxStatsMap, recs, &prevRxPackets, &prevRxBytes)
-				p.Printf("%d xmit/s, %.2f Mbps(xmit), %d recv/s, %.2f Mbps(recv)\n",
-					txDeltaPackets, float64(txDeltaBytes*8)/1024/1024,
-					rxDeltaPackets, float64(rxDeltaBytes*8)/1024/1024)
+				x.Logger.Info("stats",
+					zap.Uint64("xmit_per_sec", txDeltaPackets),
+					zap.Float64("mbps_xmit", float64(txDeltaBytes*8)/1024/1024),
+					zap.Uint64("recv_per_sec", rxDeltaPackets),
+					zap.Float64("mbps_recv", float64(rxDeltaBytes*8)/1024/1024),
+				)
 			default:
-				fmt.Printf("unknown traffic type: %s\n", ty)
+				x.Logger.Error("unknown traffic type", zap.String("type", string(ty)))
 				return
 			}
 		case <-ctx.Done():
@@ -68,7 +79,7 @@ func (x *Xdperf) getStats(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPack
 	var key uint32
 	err := statMap.Lookup(&key, &recs)
 	if err != nil {
-		fmt.Printf("failed to lookup stats_map: %v\n", err)
+		x.Logger.Error("failed to lookup stats_map", zap.Error(err))
 		return 0, 0
 	}
 	var sumPackets uint64
@@ -96,15 +107,25 @@ func (x *Xdperf) GetNICStats() NICStats {
 	basePath := filepath.Join("/sys/class/net", x.Device.Name, "statistics")
 
 	// Read tx_packets
-	if data, err := os.ReadFile(filepath.Join(basePath, "tx_packets")); err == nil {
-		if v, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err == nil {
+	txPacketsPath := filepath.Join(basePath, "tx_packets")
+	if data, err := os.ReadFile(txPacketsPath); err != nil {
+		x.Logger.Debug("failed to read NIC stats", zap.String("path", txPacketsPath), zap.Error(err))
+	} else {
+		if v, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err != nil {
+			x.Logger.Debug("failed to parse NIC stats", zap.String("path", txPacketsPath), zap.Error(err))
+		} else {
 			stats.TxXdpPackets = v
 		}
 	}
 
 	// Read tx_dropped
-	if data, err := os.ReadFile(filepath.Join(basePath, "tx_dropped")); err == nil {
-		if v, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err == nil {
+	txDroppedPath := filepath.Join(basePath, "tx_dropped")
+	if data, err := os.ReadFile(txDroppedPath); err != nil {
+		x.Logger.Debug("failed to read NIC stats", zap.String("path", txDroppedPath), zap.Error(err))
+	} else {
+		if v, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err != nil {
+			x.Logger.Debug("failed to parse NIC stats", zap.String("path", txDroppedPath), zap.Error(err))
+		} else {
 			stats.TxXdpDropped = v
 		}
 	}
@@ -116,12 +137,11 @@ func (x *Xdperf) GetNICStats() NICStats {
 func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 	possibleCPUs := ebpf.MustPossibleCPU()
 	recs := make([]coreelf.BpfDatarec, possibleCPUs)
-	p := message.NewPrinter(message.MatchLanguage("en"))
 
 	var key uint32
 	err := x.bpfobjs.TxStatsMap.Lookup(&key, &recs)
 	if err != nil {
-		fmt.Printf("failed to lookup stats_map: %v\n", err)
+		x.Logger.Error("failed to lookup stats_map", zap.Error(err))
 		return
 	}
 	var sumPackets uint64
@@ -131,9 +151,11 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 		sumBytes += rec.Bytes
 	}
 
-	p.Printf("\n=== Final Statistics ===\n")
-	p.Printf("Packets processed by XDP: %d\n", sumPackets)
-	p.Printf("Total bytes: %d (%.2f MB)\n", sumBytes, float64(sumBytes)/1024/1024)
+	x.Logger.Info("final statistics",
+		zap.Uint64("packets_processed", sumPackets),
+		zap.Uint64("total_bytes", sumBytes),
+		zap.Float64("total_megabytes", float64(sumBytes)/1024/1024),
+	)
 
 	// NIC statistics (only if flag is set)
 	if x.cfg.ShowNICStats {
@@ -141,17 +163,21 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 		nicTxDelta := nicStatsAfter.TxXdpPackets - nicStatsBefore.TxXdpPackets
 		nicDropDelta := nicStatsAfter.TxXdpDropped - nicStatsBefore.TxXdpDropped
 
-		p.Printf("\n--- NIC Statistics (may include other traffic on the same interface) ---\n")
-		p.Printf("NIC TX packets: %d\n", nicTxDelta)
-		if nicDropDelta > 0 {
-			p.Printf("NIC TX dropped: %d\n", nicDropDelta)
+		fields := []zap.Field{
+			zap.Uint64("nic_tx_packets", nicTxDelta),
+			zap.Uint64("nic_tx_dropped", nicDropDelta),
 		}
 
 		// Calculate actual drop rate based on XDP processed vs NIC TX
 		if sumPackets > nicTxDelta {
 			droppedPackets := sumPackets - nicTxDelta
 			dropRate := float64(droppedPackets) / float64(sumPackets) * 100
-			p.Printf("XDP->NIC dropped: %d (%.1f%%)\n", droppedPackets, dropRate)
+			fields = append(fields,
+				zap.Uint64("xdp_to_nic_dropped", droppedPackets),
+				zap.Float64("drop_rate_percent", dropRate),
+			)
 		}
+
+		x.Logger.Info("NIC statistics (may include other traffic on the same interface)", fields...)
 	}
 }
