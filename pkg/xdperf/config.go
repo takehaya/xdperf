@@ -28,7 +28,8 @@ type Config struct {
 	PPS         uint64        // 0 = unlimited (max speed)
 	Duration    time.Duration // 0 = not specified (use count instead)
 
-	DebugMode int
+	DebugMode    int
+	ShowNICStats bool // show NIC-level statistics (may include other traffic on the same interface)
 }
 
 func (c *Config) Validate() error {

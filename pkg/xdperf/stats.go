@@ -131,24 +131,27 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 		sumBytes += rec.Bytes
 	}
 
-	// Get NIC stats after
-	nicStatsAfter := x.GetNICStats()
-	nicTxDelta := nicStatsAfter.TxXdpPackets - nicStatsBefore.TxXdpPackets
-	nicDropDelta := nicStatsAfter.TxXdpDropped - nicStatsBefore.TxXdpDropped
-
 	p.Printf("\n=== Final Statistics ===\n")
 	p.Printf("Packets processed by XDP: %d\n", sumPackets)
-	p.Printf("NIC TX packets: %d\n", nicTxDelta)
-	if nicDropDelta > 0 {
-		p.Printf("NIC TX dropped: %d\n", nicDropDelta)
-	}
-
-	// Calculate actual drop rate based on XDP processed vs NIC TX
-	if sumPackets > nicTxDelta {
-		droppedPackets := sumPackets - nicTxDelta
-		dropRate := float64(droppedPackets) / float64(sumPackets) * 100
-		p.Printf("XDP->NIC dropped: %d (%.1f%%)\n", droppedPackets, dropRate)
-	}
-
 	p.Printf("Total bytes: %d (%.2f MB)\n", sumBytes, float64(sumBytes)/1024/1024)
+
+	// NIC statistics (only if flag is set)
+	if x.cfg.ShowNICStats {
+		nicStatsAfter := x.GetNICStats()
+		nicTxDelta := nicStatsAfter.TxXdpPackets - nicStatsBefore.TxXdpPackets
+		nicDropDelta := nicStatsAfter.TxXdpDropped - nicStatsBefore.TxXdpDropped
+
+		p.Printf("\n--- NIC Statistics (may include other traffic on the same interface) ---\n")
+		p.Printf("NIC TX packets: %d\n", nicTxDelta)
+		if nicDropDelta > 0 {
+			p.Printf("NIC TX dropped: %d\n", nicDropDelta)
+		}
+
+		// Calculate actual drop rate based on XDP processed vs NIC TX
+		if sumPackets > nicTxDelta {
+			droppedPackets := sumPackets - nicTxDelta
+			dropRate := float64(droppedPackets) / float64(sumPackets) * 100
+			p.Printf("XDP->NIC dropped: %d (%.1f%%)\n", droppedPackets, dropRate)
+		}
+	}
 }

@@ -264,8 +264,11 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		Context: xdpmd,
 	}
 
-	// Get NIC stats before sending
-	nicStatsBefore := x.GetNICStats()
+	// Get NIC stats before sending (only if flag is set)
+	var nicStatsBefore NICStats
+	if x.cfg.ShowNICStats {
+		nicStatsBefore = x.GetNICStats()
+	}
 
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())

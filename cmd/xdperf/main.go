@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
 	"github.com/kelseyhightower/envconfig"
 	"github.com/takehaya/xdperf/pkg/xdperf"
@@ -97,6 +96,10 @@ func newApp(version string) *cli.App {
 			Value: "",
 			Usage: "target packets per second (e.g., 100k, 1m). Empty for max speed",
 		},
+		cli.BoolFlag{
+			Name:  "show-nic-stats",
+			Usage: "show NIC-level statistics (may include other traffic on the same interface)",
+		},
 	}
 	app.Action = run
 	return app
@@ -120,6 +123,7 @@ func run(ctx *cli.Context) error {
 	c.DebugMode = ctx.Int("debugmode")
 	c.PluginLanguage = ctx.String("plugin-language")
 	c.SwapResp = ctx.Bool("swap-resp")
+	c.ShowNICStats = ctx.Bool("show-nic-stats")
 
 	// Parse count
 	countStr := ctx.String("count")
@@ -148,8 +152,9 @@ func run(ctx *cli.Context) error {
 	}
 
 	// Calculate count from duration if specified (after validation)
+	// Use float64 to support sub-second durations (e.g., 0.5s, 500ms)
 	if c.Duration > 0 && c.PPS > 0 {
-		c.Count = int(c.PPS * uint64(c.Duration/time.Second))
+		c.Count = int(float64(c.PPS) * c.Duration.Seconds())
 	}
 
 	// plugin config load
