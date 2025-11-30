@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.6.0](https://github.com/takehaya/xdperf/compare/v0.5.2...v0.6.0) (2025-11-30)
+
+
+### 🎉 Features
+
+* add send/recv counter mode ([cef982a](https://github.com/takehaya/xdperf/commit/cef982adb67b161387d0ee88d069a2f3140e9abf))
+
+
+### 🐛 Bug Fixes
+
+* add xdp_utils ([24b047d](https://github.com/takehaya/xdperf/commit/24b047d16a08e1616b1241860da19cfb29323e70))
+* add xdp_utils ([61f1c6c](https://github.com/takehaya/xdperf/commit/61f1c6c0151dfd16eef5d90f340e38750ab595ee))
+
+
+### 🔧 Miscellaneous Chores
+
+* add server mode ([798d750](https://github.com/takehaya/xdperf/commit/798d7503548d8990fe3823132300d54599724571))
+* add server mode ([b13b011](https://github.com/takehaya/xdperf/commit/b13b01115e585b5f59894f26ca6b2f16ccdb2c4e))
+* modify install script ([0ed91ed](https://github.com/takehaya/xdperf/commit/0ed91ed5de6911d74306ad4ad8a0cd07e1d39c73))
+* modify install script ([253e8a8](https://github.com/takehaya/xdperf/commit/253e8a89613c1e5cad30e57f3f8e214432102c7e))
+* when run server mode, wasm plugin is ignore ([343fe57](https://github.com/takehaya/xdperf/commit/343fe57460638ece5095dd0217a6d7b23ed977d3))
+
 ## [0.5.2](https://github.com/takehaya/xdperf/compare/v0.5.1...v0.5.2) (2025-11-30)
 
 
