@@ -143,6 +143,30 @@ buntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --
 cf. https://blog.tohojo.dk/2023/05/the-xdp-traffic-generator.html
 cf. https://drive.google.com/file/d/1e7JWfHt2GKucZ8YZaQhXN3ehHcoNxOT6/view
 
+### 他にやってみると効果があること
+- mapに入れる値を小さくする
+```shell
+ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 15 --parallelism 15 --blast --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
+// 略
+50,576,340 xmit/s, 82,065.71 Mbps
+55,577,100 xmit/s, 81,185.65 Mbps
+52,759,999 xmit/s, 90,257.40 Mbps
+53,575,053 xmit/s, 88,963.45 Mbps
+55,315,762 xmit/s, 81,972.27 Mbps
+55,143,170 xmit/s, 80,380.75 Mbps
+51,576,616 xmit/s, 74,317.45 Mbps
+52,080,944 xmit/s, 79,093.37 Mbps
+53,885,907 xmit/s, 89,294.70 Mbps
+59,130,213 xmit/s, 94,118.83 Mbps
+57,850,993 xmit/s, 96,557.89 Mbps
+54,618,676 xmit/s, 77,691.19 Mbps
+56,565,368 xmit/s, 84,988.42 Mbps
+59,225,493 xmit/s, 100,117.31 Mbps
+58,396,611 xmit/s, 99,576.44 Mbps
+57,447,319 xmit/s, 95,174.94 Mbps
+```
+59Mppsぐらい出ててすごい。
+
 ### もうちょい目指すなら・・・？
 ```shell
 === NIC IRQs ===
@@ -169,3 +193,4 @@ TCP data split:         n/a
 この辺のNICの環境とかが良ければワンチャンありそう。
 
 また、batch-sizeを変化して試してみるのはアリなのかもしれない。
+
