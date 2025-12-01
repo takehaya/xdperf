@@ -249,7 +249,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	}
 	defer l.Close()
 
-	xdpmd := XdpMd{
+	xdpmd := coreelf.XdpMd{
 		DataEnd:        uint32(len(in)),
 		IngressIfindex: uint32(x.Device.Index),
 	}

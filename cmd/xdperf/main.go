@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/kelseyhightower/envconfig"
+	"github.com/takehaya/xdperf/pkg/probe"
 	"github.com/takehaya/xdperf/pkg/xdperf"
 	"github.com/urfave/cli"
 )
@@ -33,7 +34,9 @@ func newApp(version string) *cli.App {
 	app.Usage = "high performance XDP based network traffic generator tool"
 
 	app.EnableBashCompletion = true
-	app.Flags = []cli.Flag{
+
+	// Common flags for the main run command
+	runFlags := []cli.Flag{
 		cli.StringFlag{
 			Name:  "plugin, p",
 			Value: "simpleudp.tinygo",
@@ -100,15 +103,42 @@ func newApp(version string) *cli.App {
 			Usage: "show NIC-level statistics (may include other traffic on the same interface)",
 		},
 	}
-	app.Action = run
+
+	app.Commands = []cli.Command{
+		{
+			Name:    "run",
+			Aliases: []string{"r"},
+			Usage:   "Run the traffic generator (send or receive mode)",
+			Flags:   runFlags,
+			Action:  run,
+		},
+		{
+			Name:    "probe",
+			Aliases: []string{"p"},
+			Usage:   "Probe XDP capabilities of a network device",
+			Flags: []cli.Flag{
+				cli.StringFlag{
+					Name:     "device, d",
+					Required: true,
+					Usage:    "network device name to probe",
+				},
+				cli.BoolFlag{
+					Name:  "json, j",
+					Usage: "output results in JSON format",
+				},
+			},
+			Action: probe.RunProbe,
+		},
+	}
+
 	return app
 }
 
-func run(ctx *cli.Context) error {
+func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	var c xdperf.Config
-	err := envconfig.Process("manager", &c)
+	err := envconfig.Process("xdperf", &c)
 	if err != nil {
-		return fmt.Errorf("config parsing failed: %w", err)
+		return xdperf.Config{}, fmt.Errorf("config parsing failed: %w", err)
 	}
 	c.PluginName = ctx.String("plugin")
 	c.PluginPath = ctx.String("plugin-path")
@@ -128,7 +158,7 @@ func run(ctx *cli.Context) error {
 	countStr := ctx.String("count")
 	count, err := xdperf.ParseCount(countStr)
 	if err != nil {
-		return fmt.Errorf("invalid count value: %w", err)
+		return xdperf.Config{}, fmt.Errorf("invalid count value: %w", err)
 	}
 	c.Count = count
 
@@ -136,7 +166,7 @@ func run(ctx *cli.Context) error {
 	ppsStr := ctx.String("pps")
 	pps, err := xdperf.ParsePPS(ppsStr)
 	if err != nil {
-		return fmt.Errorf("invalid PPS value: %w", err)
+		return xdperf.Config{}, fmt.Errorf("invalid PPS value: %w", err)
 	}
 	c.PPS = pps
 
@@ -147,7 +177,7 @@ func run(ctx *cli.Context) error {
 
 	// Validate config
 	if err := c.Validate(); err != nil {
-		return fmt.Errorf("config validation failed: %w", err)
+		return xdperf.Config{}, fmt.Errorf("config validation failed: %w", err)
 	}
 
 	// Calculate count from duration if specified (after validation)
@@ -158,18 +188,25 @@ func run(ctx *cli.Context) error {
 
 	// Post-validation: check count >= parallelism after duration calculation
 	if c.Count > 0 && c.Count < uint64(c.Parallelism) {
-		return fmt.Errorf("calculated count (%d) must be greater than or equal to parallelism (%d)", c.Count, c.Parallelism)
+		return xdperf.Config{}, fmt.Errorf("calculated count (%d) must be greater than or equal to parallelism (%d)", c.Count, c.Parallelism)
 	}
 
 	// plugin config load
 	if c.PluginConfig == "" && c.PluginConfigPath != "" {
 		configData, err := os.ReadFile(c.PluginConfigPath)
 		if err != nil {
-			return fmt.Errorf("failed to read plugin config file: %w", err)
+			return xdperf.Config{}, fmt.Errorf("failed to read plugin config file: %w", err)
 		}
 		c.PluginConfig = string(configData)
 	}
+	return c, nil
+}
 
+func run(ctx *cli.Context) error {
+	c, err := ParseArgs(ctx)
+	if err != nil {
+		return fmt.Errorf("argument parsing failed: %w", err)
+	}
 	xdp, err := xdperf.NewXdperf(c)
 	if err != nil {
 		return fmt.Errorf("xdperf initialization failed: %w", err)
