@@ -40,7 +40,6 @@ int xdp_tx(struct xdp_md *ctx)
     if (local_idx >= count)
         local_idx = 0;
 
-    // Use local_idx directly (each CPU has its own packets at indices 0..count-1)
     __u32 idx = local_idx;
 
     struct pkt_template *pt = bpf_map_lookup_elem(&tx_override_map, &idx);
@@ -52,6 +51,12 @@ int xdp_tx(struct xdp_md *ctx)
     __u32 tlen = pt->len;
     if (tlen > MAX_TEMPLATE_SIZE)
         tlen = MAX_TEMPLATE_SIZE;
+    // Minimum packet size check (Ethernet header = 14 bytes minimum)
+    // This also ensures tlen > 0 for bpf_xdp_store_bytes
+    if (tlen < sizeof(struct ethhdr)) {
+        DEBUG_PRINT("packet too small: %u\n", tlen);
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
 
     __u32 cur_len = data_end - data;
     if (cur_len != tlen) {
@@ -62,38 +67,27 @@ int xdp_tx(struct xdp_md *ctx)
         }
         data = (void *)(long)ctx->data;
         data_end = (void *)(long)ctx->data_end;
-        if (data + tlen > data_end) {
-            DEBUG_PRINT("data out of bounds\n");
-            return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
-        }
-
-        // override payload
-        if (data + tlen > data_end) {
-            DEBUG_PRINT("data out of bounds\n");
-            return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
-        }
-    }
-    void *cursor = data;
-    for (__u32 i = 0; i < MAX_TEMPLATE_SIZE; i++) {
-        if (i >= tlen)
-            break;
-
-        if (cursor + 1 > data_end) {
-            DEBUG_PRINT("cursor out of bounds\n");
-            return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
-        }
-
-        *(__u8 *)cursor = pt->data[i];
-        cursor++;
     }
 
-    // next local index (within this CPU's range)
+    // Bounds check for verifier
+    if (data + tlen > data_end) {
+        DEBUG_PRINT("data out of bounds\n");
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    long ret = bpf_xdp_store_bytes(ctx, 0, pt->data, tlen);
+    if (ret < 0) {
+        DEBUG_PRINT("bpf_xdp_store_bytes failed: %ld\n", ret);
+        return xdpcap_exit(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    // next local index
     __u32 next = local_idx + 1;
     if (next >= count)
         next = 0;
     state->idx = next;
 
-    // sended packet stats
+    // stats
     struct datarec *rec = bpf_map_lookup_elem(&tx_stats_map, &zero);
     if (!rec) {
         DEBUG_PRINT("stats_map lookup failed\n");
