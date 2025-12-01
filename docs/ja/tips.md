@@ -121,7 +121,27 @@ $ sudo ./out/bin/xdperf run --device=ens4 --count 10k --parallelism 15 --blast -
 | **bpf_xdp_store_bytes 適用** | 40〜43 Mpps (105〜113 Gbps) | +560% |
 | **xdpcap バイパス** | **45〜51 Mpps (115〜129 Gbps)** | **+700%** |
 
-ということで、
+ちなみに1coreあたりの性能だと3Mppsぐらいだった。
+
+```shell
+buntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 1k --parallelism 1 --blast --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1500}' --batch-size 64
+// 略
+3,556,608 xmit/s, 10,249.85 Mbps
+3,586,404 xmit/s, 10,335.56 Mbps
+3,342,812 xmit/s, 9,633.70 Mbps
+3,334,248 xmit/s, 9,608.88 Mbps
+3,283,589 xmit/s, 9,463.06 Mbps
+3,374,481 xmit/s, 9,724.83 Mbps
+3,373,207 xmit/s, 9,721.27 Mbps
+3,411,755 xmit/s, 9,832.30 Mbps
+3,358,134 xmit/s, 9,677.79 Mbps
+3,372,807 xmit/s, 9,720.08 Mbps
+3,416,713 xmit/s, 9,846.65 Mbps
+3,358,174 xmit/s, 9,677.87 Mbps
+```
+なお、開発者曰く 1core 8Mppsぐらい行けるらしいので、もっと最適化余地があったりしそうだなというのが感想にある。
+cf. https://blog.tohojo.dk/2023/05/the-xdp-traffic-generator.html
+cf. https://drive.google.com/file/d/1e7JWfHt2GKucZ8YZaQhXN3ehHcoNxOT6/view
 
 ### もうちょい目指すなら・・・？
 ```shell
