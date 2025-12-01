@@ -107,6 +107,11 @@ func newApp(version string) *cli.App {
 			Name:  "blast",
 			Usage: "enable blast mode for maximum throughput. Requires --send args",
 		},
+		cli.IntFlag{
+			Name:  "batch-size",
+			Value: 1,
+			Usage: "syscall batch size tuning",
+		},
 	}
 
 	app.Commands = []cli.Command{
@@ -159,6 +164,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.SwapResp = ctx.Bool("swap-resp")
 	c.ShowNICStats = ctx.Bool("show-nic-stats")
 	c.Blast = ctx.Bool("blast")
+	c.BatchSize = uint32(ctx.Int("batch-size"))
 
 	// Parse count
 	countStr := ctx.String("count")

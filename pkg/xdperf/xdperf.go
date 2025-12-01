@@ -385,12 +385,12 @@ func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32, uint32) 
 
 	if x.cfg.Blast {
 		// Blast mode: infinite sending at max speed using BatchSize feature
-		return 1 << 20, 0, 0, 64
+		return 1 << 20, 0, 0, x.cfg.BatchSize
 	}
 
 	if x.cfg.PPS == 0 {
 		// Max speed: send all packets in one batch
-		return packetsPerCPU, 0, 1, 64
+		return packetsPerCPU, 0, 1, x.cfg.BatchSize
 	}
 
 	// PPS limited: calculate batch parameters

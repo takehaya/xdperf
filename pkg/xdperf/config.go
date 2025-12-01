@@ -28,6 +28,7 @@ type Config struct {
 	PPS         uint64        // 0 = unlimited (max speed)
 	Duration    time.Duration // 0 = not specified (use count instead)
 	Blast       bool          // enable blast mode for maximum throughput
+	BatchSize   uint32        // syscall batch size tuning (default: 1)
 
 	DebugMode    int
 	ShowNICStats bool // show NIC-level statistics (may include other traffic on the same interface)
