@@ -9,13 +9,12 @@ const volatile __u32 enable_xdpcap = 0;
 
 // Performance mode: bypass xdpcap for maximum throughput by default
 // When enable_xdpcap is set, xdpcap_exit is called for packet capture support
-#define RETURN_ACTION(ctx, hook, action) \
-    do { \
-        if (enable_xdpcap) \
-            return xdpcap_exit(ctx, hook, action); \
-        return (action); \
+#define RETURN_ACTION(ctx, hook, action)                                                                                           \
+    do {                                                                                                                           \
+        if (enable_xdpcap)                                                                                                         \
+            return xdpcap_exit(ctx, hook, action);                                                                                 \
+        return (action);                                                                                                           \
     } while (0)
-
 
 /**
  * Create a bpf map suitable for use as an xdpcap hook point.
