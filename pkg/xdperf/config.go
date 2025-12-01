@@ -30,7 +30,9 @@ type Config struct {
 	Blast       bool          // enable blast mode for maximum throughput
 	BatchSize   uint32        // syscall batch size tuning (default: 1)
 
+	EnableXdpcap bool // enable xdpcap support (default: false for max performance)
 	DebugMode    int
+
 	ShowNICStats bool // show NIC-level statistics (may include other traffic on the same interface)
 }
 

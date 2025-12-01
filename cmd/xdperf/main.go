@@ -112,6 +112,10 @@ func newApp(version string) *cli.App {
 			Value: 1,
 			Usage: "syscall batch size tuning",
 		},
+		cli.BoolFlag{
+			Name:  "enable-xdpcap",
+			Usage: "enable xdpcap support for packet capture (reduces performance)",
+		},
 	}
 
 	app.Commands = []cli.Command{
@@ -165,6 +169,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.ShowNICStats = ctx.Bool("show-nic-stats")
 	c.Blast = ctx.Bool("blast")
 	c.BatchSize = uint32(ctx.Int("batch-size"))
+	c.EnableXdpcap = ctx.Bool("enable-xdpcap")
 
 	// Parse count
 	countStr := ctx.String("count")

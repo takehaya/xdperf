@@ -62,6 +62,12 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 			}
 			return 0
 		}(),
+		"enable_xdpcap": func() uint32 {
+			if cfg.EnableXdpcap {
+				return 1
+			}
+			return 0
+		}(),
 	}
 
 	// Calculate tx_override_map size based on mode
