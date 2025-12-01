@@ -82,8 +82,9 @@ func newApp(version string) *cli.App {
 			Usage: "number of parallel packet sending threads",
 		},
 		cli.StringFlag{
-			Name:  "count, c",
-			Usage: "number of packets to send (e.g., 100k, 1m). Required if --duration not specified",
+			Name: "count, c",
+			Usage: "Number of packets to send (e.g., 100k, 1m). " +
+				"If --blast is set, this value is used as the number of packet pools. Required if --duration not specified.",
 		},
 		cli.DurationFlag{
 			Name:  "duration, t",
@@ -101,6 +102,10 @@ func newApp(version string) *cli.App {
 		cli.BoolFlag{
 			Name:  "show-nic-stats",
 			Usage: "show NIC-level statistics (may include other traffic on the same interface)",
+		},
+		cli.BoolFlag{
+			Name:  "blast",
+			Usage: "enable blast mode for maximum throughput. Requires --send args",
 		},
 	}
 
@@ -153,6 +158,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.PluginLanguage = ctx.String("plugin-language")
 	c.SwapResp = ctx.Bool("swap-resp")
 	c.ShowNICStats = ctx.Bool("show-nic-stats")
+	c.Blast = ctx.Bool("blast")
 
 	// Parse count
 	countStr := ctx.String("count")

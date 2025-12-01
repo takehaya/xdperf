@@ -14,7 +14,7 @@ require (
 	github.com/urfave/cli v1.22.17
 	github.com/vishvananda/netlink v1.3.1
 	go.uber.org/zap v1.27.0
-	golang.org/x/sys v0.31.0
+	golang.org/x/sys v0.37.0
 	golang.org/x/text v0.30.0
 )
 
@@ -27,3 +27,5 @@ require (
 )
 
 replace github.com/takehaya/xdperf/pkg/guest => ./pkg/guest
+
+replace github.com/cilium/ebpf => github.com/takehaya/ebpf v0.0.0-20251201163912-684226f5963b

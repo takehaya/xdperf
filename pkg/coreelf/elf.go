@@ -9,6 +9,11 @@ import (
 	"github.com/pkg/errors"
 )
 
+// MaxPacketEntry is the maximum number of entries for tx_override_map.
+// This must match MAX_PACKET_ENTRY in src/xdp_prog.h.
+const MaxPacketEntry uint32 = 1 << 25 // 33554432
+const MinPacketEntry uint32 = 1
+
 // XdpMd is the XDP metadata structure for BPF_PROG_RUN.
 // This structure must match the kernel's xdp_md structure.
 type XdpMd struct {
@@ -23,7 +28,7 @@ type XdpMd struct {
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -I ./src -I /usr/include/x86_64-linux-gnu
 
-func ReadCollection(constants map[string]interface{}) (*BpfObjects, error) {
+func ReadCollection(constants map[string]interface{}, mapSize uint32) (*BpfObjects, error) {
 	// Remove memory limit for BPF
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("failed to remove memory limit: %w", err)
@@ -35,6 +40,14 @@ func ReadCollection(constants map[string]interface{}) (*BpfObjects, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fail to load bpf spec: %w", err)
 	}
+
+	// Dynamically set tx_override_map size before loading
+	if mapSpec, ok := spec.Maps["tx_override_map"]; ok {
+		if mapSize > 0 && mapSize <= MaxPacketEntry {
+			mapSpec.MaxEntries = mapSize
+		}
+	}
+
 	for name, value := range constants {
 		varSpec, ok := spec.Variables[name]
 		if !ok {

@@ -63,7 +63,26 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 			return 0
 		}(),
 	}
-	obj, err := coreelf.ReadCollection(consts)
+
+	// Calculate tx_override_map size based on mode
+	var mapSize uint32
+	if cfg.Sender {
+		// Sender mode: size based on Count / Parallelism
+		mapSize = uint32(cfg.Count/uint64(cfg.Parallelism)) + 1
+		// Clamp to valid range [MinPacketEntry, MaxPacketEntry]
+		if mapSize < coreelf.MinPacketEntry {
+			mapSize = coreelf.MinPacketEntry
+		}
+		if mapSize > coreelf.MaxPacketEntry {
+			mapSize = coreelf.MaxPacketEntry
+		}
+	} else {
+		// Receiver-only mode: minimal size since tx_override_map is not used
+		mapSize = 1
+	}
+	logger.Info("calculated tx_override_map size", zap.Uint32("map_size", mapSize))
+
+	obj, err := coreelf.ReadCollection(consts, mapSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load eBPF objects: %w", err)
 	}
@@ -255,13 +274,14 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	}
 
 	// Calculate batch parameters based on PPS setting
-	repeatPerBatch, interval, totalBatches := x.calculateBatchParams()
+	repeatPerBatch, interval, totalBatches, batchSize := x.calculateBatchParams()
 
 	runOpts := &ebpf.RunOptions{
-		Data:    in,
-		Repeat:  repeatPerBatch,
-		Flags:   unix.BPF_F_TEST_XDP_LIVE_FRAMES,
-		Context: xdpmd,
+		Data:      in,
+		Repeat:    repeatPerBatch,
+		Flags:     unix.BPF_F_TEST_XDP_LIVE_FRAMES,
+		Context:   xdpmd,
+		BatchSize: batchSize,
 	}
 
 	// Get NIC stats before sending (only if flag is set)
@@ -278,16 +298,20 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	prog := x.choiceTXBPFProgram()
 
 	mode := "max speed"
-	if x.cfg.PPS > 0 {
+	if x.cfg.Blast {
+		mode = "blast (infinite)"
+	} else if x.cfg.PPS > 0 {
 		mode = "rate limited"
 	}
 	x.Logger.Info("TX packet processing started ("+mode+")",
 		zap.Int("parallelism", x.cfg.Parallelism),
-		zap.Uint64("total_count", x.cfg.Count),
+		zap.Uint64("packet_pool_size", x.cfg.Count),
 		zap.Uint64("target_pps", x.cfg.PPS),
 		zap.Uint32("repeat_per_batch", repeatPerBatch),
+		zap.Uint32("batch_size", batchSize),
 		zap.Uint32("total_batches_per_cpu", totalBatches),
 		zap.Duration("batch_interval", interval),
+		zap.Bool("blast_mode", x.cfg.Blast),
 	)
 
 	// Fail Fast: cancel all goroutines on first error
@@ -326,7 +350,11 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 
 	select {
 	case <-sig:
-		x.Logger.Info("Received signal. Shutting down client...")
+		if x.cfg.Blast {
+			x.Logger.Info("Received signal. Stopping blast mode...")
+		} else {
+			x.Logger.Info("Received signal. Shutting down client...")
+		}
 	case <-done:
 		if firstErr != nil {
 			x.Logger.Error("Shutting down due to worker error...")
@@ -346,17 +374,23 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	return nil
 }
 
-// calculateBatchParams calculates the repeat count per batch, interval between batches, and total batches.
-// Returns (repeatPerBatch, interval, totalBatches)
-// - repeatPerBatch: number of packets per bpf_prog_run call
+// calculateBatchParams calculates the repeat count per batch, interval between batches, total batches, and batch size.
+// Returns (repeatPerBatch, interval, totalBatches, batchSize)
+// - repeatPerBatch: number of times to repeat bpf_prog_run (0 means use batchSize for blast mode)
 // - interval: time between batches (0 means no rate limiting, run as fast as possible)
-// - totalBatches: total number of batches to send per CPU
-func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32) {
+// - totalBatches: total number of batches to send per CPU (0 means infinite for blast mode)
+// - batchSize: number of packets per bpf_prog_run call (used in blast mode with BatchSize feature)
+func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32, uint32) {
 	packetsPerCPU := uint32(x.cfg.Count / uint64(x.cfg.Parallelism))
+
+	if x.cfg.Blast {
+		// Blast mode: infinite sending at max speed using BatchSize feature
+		return 1 << 20, 0, 0, 64
+	}
 
 	if x.cfg.PPS == 0 {
 		// Max speed: send all packets in one batch
-		return packetsPerCPU, 0, 1
+		return packetsPerCPU, 0, 1, 64
 	}
 
 	// PPS limited: calculate batch parameters
@@ -392,7 +426,7 @@ func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32) {
 		interval = time.Millisecond
 	}
 
-	return packetsPerBatch, interval, totalBatches
+	return packetsPerBatch, interval, totalBatches, 1
 }
 
 func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts *ebpf.RunOptions, interval time.Duration, totalBatches uint32) error {
@@ -401,6 +435,24 @@ func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpt
 	cpuset.Set(cpu)
 	if err := unix.SchedSetaffinity(unix.Gettid(), &cpuset); err != nil {
 		return fmt.Errorf("failed to set CPU affinity: %v", err)
+	}
+
+	// Blast mode: infinite loop until Ctrl-C
+	if x.cfg.Blast {
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+				ret, err := xdpProg.Run(runOpts)
+				if err != nil {
+					return fmt.Errorf("bpf_prog_run failed: %w", err)
+				}
+				if ret != 0 {
+					return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
+				}
+			}
+		}
 	}
 
 	// Unlimited mode: single batch execution
