@@ -194,3 +194,42 @@ TCP data split:         n/a
 
 また、batch-sizeを変化して試してみるのはアリなのかもしれない。
 
+### 余談
+この実装はeBPF Mapに任意のパケットを書き込んでおいてそれを上書きすることで高速にパケットを投げつけている。
+そこであえてその変更をコメントアウトしてみたらどうなるか確かめてみる。
+#### 1core
+おおよそ5Mppsほどが出てる。
+```shell
+ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 1 --parallelism 1 --blast --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
+//　略
+5,242,880 xmit/s, 60,000.00 Mbps
+5,154,193 xmit/s, 58,985.06 Mbps
+5,133,179 xmit/s, 58,744.57 Mbps
+5,169,797 xmit/s, 59,163.63 Mbps
+5,200,144 xmit/s, 59,510.93 Mbps
+5,159,632 xmit/s, 59,047.30 Mbps
+5,109,120 xmit/s, 58,469.24 Mbps
+5,062,048 xmit/s, 57,930.54 Mbps
+5,164,911 xmit/s, 59,107.72 Mbps
+5,178,880 xmit/s, 59,267.58 Mbps
+```
+
+#### Multicore
+おおよそピーク性能で69Mppsほどでてる
+```shell
+ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 15 --parallelism 15 --blast --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
+// 略
+67,429,179 xmit/s, 771,666.21 Mbps
+56,420,664 xmit/s, 645,682.77 Mbps
+46,106,056 xmit/s, 527,641.94 Mbps
+62,397,043 xmit/s, 714,077.49 Mbps
+65,086,239 xmit/s, 744,852.89 Mbps
+60,040,537 xmit/s, 687,109.42 Mbps
+55,475,055 xmit/s, 634,861.62 Mbps
+68,667,683 xmit/s, 785,839.27 Mbps
+67,937,393 xmit/s, 777,481.76 Mbps
+66,590,419 xmit/s, 762,066.87 Mbps
+69,617,474 xmit/s, 796,708.76 Mbps
+```
+
+この事から1coreで2Mpps, Multiで最大10Mppsほどがこの書き換えでオーバーヘッドになってることがわかった。
