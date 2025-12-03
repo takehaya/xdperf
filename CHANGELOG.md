@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.8.0](https://github.com/takehaya/xdperf/compare/v0.7.1...v0.8.0) (2025-12-03)
+
+
+### 🎉 Features
+
+* add batch size params ([b472015](https://github.com/takehaya/xdperf/commit/b472015060d5e58c1caa3feee8f82943da52a423))
+* add blast mode and map size compaction ([3a7b336](https://github.com/takehaya/xdperf/commit/3a7b33622dfb4c1f1a9edeca0c732ee6c3ffd662))
+* add enable xdpcap ([7e4254f](https://github.com/takehaya/xdperf/commit/7e4254f4d6d34fedf7301ae7d54f1dfb86e73b8f))
+* add memcpy optimize ([ed14bb7](https://github.com/takehaya/xdperf/commit/ed14bb738a05734d5c72bb67ed631fd7d55d3a8d))
+* add support probe ([a043580](https://github.com/takehaya/xdperf/commit/a0435805039a872a324b14adece8edd74a392fc6))
+* add xdperf.pdf ([1451c94](https://github.com/takehaya/xdperf/commit/1451c940b3b55890b743915a9c0a89817815d06b))
+* blast mode and perf tuning ([068ec99](https://github.com/takehaya/xdperf/commit/068ec99459609b915348ec4da1381f8e02f30629))
+
+
+### 📝 Documentation
+
+* add perf report ([12ec4ce](https://github.com/takehaya/xdperf/commit/12ec4cebe48f43a27fec9da38aade41f085f1c94))
+* add xdperf logo ([3e47b70](https://github.com/takehaya/xdperf/commit/3e47b70c7923a953efec62f4bb5cb925cb41e15d))
+* add xdperf logo ([62595c8](https://github.com/takehaya/xdperf/commit/62595c8ba4c6f9ba392aba5cfbb90235e754c31d))
+* modify readme ([9fdf8c4](https://github.com/takehaya/xdperf/commit/9fdf8c4a4acce63c6b219768266464be9452f5b9))
+* modify readme ([4573d19](https://github.com/takehaya/xdperf/commit/4573d19f8de4e009f00159ac83807fe838c49260))
+* modify readme ([0346a46](https://github.com/takehaya/xdperf/commit/0346a461ebf5a43abe4e8ef10a6b9aef336866d0))
+* modify readme ([3f5fb5b](https://github.com/takehaya/xdperf/commit/3f5fb5b799fb267c10fdea26a35cb4ec7de3a0f1))
+* modify readme ([7904efb](https://github.com/takehaya/xdperf/commit/7904efbe0b19b5d2c45c369e7af9a0513de5ce8a))
+* modify readme ([c929ca9](https://github.com/takehaya/xdperf/commit/c929ca9df6681ca90979c76b8a0897fda14eb261))
+* modify readme ([fefb643](https://github.com/takehaya/xdperf/commit/fefb643cfd9b909c8e641146d4c898611aa3505a))
+* modify readme ([ccf8353](https://github.com/takehaya/xdperf/commit/ccf8353d552f3652fdb19e7c96c6e96d001d1263))
+* remove noise docs ([dec14df](https://github.com/takehaya/xdperf/commit/dec14dfe217ad55df1f759008ad3aebb663b14f5))
+* remove noise docs ([94d5b14](https://github.com/takehaya/xdperf/commit/94d5b145f413b7f59757ddd1fca77aa5d56d3f12))
+* update docs ([5ac7bdf](https://github.com/takehaya/xdperf/commit/5ac7bdf8c8ff20f911aaf00dd30212dc4547e3c8))
+* update tips perf ([1658b5a](https://github.com/takehaya/xdperf/commit/1658b5a805c5a5c70c968258379f93c9b8ddd7bb))
+* update tips perf ([4584cdb](https://github.com/takehaya/xdperf/commit/4584cdbd35e77502a0036f6fc64246a88d2e42d8))
+
+
+### 🔧 Miscellaneous Chores
+
+* add test tips ([1fa41d4](https://github.com/takehaya/xdperf/commit/1fa41d4556f793b5c7b6a41a7cb6037b9304cef3))
+* update go version ([3017202](https://github.com/takehaya/xdperf/commit/30172022eb8d0171b6ab8d98077794386a9ceb7f))
+
+
+### ♻️ Code Refactoring
+
+* rename to infinite ([1964f49](https://github.com/takehaya/xdperf/commit/1964f490b1a22cf08a8802b71f6d7db1f95befa7))
+
 ## [0.7.1](https://github.com/takehaya/xdperf/compare/v0.7.0...v0.7.1) (2025-11-30)
 
 
