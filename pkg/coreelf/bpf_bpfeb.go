@@ -93,7 +93,8 @@ type BpfMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfVariableSpecs struct {
-	SwapResp *ebpf.VariableSpec `ebpf:"swap_resp"`
+	EnableXdpcap *ebpf.VariableSpec `ebpf:"enable_xdpcap"`
+	SwapResp     *ebpf.VariableSpec `ebpf:"swap_resp"`
 }
 
 // BpfObjects contains all objects after they have been loaded into the kernel.
@@ -137,7 +138,8 @@ func (m *BpfMaps) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfVariables struct {
-	SwapResp *ebpf.Variable `ebpf:"swap_resp"`
+	EnableXdpcap *ebpf.Variable `ebpf:"enable_xdpcap"`
+	SwapResp     *ebpf.Variable `ebpf:"swap_resp"`
 }
 
 // BpfPrograms contains all programs after they have been loaded into the kernel.

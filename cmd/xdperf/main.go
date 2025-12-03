@@ -82,8 +82,9 @@ func newApp(version string) *cli.App {
 			Usage: "number of parallel packet sending threads",
 		},
 		cli.StringFlag{
-			Name:  "count, c",
-			Usage: "number of packets to send (e.g., 100k, 1m). Required if --duration not specified",
+			Name: "count, c",
+			Usage: "Number of packets to send (e.g., 100k, 1m). " +
+				"If --infinite is set, this value is used as the number of packet pools. Required if --duration not specified.",
 		},
 		cli.DurationFlag{
 			Name:  "duration, t",
@@ -101,6 +102,19 @@ func newApp(version string) *cli.App {
 		cli.BoolFlag{
 			Name:  "show-nic-stats",
 			Usage: "show NIC-level statistics (may include other traffic on the same interface)",
+		},
+		cli.BoolFlag{
+			Name:  "infinite",
+			Usage: "enable infinite mode for maximum throughput. Requires --send args",
+		},
+		cli.IntFlag{
+			Name:  "batch-size",
+			Value: 1,
+			Usage: "syscall batch size tuning",
+		},
+		cli.BoolFlag{
+			Name:  "enable-xdpcap",
+			Usage: "enable xdpcap support for packet capture (reduces performance)",
 		},
 	}
 
@@ -153,6 +167,9 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.PluginLanguage = ctx.String("plugin-language")
 	c.SwapResp = ctx.Bool("swap-resp")
 	c.ShowNICStats = ctx.Bool("show-nic-stats")
+	c.Infinite = ctx.Bool("infinite")
+	c.BatchSize = uint32(ctx.Int("batch-size"))
+	c.EnableXdpcap = ctx.Bool("enable-xdpcap")
 
 	// Parse count
 	countStr := ctx.String("count")

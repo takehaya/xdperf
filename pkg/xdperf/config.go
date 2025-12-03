@@ -27,8 +27,12 @@ type Config struct {
 	Count       uint64        // total packets to send
 	PPS         uint64        // 0 = unlimited (max speed)
 	Duration    time.Duration // 0 = not specified (use count instead)
+	Infinite    bool          // enable infinite mode for maximum throughput
+	BatchSize   uint32        // syscall batch size tuning (default: 1)
 
+	EnableXdpcap bool // enable xdpcap support (default: false for max performance)
 	DebugMode    int
+
 	ShowNICStats bool // show NIC-level statistics (may include other traffic on the same interface)
 }
 
@@ -60,14 +64,28 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("duration must be non-negative")
 	}
 
-	// Either count or duration must be specified
-	if c.Count == 0 && c.Duration == 0 {
-		return fmt.Errorf("either --count or --duration must be specified")
-	}
+	// Infinite mode validation (must be checked before count/duration validation)
+	if c.Infinite {
+		if !c.Sender {
+			return fmt.Errorf("--infinite requires --send to be specified")
+		}
+		if c.Count <= 0 {
+			return fmt.Errorf("--infinite requires --count to be specified (used as packet pool size)")
+		}
+		if c.Duration > 0 {
+			return fmt.Errorf("--infinite cannot be used with --duration")
+		}
+		// Note: --pps is ignored in infinite mode (always max speed)
+	} else {
+		// Non-infinite mode: either count or duration must be specified
+		if c.Count == 0 && c.Duration == 0 {
+			return fmt.Errorf("either --count or --duration must be specified")
+		}
 
-	// Cannot specify both count and duration
-	if c.Count > 0 && c.Duration > 0 {
-		return fmt.Errorf("cannot specify both --count and --duration")
+		// Cannot specify both count and duration
+		if c.Count > 0 && c.Duration > 0 {
+			return fmt.Errorf("cannot specify both --count and --duration")
+		}
 	}
 
 	// Duration requires PPS

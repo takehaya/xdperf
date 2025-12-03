@@ -75,6 +75,10 @@ sudo xdperf run --device eth0 --count 1m --parallelism 4 \
 # Large packets for throughput testing
 sudo xdperf run --device eth0 --count 100k \
     --cfg '{"payload_size": 1400}'
+
+
+sudo xdperf run --device ens4 --count 100k --parallelism 10 \
+    --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 64}'
 ```
 
 ### Server Mode (Receive Only)
