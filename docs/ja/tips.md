@@ -44,7 +44,7 @@ output性能が十分出るかを見たい。環境は virtio-net ドライバ�
 
 ### ベースラインを見てみる
 ```shell
-$ sudo ./out/bin/xdperf run --device=ens4 --count 100k --parallelism 15 --blast --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1500}'
+$ sudo ./out/bin/xdperf run --device=ens4 --count 100k --parallelism 15 --infinite --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1500}'
 // 略
 6,460,859 xmit/s, 19,273.75 Mbps
 4,769,462 xmit/s, 14,223.81 Mbps
@@ -57,7 +57,7 @@ $ sudo ./out/bin/xdperf run --device=ens4 --count 100k --parallelism 15 --blast 
 
 ### Batchingを導入してみよう
 ```shell
-$ sudo ./out/bin/xdperf run --device=ens4 --count 100k --parallelism 15 --blast --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1500}'
+$ sudo ./out/bin/xdperf run --device=ens4 --count 100k --parallelism 15 --infinite --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1500}'
 // 略
 12,291,417 xmit/s, 36,921.00 Mbps
 11,160,965 xmit/s, 33,526.75 Mbps
@@ -74,7 +74,7 @@ https://github.com/cilium/ebpf/pull/1914
 おそらくメモリコピーをXDPでやってるところがあれなのでそれをバルクにしてみる。
 `bpf_xdp_store_bytes`を使うといい感じなはず。
 ```shell
-ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 10k --parallelism 19 --blast --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}' --batch-size 64
+ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 10k --parallelism 19 --infinite --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}' --batch-size 64
 // 略
 43,207,038 xmit/s, 113,437.72 Mbps
 40,140,974 xmit/s, 105,328.41 Mbps
@@ -90,7 +90,7 @@ xdpcapというのを使ってるのでOutput時にオーバーヘッドがあ�
 ということでBypassしてみよう
 
 ```shell
-$ sudo ./out/bin/xdperf run --device=ens4 --count 10k --parallelism 15 --blast --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}' --batch-size 64
+$ sudo ./out/bin/xdperf run --device=ens4 --count 10k --parallelism 15 --infinite --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}' --batch-size 64
 //中略
 49,158,284 xmit/s, 122,799.44 Mbps
 47,584,312 xmit/s, 118,875.64 Mbps
@@ -124,7 +124,7 @@ $ sudo ./out/bin/xdperf run --device=ens4 --count 10k --parallelism 15 --blast -
 ちなみに1coreあたりの性能だと3Mppsぐらいだった。
 
 ```shell
-buntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 1k --parallelism 1 --blast --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1500}' --batch-size 64
+buntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 1k --parallelism 1 --infinite --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1500}' --batch-size 64
 // 略
 3,556,608 xmit/s, 10,249.85 Mbps
 3,586,404 xmit/s, 10,335.56 Mbps
@@ -146,7 +146,7 @@ cf. https://drive.google.com/file/d/1e7JWfHt2GKucZ8YZaQhXN3ehHcoNxOT6/view
 ### 他にやってみると効果があること
 - mapに入れる値を小さくする
 ```shell
-ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 15 --parallelism 15 --blast --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
+ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 15 --parallelism 15 --infinite --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
 // 略
 50,576,340 xmit/s, 82,065.71 Mbps
 55,577,100 xmit/s, 81,185.65 Mbps
@@ -200,7 +200,7 @@ TCP data split:         n/a
 #### 1core
 おおよそ5Mppsほどが出てる。
 ```shell
-ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 1 --parallelism 1 --blast --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
+ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 1 --parallelism 1 --infinite --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
 //　略
 5,242,880 xmit/s, 60,000.00 Mbps
 5,154,193 xmit/s, 58,985.06 Mbps
@@ -217,7 +217,7 @@ ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 -
 #### Multicore
 おおよそピーク性能で69Mppsほどでてる
 ```shell
-ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 15 --parallelism 15 --blast --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
+ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 15 --parallelism 15 --infinite --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
 // 略
 67,429,179 xmit/s, 771,666.21 Mbps
 56,420,664 xmit/s, 645,682.77 Mbps

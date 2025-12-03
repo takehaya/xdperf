@@ -10,6 +10,8 @@ In addition, XDPerf provides a flexible mechanism for transmitting arbitrary pac
 
 Furthermore, since XDPerf is implemented in Go, it runs as a single binary, making deployment simple and convenient.
 
+You can find the project explanation slides at [./docs/xdperf.pdf](https://github.com/takehaya/xdperf/tree/main/docs/xdperf.pdf).
+
 ## Install
 
 Note: You need to install `jq` beforehand.

@@ -84,7 +84,7 @@ func newApp(version string) *cli.App {
 		cli.StringFlag{
 			Name: "count, c",
 			Usage: "Number of packets to send (e.g., 100k, 1m). " +
-				"If --blast is set, this value is used as the number of packet pools. Required if --duration not specified.",
+				"If --infinite is set, this value is used as the number of packet pools. Required if --duration not specified.",
 		},
 		cli.DurationFlag{
 			Name:  "duration, t",
@@ -104,8 +104,8 @@ func newApp(version string) *cli.App {
 			Usage: "show NIC-level statistics (may include other traffic on the same interface)",
 		},
 		cli.BoolFlag{
-			Name:  "blast",
-			Usage: "enable blast mode for maximum throughput. Requires --send args",
+			Name:  "infinite",
+			Usage: "enable infinite mode for maximum throughput. Requires --send args",
 		},
 		cli.IntFlag{
 			Name:  "batch-size",
@@ -167,7 +167,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.PluginLanguage = ctx.String("plugin-language")
 	c.SwapResp = ctx.Bool("swap-resp")
 	c.ShowNICStats = ctx.Bool("show-nic-stats")
-	c.Blast = ctx.Bool("blast")
+	c.Infinite = ctx.Bool("infinite")
 	c.BatchSize = uint32(ctx.Int("batch-size"))
 	c.EnableXdpcap = ctx.Bool("enable-xdpcap")
 

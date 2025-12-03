@@ -27,7 +27,7 @@ type Config struct {
 	Count       uint64        // total packets to send
 	PPS         uint64        // 0 = unlimited (max speed)
 	Duration    time.Duration // 0 = not specified (use count instead)
-	Blast       bool          // enable blast mode for maximum throughput
+	Infinite    bool          // enable infinite mode for maximum throughput
 	BatchSize   uint32        // syscall batch size tuning (default: 1)
 
 	EnableXdpcap bool // enable xdpcap support (default: false for max performance)
@@ -64,20 +64,20 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("duration must be non-negative")
 	}
 
-	// Blast mode validation (must be checked before count/duration validation)
-	if c.Blast {
+	// Infinite mode validation (must be checked before count/duration validation)
+	if c.Infinite {
 		if !c.Sender {
-			return fmt.Errorf("--blast requires --send to be specified")
+			return fmt.Errorf("--infinite requires --send to be specified")
 		}
 		if c.Count <= 0 {
-			return fmt.Errorf("--blast requires --count to be specified (used as packet pool size)")
+			return fmt.Errorf("--infinite requires --count to be specified (used as packet pool size)")
 		}
 		if c.Duration > 0 {
-			return fmt.Errorf("--blast cannot be used with --duration")
+			return fmt.Errorf("--infinite cannot be used with --duration")
 		}
-		// Note: --pps is ignored in blast mode (always max speed)
+		// Note: --pps is ignored in infinite mode (always max speed)
 	} else {
-		// Non-blast mode: either count or duration must be specified
+		// Non-infinite mode: either count or duration must be specified
 		if c.Count == 0 && c.Duration == 0 {
 			return fmt.Errorf("either --count or --duration must be specified")
 		}

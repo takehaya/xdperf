@@ -60,6 +60,9 @@ xdperf run has two primary operating modes:
 | `--plugin-config` | `--cfg` | No | - | Plugin configuration in JSON format |
 | `--plugin-config-path` | `--cfgpath` | No | - | Path to JSON configuration file |
 | `--debugmode` | `-D` | No | `0` | Debug level (0: off, 1: on, 2: verbose) |
+| `--infinite` | - | No | `false` | Enable infinite mode for maximum throughput |
+| `--batch-size` | - | No | `1` | Syscall batch size tuning |
+| `--enable-xdpcap` | - | No | `false` | Enable xdpcap support for packet capture (reduces performance) |
 
 ### Option Details
 
@@ -79,12 +82,17 @@ Specify how many packets to send. You must use **either** `--count` **or** `--du
 - `k` = 1,000 (e.g., `100k` = 100,000)
 - `m` = 1,000,000 (e.g., `1m` = 1,000,000)
 
+**Note**: When `--infinite` is set, `--count` specifies the number of packet pools (packet templates) instead of total packets to send.
+
 ```shell
 # Send 100,000 packets
 sudo xdperf run --device eth0 --count 100k
 
 # Send 1 million packets
 sudo xdperf run --device eth0 --count 1m
+
+# Infinite mode: 10k packet pools, send continuously until Ctrl-C
+sudo xdperf run --device eth0 --count 10k --infinite
 ```
 
 **`--duration`**: Duration to send packets. Uses Go duration format (e.g., `10s`, `1m`, `500ms`).
@@ -241,14 +249,62 @@ Set debug output level.
 sudo xdperf run --device eth0 --count 100 --debugmode 1
 ```
 
+#### `--infinite`
+
+Enable infinite mode for maximum throughput. In this mode, packets are sent continuously at maximum speed until interrupted with Ctrl-C.
+
+**Constraints:**
+- Requires `--send` mode (enabled by default)
+- Requires `--count` to specify the packet pool size
+- Cannot be used with `--duration`
+- `--pps` is ignored (always runs at max speed)
+
+```shell
+# Infinite mode with 10k packet pool and 4 parallel threads
+sudo xdperf run --device eth0 --count 10k --parallelism 4 --infinite
+
+# High-performance infinite mode with batch optimization
+sudo xdperf run --device eth0 --count 10k --parallelism 8 --infinite --batch-size 64
+```
+
+#### `--batch-size`
+
+Tune the syscall batch size for `bpf_prog_run`. Higher values reduce syscall overhead but may increase latency.
+
+| Value | Description |
+|-------|-------------|
+| `1` | Default, one packet per syscall |
+| `64` | Recommended for high-throughput scenarios |
+
+```shell
+# Use batch size of 64 for improved performance
+sudo xdperf run --device eth0 --count 1m --batch-size 64
+
+# Combined with infinite mode for maximum throughput
+sudo xdperf run --device eth0 --count 10k --infinite --batch-size 64 --parallelism 8
+```
+
+#### `--enable-xdpcap`
+
+Enable xdpcap support for packet capture. This allows capturing transmitted packets for debugging purposes.
+
+**Warning:** Enabling this option reduces performance due to additional BPF map lookups.
+
+```shell
+# Enable packet capture (for debugging)
+sudo xdperf run --device eth0 --count 1000 --enable-xdpcap
+```
+
 ### Option Constraints Summary
 
 | Constraint | Description |
 |------------|-------------|
 | `--device` is required | Must specify a valid network interface |
-| `--count` or `--duration` | One of these must be specified (but not both) |
+| `--count` or `--duration` | One of these must be specified (but not both), unless `--infinite` is used |
 | `--duration` requires `--pps` | Duration mode needs a rate limit to calculate packet count |
 | `--pps` requires `--count` or `--duration` | Cannot be used alone |
 | `--count` >= `--parallelism` | Total packets must be at least equal to thread count |
 | `--parallelism` <= CPU cores | Cannot exceed available CPU cores |
 | Plugin name format | Must be `<name>.<language>` unless `--plugin-language` is specified |
+| `--infinite` requires `--count` | Packet pool size must be specified |
+| `--infinite` cannot use `--duration` | Duration is not applicable in infinite mode |

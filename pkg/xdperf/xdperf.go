@@ -304,8 +304,8 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	prog := x.choiceTXBPFProgram()
 
 	mode := "max speed"
-	if x.cfg.Blast {
-		mode = "blast (infinite)"
+	if x.cfg.Infinite {
+		mode = "infinite"
 	} else if x.cfg.PPS > 0 {
 		mode = "rate limited"
 	}
@@ -317,7 +317,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		zap.Uint32("batch_size", batchSize),
 		zap.Uint32("total_batches_per_cpu", totalBatches),
 		zap.Duration("batch_interval", interval),
-		zap.Bool("blast_mode", x.cfg.Blast),
+		zap.Bool("infinite_mode", x.cfg.Infinite),
 	)
 
 	// Fail Fast: cancel all goroutines on first error
@@ -356,8 +356,8 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 
 	select {
 	case <-sig:
-		if x.cfg.Blast {
-			x.Logger.Info("Received signal. Stopping blast mode...")
+		if x.cfg.Infinite {
+			x.Logger.Info("Received signal. Stopping infinite mode...")
 		} else {
 			x.Logger.Info("Received signal. Shutting down client...")
 		}
@@ -382,15 +382,15 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 
 // calculateBatchParams calculates the repeat count per batch, interval between batches, total batches, and batch size.
 // Returns (repeatPerBatch, interval, totalBatches, batchSize)
-// - repeatPerBatch: number of times to repeat bpf_prog_run (0 means use batchSize for blast mode)
+// - repeatPerBatch: number of times to repeat bpf_prog_run (0 means use batchSize for infinite mode)
 // - interval: time between batches (0 means no rate limiting, run as fast as possible)
-// - totalBatches: total number of batches to send per CPU (0 means infinite for blast mode)
-// - batchSize: number of packets per bpf_prog_run call (used in blast mode with BatchSize feature)
+// - totalBatches: total number of batches to send per CPU (0 means infinite for infinite mode)
+// - batchSize: number of packets per bpf_prog_run call (used in infinite mode with BatchSize feature)
 func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32, uint32) {
 	packetsPerCPU := uint32(x.cfg.Count / uint64(x.cfg.Parallelism))
 
-	if x.cfg.Blast {
-		// Blast mode: infinite sending at max speed using BatchSize feature
+	if x.cfg.Infinite {
+		// Infinite mode: infinite sending at max speed using BatchSize feature
 		return 1 << 20, 0, 0, x.cfg.BatchSize
 	}
 
@@ -443,8 +443,8 @@ func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpt
 		return fmt.Errorf("failed to set CPU affinity: %v", err)
 	}
 
-	// Blast mode: infinite loop until Ctrl-C
-	if x.cfg.Blast {
+	// Infinite mode: infinite loop until Ctrl-C
+	if x.cfg.Infinite {
 		for {
 			select {
 			case <-ctx.Done():
