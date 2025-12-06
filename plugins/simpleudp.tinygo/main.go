@@ -5,6 +5,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/takehaya/xdperf/pkg/guest"
@@ -42,7 +43,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	}
 	reqJSON, _ := json.Marshal(req)
 	// show input
-	guest.Log(1, "plugin_process called: count="+string(rune(req.Count)))
+	guest.Log(1, "plugin_process called: count="+strconv.FormatUint(req.Count, 10))
 	guest.Log(1, "show input: "+string(reqJSON))
 
 	// dummy ethernet packet as base_packet
@@ -131,7 +132,14 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		return -3
 	}
 
-	guest.ReportMetric("gen resp count", float64(len(res.RawPacketTemplate)), time.Now().UnixNano())
+	var templateCount int
+	switch res.TemplateType {
+	case guest.GeneratorTemplateTypeRaw:
+		templateCount = len(res.RawPacketTemplate)
+	case guest.GeneratorTemplateTypeVariable:
+		templateCount = len(res.VariablePacketTemplate.Variants)
+	}
+	guest.ReportMetric("gen resp count", float64(templateCount), time.Now().UnixNano())
 	guest.Log(1, "response sent")
 	return wres
 }
