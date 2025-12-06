@@ -218,9 +218,12 @@ func (x *Xdperf) initDifferentialMaps(base guest.BasePacket, diffEntries []DiffE
 	)
 
 	// Initialize base packet map
+	// Find maximum diff count across all entries
 	diffCount := uint8(0)
-	if len(diffEntries) > 0 && len(diffEntries[0].Diffs) > 0 {
-		diffCount = uint8(len(diffEntries[0].Diffs))
+	for _, entry := range diffEntries {
+		if uint8(len(entry.Diffs)) > diffCount {
+			diffCount = uint8(len(entry.Diffs))
+		}
 	}
 	if err := x.initBasePacketMap(base, diffCount, uint8(len(checksums)), numCpus); err != nil {
 		return fmt.Errorf("failed to init base packet map: %w", err)
