@@ -14,8 +14,11 @@
 // Maximum number of diff entries (per CPU)
 #define MAX_DIFF_ENTRIES 131072
 
-// Maximum number of checksum metadata entries
-#define MAX_CHECKSUM_ENTRIES 8
+// Maximum number of checksum metadata entries per base packet
+#define MAX_CHECKSUM_ENTRIES 4
+
+// Maximum number of base packets (variants)
+#define MAX_BASE_PACKETS 16
 
 // Checksum types
 #define CSUM_TYPE_IPV4_HEADER 0
@@ -44,9 +47,11 @@ struct diff_value {
 
 // Diff entry for one packet (contains all diffs for that packet)
 struct diff_entry {
-    __u16 pkt_len;    // Packet length (for variable length)
+    __u8 base_idx;    // Index into base_packet_map (which base to use)
     __u8 diff_count;  // Actual number of diffs in this entry
+    __u16 pkt_len;    // Packet length (for variable length)
     __u8 len_changed; // 1 if pkt_len differs from base, 0 otherwise (affects checksum handling)
+    __u8 _pad[3];     // Padding for alignment
     struct diff_value diffs[MAX_DIFFS_PER_PACKET];
 };
 
@@ -67,10 +72,10 @@ struct diff_pkt_state {
     __u32 idx;   // Current index (round-robin)
 };
 
-// Base packet map (one base packet)
+// Base packet map (multiple base packets for different variants)
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
+    __uint(max_entries, MAX_BASE_PACKETS);
     __type(key, __u32);
     __type(value, struct base_packet);
 } base_packet_map SEC(".maps");
@@ -84,9 +89,10 @@ struct {
 } diff_map SEC(".maps");
 
 // Checksum metadata map (shared, read-only)
+// Key: base_idx * MAX_CHECKSUM_ENTRIES + checksum_idx
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, MAX_CHECKSUM_ENTRIES);
+    __uint(max_entries, MAX_BASE_PACKETS *MAX_CHECKSUM_ENTRIES);
     __type(key, __u32);
     __type(value, struct checksum_meta);
 } checksum_meta_map SEC(".maps");

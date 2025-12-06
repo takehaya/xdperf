@@ -175,15 +175,21 @@ func (x *Xdperf) initDifferentialMode(resp *guest.GeneratorProcessResponse) erro
 	x.Logger.Info("using differential packet generation mode")
 
 	// Convert variable template to differential format
-	base, diffEntries, checksums, err := ConvertVariableTemplateToDifferential(*resp, int(x.cfg.Count))
+	bases, diffEntries, err := ConvertVariableTemplateToDifferential(*resp, int(x.cfg.Count))
 	if err != nil {
 		return fmt.Errorf("failed to convert to differential format: %w", err)
 	}
 
+	// Count total checksums across all bases
+	totalChecksums := 0
+	for _, b := range bases {
+		totalChecksums += len(b.Checksums)
+	}
+
 	x.Logger.Info("differential conversion successful",
-		zap.Uint16("base_packet_len", base.Length),
+		zap.Int("num_bases", len(bases)),
 		zap.Int("diff_entries", len(diffEntries)),
-		zap.Int("checksums", len(checksums)),
+		zap.Int("total_checksums", totalChecksums),
 	)
 
 	// Debug: dump first few diff entries
@@ -195,6 +201,7 @@ func (x *Xdperf) initDifferentialMode(resp *guest.GeneratorProcessResponse) erro
 		for i := 0; i < maxDump; i++ {
 			x.Logger.Debug("diff entry",
 				zap.Int("index", i),
+				zap.Uint8("base_idx", diffEntries[i].BaseIdx),
 				zap.Uint16("pkt_len", diffEntries[i].PacketLen),
 				zap.Int("diff_count", len(diffEntries[i].Diffs)),
 			)
@@ -202,7 +209,7 @@ func (x *Xdperf) initDifferentialMode(resp *guest.GeneratorProcessResponse) erro
 	}
 
 	// Initialize differential maps
-	if err := x.initDifferentialMaps(base, diffEntries, checksums); err != nil {
+	if err := x.initDifferentialMaps(bases, diffEntries); err != nil {
 		return fmt.Errorf("failed to init differential maps: %w", err)
 	}
 

@@ -342,8 +342,10 @@ static __always_inline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct c
 
     // Convert to host order and prepare seed (invert the checksum)
     __u32 old_csum = bpf_ntohs(old_csum_be);
-    if (old_csum == 0)
-        old_csum = 0xFFFF; // UDP: 0 means 0xFFFF
+    // UDP checksum of 0 means "no checksum" but is stored as 0xFFFF
+    // For other protocols (TCP, IPv4 header), 0 is a valid checksum value
+    if (old_csum == 0 && (meta->csum_type == CSUM_TYPE_UDP_IPV4 || meta->csum_type == CSUM_TYPE_UDP_IPV6))
+        old_csum = 0xFFFF;
     __u32 seed = ~old_csum & 0xFFFF;
 
     // Apply bpf_csum_diff for each diff that affects this checksum
@@ -371,8 +373,9 @@ static __always_inline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct c
     // Fold and finalize the checksum
     __u16 new_csum = csum_fold_helper(seed);
 
-    // UDP checksum of 0 means no checksum, use 0xFFFF instead
-    if (new_csum == 0)
+    // UDP checksum of 0 means "no checksum", use 0xFFFF instead per RFC 768
+    // For other protocols (TCP, IPv4 header), 0 is a valid checksum value
+    if (new_csum == 0 && (meta->csum_type == CSUM_TYPE_UDP_IPV4 || meta->csum_type == CSUM_TYPE_UDP_IPV6))
         new_csum = 0xFFFF;
 
     __be16 new_csum_be = bpf_htons(new_csum);
@@ -408,17 +411,20 @@ int xdp_tx_differential(struct xdp_md *ctx)
     if (local_idx >= count)
         local_idx = 0;
 
-    // 2. Get base packet
-    struct base_packet *base = bpf_map_lookup_elem(&base_packet_map, &zero);
-    if (!base) {
-        DEBUG_PRINT("base_packet_map lookup failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-
-    // 3. Get diff entry for current index
+    // 2. Get diff entry for current index (need this first to get base_idx)
     struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
     if (!diff) {
         DEBUG_PRINT("diff_map lookup failed\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    // 3. Get base packet using base_idx from diff entry
+    __u32 base_idx = diff->base_idx;
+    if (base_idx >= MAX_BASE_PACKETS)
+        base_idx = 0;
+    struct base_packet *base = bpf_map_lookup_elem(&base_packet_map, &base_idx);
+    if (!base) {
+        DEBUG_PRINT("base_packet_map lookup failed\n");
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
@@ -553,6 +559,9 @@ int xdp_tx_differential(struct xdp_md *ctx)
     if (checksum_count > MAX_CHECKSUM_ENTRIES)
         checksum_count = MAX_CHECKSUM_ENTRIES;
 
+    // Checksum key offset for this base: base_idx * MAX_CHECKSUM_ENTRIES
+    __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
+
     if (diff->len_changed) {
         // Packet length changed - must recalculate checksums from scratch
         // This is O(packet_length) but only happens when length varies
@@ -560,7 +569,7 @@ int xdp_tx_differential(struct xdp_md *ctx)
         for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
             if (i >= checksum_count)
                 break;
-            __u32 csum_idx = i;
+            __u32 csum_idx = csum_base_offset + i;
             struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
             if (!meta)
                 break;
@@ -574,7 +583,7 @@ int xdp_tx_differential(struct xdp_md *ctx)
         for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
             if (i >= checksum_count)
                 break;
-            __u32 csum_idx = i;
+            __u32 csum_idx = csum_base_offset + i;
             struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
             if (!meta)
                 break;

@@ -11,9 +11,16 @@ import (
 
 // DiffEntry represents a single diff entry for differential packet generation
 type DiffEntry struct {
+	BaseIdx    uint8  // Index into base_packet_map (which base to use)
 	PacketLen  uint16
 	LenChanged bool // True if packet length differs from base (requires full checksum recalculation)
 	Diffs      []DiffValue
+}
+
+// BasePacketInfo contains base packet and its checksums
+type BasePacketInfo struct {
+	Base      guest.BasePacket
+	Checksums []guest.ChecksumSpec
 }
 
 // DiffValue represents a single diff value
@@ -44,29 +51,35 @@ func checksumTypeToBPF(t guest.ChecksumType) uint8 {
 	}
 }
 
-// initBasePacketMap initializes the base packet map with a single base packet
-func (x *Xdperf) initBasePacketMap(base guest.BasePacket, diffCount uint8, checksumCount uint8, numCpus int) error {
-	key := uint32(0)
+// initBasePacketMaps initializes the base packet map with multiple base packets
+func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
+	for baseIdx, info := range bases {
+		key := uint32(baseIdx)
 
-	// Create per-CPU values (all CPUs get the same base packet)
-	basePackets := make([]coreelf.BpfBasePacket, numCpus)
-	for i := 0; i < numCpus; i++ {
-		basePackets[i] = coreelf.BpfBasePacket{
-			Len:           base.Length,
-			DiffCount:     diffCount,
-			ChecksumCount: checksumCount,
+		// Create per-CPU values (all CPUs get the same base packet)
+		basePackets := make([]coreelf.BpfBasePacket, numCpus)
+		for i := 0; i < numCpus; i++ {
+			basePackets[i] = coreelf.BpfBasePacket{
+				Len:           info.Base.Length,
+				DiffCount:     0, // Not used in current implementation
+				ChecksumCount: uint8(len(info.Checksums)),
+			}
+			copy(basePackets[i].Data[:], info.Base.Data)
 		}
-		copy(basePackets[i].Data[:], base.Data)
+
+		if err := x.bpfobjs.BpfMaps.BasePacketMap.Put(&key, basePackets); err != nil {
+			return fmt.Errorf("failed to put base packet map at key %d: %w", baseIdx, err)
+		}
+
+		x.Logger.Debug("base packet initialized",
+			zap.Int("base_idx", baseIdx),
+			zap.Uint16("base_len", info.Base.Length),
+			zap.Int("checksum_count", len(info.Checksums)),
+		)
 	}
 
-	if err := x.bpfobjs.BpfMaps.BasePacketMap.Put(&key, basePackets); err != nil {
-		return fmt.Errorf("failed to put base packet map: %w", err)
-	}
-
-	x.Logger.Info("base packet map initialized",
-		zap.Uint16("base_len", base.Length),
-		zap.Uint8("diff_count", diffCount),
-		zap.Uint8("checksum_count", checksumCount),
+	x.Logger.Info("base packet maps initialized",
+		zap.Int("num_bases", len(bases)),
 	)
 
 	return nil
@@ -109,8 +122,9 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 					lenChanged = 1
 				}
 				entrylist[cpu] = coreelf.BpfDiffEntry{
-					PktLen:     e.PacketLen,
+					BaseIdx:    e.BaseIdx,
 					DiffCount:  uint8(len(e.Diffs)),
+					PktLen:     e.PacketLen,
 					LenChanged: lenChanged,
 				}
 
@@ -143,29 +157,38 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 	return nil
 }
 
-// initChecksumMetaMap initializes the checksum metadata map
-func (x *Xdperf) initChecksumMetaMap(checksums []guest.ChecksumSpec) error {
-	for i, cs := range checksums {
-		if i >= 8 {
-			break // MAX_CHECKSUM_ENTRIES
-		}
+// MAX_CHECKSUM_ENTRIES must match the BPF definition
+const maxChecksumEntriesPerBase = 4
 
-		key := uint32(i)
-		meta := coreelf.BpfChecksumMeta{
-			CsumType:       checksumTypeToBPF(cs.Type),
-			CsumOffset:     cs.ChecksumOffset,
-			HeaderStart:    cs.HeaderStart,
-			HeaderLen:      cs.HeaderLen,
-			IpHeaderOffset: cs.IPHeaderOffset,
-		}
+// initChecksumMetaMaps initializes the checksum metadata map for all bases
+// Key format: base_idx * MAX_CHECKSUM_ENTRIES + checksum_idx
+func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo) error {
+	totalChecksums := 0
+	for baseIdx, info := range bases {
+		for csIdx, cs := range info.Checksums {
+			if csIdx >= maxChecksumEntriesPerBase {
+				break // MAX_CHECKSUM_ENTRIES per base
+			}
 
-		if err := x.bpfobjs.BpfMaps.ChecksumMetaMap.Put(&key, &meta); err != nil {
-			return fmt.Errorf("failed to put checksum meta map at key %d: %w", i, err)
+			key := uint32(baseIdx*maxChecksumEntriesPerBase + csIdx)
+			meta := coreelf.BpfChecksumMeta{
+				CsumType:       checksumTypeToBPF(cs.Type),
+				CsumOffset:     cs.ChecksumOffset,
+				HeaderStart:    cs.HeaderStart,
+				HeaderLen:      cs.HeaderLen,
+				IpHeaderOffset: cs.IPHeaderOffset,
+			}
+
+			if err := x.bpfobjs.BpfMaps.ChecksumMetaMap.Put(&key, &meta); err != nil {
+				return fmt.Errorf("failed to put checksum meta map at key %d (base=%d, cs=%d): %w", key, baseIdx, csIdx, err)
+			}
+			totalChecksums++
 		}
 	}
 
-	x.Logger.Info("checksum meta map initialized",
-		zap.Int("num_checksums", len(checksums)),
+	x.Logger.Info("checksum meta maps initialized",
+		zap.Int("num_bases", len(bases)),
+		zap.Int("total_checksums", totalChecksums),
 	)
 
 	return nil
@@ -185,7 +208,7 @@ func (x *Xdperf) initDiffPktStateMap(countsPerCPU []uint32) error {
 }
 
 // initDifferentialMaps initializes all maps needed for differential packet generation
-func (x *Xdperf) initDifferentialMaps(base guest.BasePacket, diffEntries []DiffEntry, checksums []guest.ChecksumSpec) error {
+func (x *Xdperf) initDifferentialMaps(bases []BasePacketInfo, diffEntries []DiffEntry) error {
 	numCpus, err := ebpf.PossibleCPU()
 	if err != nil {
 		return fmt.Errorf("failed to get possible CPU: %w", err)
@@ -220,21 +243,15 @@ func (x *Xdperf) initDifferentialMaps(base guest.BasePacket, diffEntries []DiffE
 
 	x.Logger.Info("differential packet distribution calculated",
 		zap.Int("total_entries", totalEntries),
+		zap.Int("num_bases", len(bases)),
 		zap.Int("parallelism", parallelism),
 		zap.Int("num_cpus", numCpus),
 		zap.Any("counts_per_cpu", countsPerCPU[:parallelism]),
 	)
 
-	// Initialize base packet map
-	// Find maximum diff count across all entries
-	diffCount := uint8(0)
-	for _, entry := range diffEntries {
-		if uint8(len(entry.Diffs)) > diffCount {
-			diffCount = uint8(len(entry.Diffs))
-		}
-	}
-	if err := x.initBasePacketMap(base, diffCount, uint8(len(checksums)), numCpus); err != nil {
-		return fmt.Errorf("failed to init base packet map: %w", err)
+	// Initialize base packet maps (multiple bases)
+	if err := x.initBasePacketMaps(bases, numCpus); err != nil {
+		return fmt.Errorf("failed to init base packet maps: %w", err)
 	}
 
 	// Initialize diff map
@@ -242,9 +259,9 @@ func (x *Xdperf) initDifferentialMaps(base guest.BasePacket, diffEntries []DiffE
 		return fmt.Errorf("failed to init diff map: %w", err)
 	}
 
-	// Initialize checksum meta map
-	if err := x.initChecksumMetaMap(checksums); err != nil {
-		return fmt.Errorf("failed to init checksum meta map: %w", err)
+	// Initialize checksum meta maps (per base)
+	if err := x.initChecksumMetaMaps(bases); err != nil {
+		return fmt.Errorf("failed to init checksum meta maps: %w", err)
 	}
 
 	// Initialize diff packet state map
