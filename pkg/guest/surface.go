@@ -134,6 +134,50 @@ type PacketVariantSet struct {
 	Pattern VariantSelectionMode `json:"pattern"`
 }
 
+// ChecksumType represents the type of checksum calculation
+type ChecksumType string
+
+const (
+	// Unknown checksum type
+	ChecksumTypeUnknown ChecksumType = ""
+
+	// IPv4 header checksum
+	ChecksumTypeIPv4Header ChecksumType = "ipv4_header"
+
+	// UDP over IPv4
+	ChecksumTypeUDPIPv4 ChecksumType = "udp_ipv4"
+
+	// TCP over IPv4
+	ChecksumTypeTCPIPv4 ChecksumType = "tcp_ipv4"
+
+	// UDP over IPv6
+	ChecksumTypeUDPIPv6 ChecksumType = "udp_ipv6"
+
+	// TCP over IPv6
+	ChecksumTypeTCPIPv6 ChecksumType = "tcp_ipv6"
+
+	// ICMPv6
+	ChecksumTypeICMPv6 ChecksumType = "icmpv6"
+)
+
+// ChecksumSpec defines where and how to calculate a checksum
+type ChecksumSpec struct {
+	// Type of checksum calculation
+	Type ChecksumType `json:"type"`
+
+	// Offset of the checksum field in the packet
+	ChecksumOffset uint16 `json:"checksum_offset"`
+
+	// Start offset of the header/data to checksum
+	HeaderStart uint16 `json:"header_start"`
+
+	// Length of the header (0 = compute from IP/transport length)
+	HeaderLen uint16 `json:"header_len,omitempty"`
+
+	// Offset of IP header (for pseudo-header calculation)
+	IPHeaderOffset uint16 `json:"ip_header_offset"`
+}
+
 // PacketVariant represents a base packet, the variable regions inside it,
 // and a weight used for selection when patterns require it.
 type PacketVariant struct {
@@ -143,6 +187,10 @@ type PacketVariant struct {
 	// Definitions of the variable byte regions within this packet.
 	// To vary packet length, include a VariableParams with ByteStart set to ByteStartPacketLength.
 	Params []VariableParams `json:"variable_params"`
+
+	// Checksum specifications for recalculation after applying diffs.
+	// Used by the differential packet generation mode.
+	Checksums []ChecksumSpec `json:"checksums,omitempty"`
 
 	// Weight used during variant selection.
 	Weight uint32 `json:"weight"`

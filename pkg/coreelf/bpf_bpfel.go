@@ -13,10 +13,55 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type BpfBasePacket struct {
+	_             structs.HostLayout
+	Len           uint16
+	DiffCount     uint8
+	ChecksumCount uint8
+	Data          [2048]uint8
+}
+
+type BpfChecksumMeta struct {
+	_              structs.HostLayout
+	CsumType       uint8
+	Pad            uint8
+	CsumOffset     uint16
+	HeaderStart    uint16
+	HeaderLen      uint16
+	IpHeaderOffset uint16
+	Pad2           uint16
+}
+
 type BpfDatarec struct {
 	_       structs.HostLayout
 	Packets uint64
 	Bytes   uint64
+}
+
+type BpfDiffDatarec struct {
+	_       structs.HostLayout
+	Packets uint64
+	Bytes   uint64
+}
+
+type BpfDiffEntry struct {
+	_         structs.HostLayout
+	PktLen    uint16
+	DiffCount uint8
+	Pad       uint8
+	Diffs     [8]struct {
+		_      structs.HostLayout
+		Offset uint16
+		Size   uint8
+		Pad    uint8
+		Value  uint32
+	}
+}
+
+type BpfDiffPktState struct {
+	_     structs.HostLayout
+	Count uint32
+	Idx   uint32
 }
 
 type BpfPktState struct {
@@ -73,20 +118,26 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	XdpPassDummy *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
-	XdpRx        *ebpf.ProgramSpec `ebpf:"xdp_rx"`
-	XdpTx        *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpPassDummy      *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
+	XdpRx             *ebpf.ProgramSpec `ebpf:"xdp_rx"`
+	XdpTx             *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpTxDifferential *ebpf.ProgramSpec `ebpf:"xdp_tx_differential"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
-	PktStateMap   *ebpf.MapSpec `ebpf:"pkt_state_map"`
-	RxStatsMap    *ebpf.MapSpec `ebpf:"rx_stats_map"`
-	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
-	TxStatsMap    *ebpf.MapSpec `ebpf:"tx_stats_map"`
-	XdpcapHook    *ebpf.MapSpec `ebpf:"xdpcap_hook"`
+	BasePacketMap   *ebpf.MapSpec `ebpf:"base_packet_map"`
+	ChecksumMetaMap *ebpf.MapSpec `ebpf:"checksum_meta_map"`
+	DiffMap         *ebpf.MapSpec `ebpf:"diff_map"`
+	DiffPktStateMap *ebpf.MapSpec `ebpf:"diff_pkt_state_map"`
+	DiffTxStatsMap  *ebpf.MapSpec `ebpf:"diff_tx_stats_map"`
+	PktStateMap     *ebpf.MapSpec `ebpf:"pkt_state_map"`
+	RxStatsMap      *ebpf.MapSpec `ebpf:"rx_stats_map"`
+	TxOverrideMap   *ebpf.MapSpec `ebpf:"tx_override_map"`
+	TxStatsMap      *ebpf.MapSpec `ebpf:"tx_stats_map"`
+	XdpcapHook      *ebpf.MapSpec `ebpf:"xdpcap_hook"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -117,15 +168,25 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
-	PktStateMap   *ebpf.Map `ebpf:"pkt_state_map"`
-	RxStatsMap    *ebpf.Map `ebpf:"rx_stats_map"`
-	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
-	TxStatsMap    *ebpf.Map `ebpf:"tx_stats_map"`
-	XdpcapHook    *ebpf.Map `ebpf:"xdpcap_hook"`
+	BasePacketMap   *ebpf.Map `ebpf:"base_packet_map"`
+	ChecksumMetaMap *ebpf.Map `ebpf:"checksum_meta_map"`
+	DiffMap         *ebpf.Map `ebpf:"diff_map"`
+	DiffPktStateMap *ebpf.Map `ebpf:"diff_pkt_state_map"`
+	DiffTxStatsMap  *ebpf.Map `ebpf:"diff_tx_stats_map"`
+	PktStateMap     *ebpf.Map `ebpf:"pkt_state_map"`
+	RxStatsMap      *ebpf.Map `ebpf:"rx_stats_map"`
+	TxOverrideMap   *ebpf.Map `ebpf:"tx_override_map"`
+	TxStatsMap      *ebpf.Map `ebpf:"tx_stats_map"`
+	XdpcapHook      *ebpf.Map `ebpf:"xdpcap_hook"`
 }
 
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
+		m.BasePacketMap,
+		m.ChecksumMetaMap,
+		m.DiffMap,
+		m.DiffPktStateMap,
+		m.DiffTxStatsMap,
 		m.PktStateMap,
 		m.RxStatsMap,
 		m.TxOverrideMap,
@@ -146,9 +207,10 @@ type BpfVariables struct {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	XdpPassDummy *ebpf.Program `ebpf:"xdp_pass_dummy"`
-	XdpRx        *ebpf.Program `ebpf:"xdp_rx"`
-	XdpTx        *ebpf.Program `ebpf:"xdp_tx"`
+	XdpPassDummy      *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpRx             *ebpf.Program `ebpf:"xdp_rx"`
+	XdpTx             *ebpf.Program `ebpf:"xdp_tx"`
+	XdpTxDifferential *ebpf.Program `ebpf:"xdp_tx_differential"`
 }
 
 func (p *BpfPrograms) Close() error {
@@ -156,6 +218,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpPassDummy,
 		p.XdpRx,
 		p.XdpTx,
+		p.XdpTxDifferential,
 	)
 }
 

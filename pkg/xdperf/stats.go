@@ -33,18 +33,24 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 	var prevTxPackets, prevTxBytes uint64
 	var prevRxPackets, prevRxBytes uint64
 
+	// Select appropriate TX stats map based on mode
+	txStatsMap := x.bpfobjs.TxStatsMap
+	if x.useDifferential {
+		txStatsMap = x.bpfobjs.DiffTxStatsMap
+	}
+
 	for {
 		select {
 		case <-ticker.C:
 			switch ty {
 			case TrafficTypeTX:
-				deltaPackets, deltaBytes := x.getStats(x.bpfobjs.TxStatsMap, recs, &prevTxPackets, &prevTxBytes)
+				deltaPackets, deltaBytes := x.getStats(txStatsMap, recs, &prevTxPackets, &prevTxBytes)
 				p.Printf("%d xmit/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
 			case TrafficTypeRX:
 				deltaPackets, deltaBytes := x.getStats(x.bpfobjs.RxStatsMap, recs, &prevRxPackets, &prevRxBytes)
 				p.Printf("%d recv/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
 			case TrafficTypeBoth:
-				txDeltaPackets, txDeltaBytes := x.getStats(x.bpfobjs.TxStatsMap, recs, &prevTxPackets, &prevTxBytes)
+				txDeltaPackets, txDeltaBytes := x.getStats(txStatsMap, recs, &prevTxPackets, &prevTxBytes)
 				rxDeltaPackets, rxDeltaBytes := x.getStats(x.bpfobjs.RxStatsMap, recs, &prevRxPackets, &prevRxBytes)
 				p.Printf("%d xmit/s, %.2f Mbps(xmit), %d recv/s, %.2f Mbps(recv)\n",
 					txDeltaPackets, float64(txDeltaBytes*8)/1024/1024,
@@ -122,8 +128,14 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 	possibleCPUs := ebpf.MustPossibleCPU()
 	recs := make([]coreelf.BpfDatarec, possibleCPUs)
 
+	// Select appropriate TX stats map based on mode
+	txStatsMap := x.bpfobjs.TxStatsMap
+	if x.useDifferential {
+		txStatsMap = x.bpfobjs.DiffTxStatsMap
+	}
+
 	var key uint32
-	err := x.bpfobjs.TxStatsMap.Lookup(&key, &recs)
+	err := txStatsMap.Lookup(&key, &recs)
 	if err != nil {
 		x.Logger.Error("failed to lookup stats_map", zap.Error(err))
 		return

@@ -334,7 +334,13 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 		return nil, fmt.Errorf("no return value")
 	}
 
-	outLen := uint32(r[0])
+	// Check for error return (negative values)
+	retVal := int32(r[0])
+	if retVal < 0 {
+		return nil, fmt.Errorf("plugin returned error code: %d", retVal)
+	}
+
+	outLen := uint32(retVal)
 	if outLen > cap {
 		return nil, fmt.Errorf("output size exceeds capacity")
 	}
