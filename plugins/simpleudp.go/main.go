@@ -32,21 +32,30 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	guest.Log(1, "plugin_process called with input: "+string(reqJSON))
 
 	// dummy ethernet packet as base_packet
-	dstMAC := [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
-	dmacstr, err := guest.NeighborResolve(req.DstIP, req.DeviceName)
+	dstMAC := [6]byte{}
+	dmac, err := guest.ParseMAC(req.DstMac)
 	if err != nil {
-		guest.Log(3, "failed to lookup neighbor: "+err.Error())
-		return -4
+		guest.Log(3, "failed to parse destination MAC address: "+err.Error())
+		return -5
 	}
-	if dmacstr != "" {
-		guest.Log(1, "resolved MAC address: "+dmacstr)
-		dmac, err := guest.ParseMAC(dmacstr)
+	copy(dstMAC[:], dmac)
+	if req.IsArpResolve {
+		dmacstr, err := guest.NeighborResolve(req.DstIP, req.DeviceName)
 		if err != nil {
-			guest.Log(3, "failed to parse MAC address: "+err.Error())
-			return -5
+			guest.Log(3, "failed to lookup neighbor: "+err.Error())
+			return -4
 		}
-		copy(dstMAC[:], dmac)
+		if dmacstr != "" {
+			guest.Log(1, "resolved MAC address: "+dmacstr)
+			dmac, err := guest.ParseMAC(dmacstr)
+			if err != nil {
+				guest.Log(3, "failed to parse MAC address: "+err.Error())
+				return -5
+			}
+			copy(dstMAC[:], dmac)
+		}
 	}
+
 	// ペイロードの生成（指定サイズ）
 	payload := make([]byte, req.PayloadSize)
 	for i := range payload {
