@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0](https://github.com/takehaya/xdperf/compare/v0.8.0...v0.9.0) (2025-12-06)
+
+
+### 🎉 Features
+
+* skip arp lookup and dstmac intent ([7196f55](https://github.com/takehaya/xdperf/commit/7196f554409f720906c7ee0bba2bf01e4ac19a1e))
+* skip arp lookup and dstmac intent ([6d89fbb](https://github.com/takehaya/xdperf/commit/6d89fbbf1a9b898ba9554549c4e13c074d30bafd))
+
 ## [0.8.0](https://github.com/takehaya/xdperf/compare/v0.7.1...v0.8.0) (2025-12-03)
 
 
