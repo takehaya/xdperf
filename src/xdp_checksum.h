@@ -47,54 +47,8 @@ static __always_inline int update_csum_incremental(void *data, void *data_end, _
     return 0;
 }
 
-// Context for bpf_loop checksum calculation
-struct csum_loop_ctx {
-    void *data;
-    void *data_end;
-    __u32 offset;
-    __u32 len;
-    __u32 sum;
-};
-
-// Callback for bpf_loop checksum calculation
-static long csum_loop_callback(__u32 idx, void *ctx)
-{
-    struct csum_loop_ctx *c = ctx;
-    __u32 byte_offset = c->offset + idx * 2;
-
-    if (c->data + byte_offset + 2 > c->data_end)
-        return 1; // Stop iteration
-
-    __u16 *ptr = c->data + byte_offset;
-    c->sum += bpf_ntohs(*ptr);
-
-    return 0;
-}
-
 // Calculate full IPv4 header checksum
-static __always_inline __u16 calc_ipv4_header_csum(void *data, void *data_end, __u16 ip_offset)
-{
-    if (data + ip_offset + sizeof(struct iphdr) > data_end)
-        return 0;
-
-    struct iphdr *iph = data + ip_offset;
-    __u16 *ptr = (void *)iph;
-    __u32 sum = 0;
-
-    // IPv4 header is 20 bytes = 10 x 16-bit words
-    // Clear checksum field before calculation
-    iph->check = 0;
-
-#pragma unroll
-    for (int i = 0; i < 10; i++) {
-        sum += bpf_ntohs(ptr[i]);
-    }
-
-    return bpf_htons(csum_fold(sum));
-}
-
-// Safe version using bpf_xdp_load_bytes to avoid verifier issues with variable offsets
-static __always_inline __u16 calc_ipv4_header_csum_safe(struct xdp_md *ctx, __u16 ip_offset)
+static __always_inline __u16 calc_ipv4_header_csum(struct xdp_md *ctx, __u16 ip_offset)
 {
     struct iphdr iph;
 
@@ -137,9 +91,9 @@ static long csum_safe_callback(__u32 idx, void *vctx)
     return 0;
 }
 
-// Safe version of transport checksum using bpf_xdp_load_bytes
-static __always_inline __u16 calc_transport_csum_ipv4_safe(struct xdp_md *ctx, __u16 ip_offset, __u16 transport_offset,
-                                                           __u16 transport_len, __u8 protocol)
+// Calculate transport layer checksum (UDP/TCP) over IPv4
+static __always_inline __u16 calc_transport_csum_ipv4(struct xdp_md *ctx, __u16 ip_offset, __u16 transport_offset,
+                                                      __u16 transport_len, __u8 protocol)
 {
     struct iphdr iph;
 
@@ -194,88 +148,21 @@ static __always_inline __u16 calc_transport_csum_ipv4_safe(struct xdp_md *ctx, _
     return bpf_htons(result);
 }
 
-// Calculate transport layer checksum (UDP/TCP) over IPv4
-// Uses bpf_loop for variable length payloads
-static __always_inline __u16 calc_transport_csum_ipv4(void *data, void *data_end, __u16 ip_offset, __u16 transport_offset,
-                                                      __u16 transport_len, __u8 protocol)
-{
-    if (data + ip_offset + sizeof(struct iphdr) > data_end)
-        return 0;
-    if (data + transport_offset + transport_len > data_end)
-        return 0;
-
-    struct iphdr *iph = data + ip_offset;
-    __u32 sum = 0;
-
-    // Pseudo-header
-    __u32 saddr = bpf_ntohl(iph->saddr);
-    __u32 daddr = bpf_ntohl(iph->daddr);
-
-    sum += (saddr >> 16) & 0xFFFF;
-    sum += saddr & 0xFFFF;
-    sum += (daddr >> 16) & 0xFFFF;
-    sum += daddr & 0xFFFF;
-    sum += protocol;
-    sum += transport_len;
-
-    // Clear checksum field
-    if (protocol == IPPROTO_UDP) {
-        if (data + transport_offset + sizeof(struct udphdr) > data_end)
-            return 0;
-        struct udphdr *udph = data + transport_offset;
-        udph->check = 0;
-    } else if (protocol == IPPROTO_TCP) {
-        if (data + transport_offset + sizeof(struct tcphdr) > data_end)
-            return 0;
-        struct tcphdr *tcph = data + transport_offset;
-        tcph->check = 0;
-    }
-
-    // Sum transport header + payload using bpf_loop
-    struct csum_loop_ctx ctx = {
-        .data = data,
-        .data_end = data_end,
-        .offset = transport_offset,
-        .len = transport_len,
-        .sum = 0,
-    };
-
-    __u32 iterations = (transport_len + 1) / 2;
-    bpf_loop(iterations, csum_loop_callback, &ctx, 0);
-
-    sum += ctx.sum;
-
-    // Handle odd byte
-    if (transport_len & 1) {
-        __u8 *odd = data + transport_offset + transport_len - 1;
-        if ((void *)(odd + 1) <= data_end)
-            sum += (*odd) << 8;
-    }
-
-    __u16 result = csum_fold(sum);
-
-    // UDP checksum of 0 means no checksum, use 0xFFFF instead
-    if (result == 0 && protocol == IPPROTO_UDP)
-        result = 0xFFFF;
-
-    return bpf_htons(result);
-}
-
 // Calculate transport layer checksum over IPv6
-static __always_inline __u16 calc_transport_csum_ipv6(void *data, void *data_end, __u16 ip6_offset, __u16 transport_offset,
+static __always_inline __u16 calc_transport_csum_ipv6(struct xdp_md *ctx, __u16 ip6_offset, __u16 transport_offset,
                                                       __u16 transport_len, __u8 protocol)
 {
-    if (data + ip6_offset + sizeof(struct ipv6hdr) > data_end)
-        return 0;
-    if (data + transport_offset + transport_len > data_end)
+    struct ipv6hdr ip6h;
+
+    // Load IPv6 header using helper
+    if (bpf_xdp_load_bytes(ctx, ip6_offset, &ip6h, sizeof(ip6h)) < 0)
         return 0;
 
-    struct ipv6hdr *ip6h = data + ip6_offset;
     __u32 sum = 0;
 
     // Pseudo-header: source and destination IPv6 addresses
-    __u16 *src = (__u16 *)&ip6h->saddr;
-    __u16 *dst = (__u16 *)&ip6h->daddr;
+    __u16 *src = (__u16 *)&ip6h.saddr;
+    __u16 *dst = (__u16 *)&ip6h.daddr;
 
 #pragma unroll
     for (int i = 0; i < 8; i++) {
@@ -287,7 +174,8 @@ static __always_inline __u16 calc_transport_csum_ipv6(void *data, void *data_end
     sum += transport_len;
     sum += protocol;
 
-    // Clear checksum field
+    // Clear checksum field in packet using helper
+    __be16 zero_csum = 0;
     __u16 csum_field_offset;
     switch (protocol) {
     case IPPROTO_UDP:
@@ -303,31 +191,26 @@ static __always_inline __u16 calc_transport_csum_ipv6(void *data, void *data_end
         return 0;
     }
 
-    if (data + transport_offset + csum_field_offset + 2 > data_end)
+    if (bpf_xdp_store_bytes(ctx, transport_offset + csum_field_offset, &zero_csum, 2) < 0)
         return 0;
 
-    __u16 *csum_ptr = data + transport_offset + csum_field_offset;
-    *csum_ptr = 0;
-
-    // Sum transport data using bpf_loop
-    struct csum_loop_ctx ctx = {
-        .data = data,
-        .data_end = data_end,
+    // Sum transport header + payload using bpf_loop with safe callback
+    struct csum_safe_ctx sctx = {
+        .ctx = ctx,
         .offset = transport_offset,
-        .len = transport_len,
         .sum = 0,
     };
 
     __u32 iterations = (transport_len + 1) / 2;
-    bpf_loop(iterations, csum_loop_callback, &ctx, 0);
+    bpf_loop(iterations, csum_safe_callback, &sctx, 0);
 
-    sum += ctx.sum;
+    sum += sctx.sum;
 
     // Handle odd byte
     if (transport_len & 1) {
-        __u8 *odd = data + transport_offset + transport_len - 1;
-        if ((void *)(odd + 1) <= data_end)
-            sum += (*odd) << 8;
+        __u8 odd_byte;
+        if (bpf_xdp_load_bytes(ctx, transport_offset + transport_len - 1, &odd_byte, 1) == 0)
+            sum += odd_byte << 8;
     }
 
     return bpf_htons(csum_fold(sum));

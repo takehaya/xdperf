@@ -223,14 +223,14 @@ static __always_inline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 
 // Recalculate checksum using bpf_xdp_load_bytes/bpf_xdp_store_bytes
 // to avoid verifier issues with variable-offset packet access
-static __always_inline int recalc_checksum_safe(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
+static __always_inline int recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 csum;
     __u16 transport_len;
 
     switch (meta->csum_type) {
     case CSUM_TYPE_IPV4_HEADER:
-        csum = calc_ipv4_header_csum_safe(ctx, meta->ip_header_offset);
+        csum = calc_ipv4_header_csum(ctx, meta->ip_header_offset);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return -1;
         break;
@@ -243,17 +243,38 @@ static __always_inline int recalc_checksum_safe(struct xdp_md *ctx, struct check
             return -1;
         transport_len = bpf_ntohs(iph.tot_len) - (iph.ihl * 4);
     }
-        csum = calc_transport_csum_ipv4_safe(ctx, meta->ip_header_offset, meta->header_start, transport_len,
-                                             meta->csum_type == CSUM_TYPE_UDP_IPV4 ? IPPROTO_UDP : IPPROTO_TCP);
+        csum = calc_transport_csum_ipv4(ctx, meta->ip_header_offset, meta->header_start, transport_len,
+                                        meta->csum_type == CSUM_TYPE_UDP_IPV4 ? IPPROTO_UDP : IPPROTO_TCP);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return -1;
         break;
 
     case CSUM_TYPE_UDP_IPV6:
     case CSUM_TYPE_TCP_IPV6:
-    case CSUM_TYPE_ICMPV6:
-        // IPv6 transport checksums not yet implemented in safe version
-        // Fall through to return error for now
+    case CSUM_TYPE_ICMPV6: {
+        // Load IPv6 header to get payload length
+        struct ipv6hdr ip6h;
+        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
+            return -1;
+        transport_len = bpf_ntohs(ip6h.payload_len);
+        __u8 proto;
+        switch (meta->csum_type) {
+        case CSUM_TYPE_UDP_IPV6:
+            proto = IPPROTO_UDP;
+            break;
+        case CSUM_TYPE_TCP_IPV6:
+            proto = IPPROTO_TCP;
+            break;
+        default:
+            proto = IPPROTO_ICMPV6;
+            break;
+        }
+        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, proto);
+        if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
+            return -1;
+        break;
+    }
+
     default:
         return -1;
     }
@@ -440,7 +461,7 @@ int xdp_tx_differential(struct xdp_md *ctx)
         struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
         if (!meta)
             break;
-        if (recalc_checksum_safe(ctx, meta, target_len) < 0) {
+        if (recalc_checksum(ctx, meta, target_len) < 0) {
             DEBUG_PRINT("recalc_checksum failed at %d\n", i);
         }
     }
