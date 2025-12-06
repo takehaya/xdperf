@@ -1,14 +1,32 @@
 package xdperf
 
 import (
+	"encoding/binary"
 	"math/rand"
 
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
+// readValueAt reads a value from the packet at the given offset
+func readValueAt(data []byte, offset uint16, size uint8) uint32 {
+	if int(offset)+int(size) > len(data) {
+		return 0
+	}
+
+	switch size {
+	case 1:
+		return uint32(data[offset])
+	case 2:
+		return uint32(binary.BigEndian.Uint16(data[offset:]))
+	case 4:
+		return binary.BigEndian.Uint32(data[offset:])
+	}
+	return 0
+}
+
 // generateDiffEntries generates diff entries from VariableParams
 // This pre-computes all the diff values that will be applied in eBPF
-func generateDiffEntries(base guest.BasePacket, params []guest.VariableParams, count int) []DiffEntry {
+func generateDiffEntries(base guest.BasePacket, params []guest.VariableParams, checksums []guest.ChecksumSpec, count int) []DiffEntry {
 	entries := make([]DiffEntry, count)
 
 	// Track current values for sequential patterns
@@ -47,13 +65,19 @@ func generateDiffEntries(base guest.BasePacket, params []guest.VariableParams, c
 				entry.PacketLen = uint16(value)
 			} else {
 				// Regular byte modification
+				// Read old value from base packet for bpf_csum_diff
+				oldValue := readValueAt(base.Data, uint16(p.ByteStart), uint8(p.ByteSize))
 				entry.Diffs = append(entry.Diffs, DiffValue{
-					Offset: uint16(p.ByteStart),
-					Size:   uint8(p.ByteSize),
-					Value:  uint32(value),
+					Offset:   uint16(p.ByteStart),
+					Size:     uint8(p.ByteSize),
+					OldValue: oldValue,
+					NewValue: uint32(value),
 				})
 			}
 		}
+
+		// Check if packet length changed from base
+		entry.LenChanged = entry.PacketLen != base.Length
 
 		entries[i] = entry
 	}
@@ -63,7 +87,7 @@ func generateDiffEntries(base guest.BasePacket, params []guest.VariableParams, c
 
 // generateDiffEntriesFromVariant generates diff entries for a single variant
 func generateDiffEntriesFromVariant(variant guest.PacketVariant, count int) []DiffEntry {
-	return generateDiffEntries(variant.Base, variant.Params, count)
+	return generateDiffEntries(variant.Base, variant.Params, variant.Checksums, count)
 }
 
 // generateDiffEntriesFromVariantSet generates diff entries from a variant set

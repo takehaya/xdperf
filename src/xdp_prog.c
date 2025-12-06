@@ -188,7 +188,7 @@ static __always_inline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 {
     __u16 offset = dv->offset;
     __u8 size = dv->size;
-    __u32 value = dv->value;
+    __u32 value = dv->new_value;
 
     if (size == 0 || offset == 0xFFFF)
         return 0; // Skip empty diff
@@ -221,8 +221,9 @@ static __always_inline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
     return 0;
 }
 
-// Recalculate checksum using bpf_xdp_load_bytes/bpf_xdp_store_bytes
-// to avoid verifier issues with variable-offset packet access
+// Recalculate checksum from scratch using bpf_xdp_load_bytes/bpf_xdp_store_bytes
+// Used when packet length changes (incremental update not possible)
+// This is O(packet_length) - only use when necessary
 static __always_inline int recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 csum;
@@ -242,12 +243,12 @@ static __always_inline int recalc_checksum(struct xdp_md *ctx, struct checksum_m
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &iph, sizeof(iph)) < 0)
             return -1;
         transport_len = bpf_ntohs(iph.tot_len) - (iph.ihl * 4);
-    }
         csum = calc_transport_csum_ipv4(ctx, meta->ip_header_offset, meta->header_start, transport_len,
                                         meta->csum_type == CSUM_TYPE_UDP_IPV4 ? IPPROTO_UDP : IPPROTO_TCP);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return -1;
         break;
+    }
 
     case CSUM_TYPE_UDP_IPV6:
     case CSUM_TYPE_TCP_IPV6:
@@ -278,6 +279,105 @@ static __always_inline int recalc_checksum(struct xdp_md *ctx, struct checksum_m
     default:
         return -1;
     }
+
+    return 0;
+}
+
+// Fold bpf_csum_diff result to 16-bit checksum
+static __always_inline __u16 csum_fold_helper(__u64 csum)
+{
+    __u32 sum = (__u32)csum;
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    return (__u16)~sum;
+}
+
+// Check if a diff affects a particular checksum
+static __always_inline bool diff_affects_checksum(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len)
+{
+    __u16 diff_start = dv->offset;
+    __u16 diff_end = dv->offset + dv->size;
+
+    switch (meta->csum_type) {
+    case CSUM_TYPE_IPV4_HEADER: {
+        // IPv4 header checksum covers [ip_offset, ip_offset + 20)
+        __u16 ip_start = meta->ip_header_offset;
+        __u16 ip_end = ip_start + 20;
+        return diff_start < ip_end && diff_end > ip_start;
+    }
+    case CSUM_TYPE_UDP_IPV4:
+    case CSUM_TYPE_TCP_IPV4: {
+        // Pseudo-header: src IP at ip_offset+12, dst IP at ip_offset+16
+        __u16 src_ip = meta->ip_header_offset + 12;
+        __u16 dst_ip_end = meta->ip_header_offset + 20;
+        if (diff_start < dst_ip_end && diff_end > src_ip)
+            return true;
+        // Transport layer
+        return diff_start < pkt_len && diff_end > meta->header_start;
+    }
+    case CSUM_TYPE_UDP_IPV6:
+    case CSUM_TYPE_TCP_IPV6:
+    case CSUM_TYPE_ICMPV6: {
+        // IPv6 pseudo-header: src/dst addresses at ip_offset+8 to ip_offset+40
+        __u16 src_ip = meta->ip_header_offset + 8;
+        __u16 dst_ip_end = meta->ip_header_offset + 40;
+        if (diff_start < dst_ip_end && diff_end > src_ip)
+            return true;
+        // Transport layer
+        return diff_start < pkt_len && diff_end > meta->header_start;
+    }
+    default:
+        return false;
+    }
+}
+
+// Apply checksum updates using bpf_csum_diff for each diff value
+static __always_inline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, struct diff_value *diffs,
+                                                    __u8 diff_count, __u16 pkt_len)
+{
+    // Load current checksum value
+    __be16 old_csum_be;
+    if (bpf_xdp_load_bytes(ctx, meta->csum_offset, &old_csum_be, 2) < 0)
+        return -1;
+
+    // Convert to host order and prepare seed (invert the checksum)
+    __u32 old_csum = bpf_ntohs(old_csum_be);
+    if (old_csum == 0)
+        old_csum = 0xFFFF; // UDP: 0 means 0xFFFF
+    __u32 seed = ~old_csum & 0xFFFF;
+
+    // Apply bpf_csum_diff for each diff that affects this checksum
+#pragma unroll
+    for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
+        if (i >= diff_count)
+            break;
+
+        struct diff_value *dv = &diffs[i];
+
+        // Skip if this diff doesn't affect the checksum
+        if (!diff_affects_checksum(dv, meta, pkt_len))
+            continue;
+
+        // Prepare old and new values for bpf_csum_diff
+        // bpf_csum_diff requires 4-byte aligned sizes
+        __be32 old_val = bpf_htonl(dv->old_value);
+        __be32 new_val = bpf_htonl(dv->new_value);
+
+        // Calculate checksum difference using kernel helper
+        __s64 diff = bpf_csum_diff(&old_val, 4, &new_val, 4, 0);
+        seed += (__u32)diff;
+    }
+
+    // Fold and finalize the checksum
+    __u16 new_csum = csum_fold_helper(seed);
+
+    // UDP checksum of 0 means no checksum, use 0xFFFF instead
+    if (new_csum == 0)
+        new_csum = 0xFFFF;
+
+    __be16 new_csum_be = bpf_htons(new_csum);
+    if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &new_csum_be, 2) < 0)
+        return -1;
 
     return 0;
 }
@@ -448,21 +548,39 @@ int xdp_tx_differential(struct xdp_md *ctx)
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // 8. Recalculate checksums
+    // 8. Handle checksums - use incremental or full recalculation based on length change
     __u8 checksum_count = base->checksum_count;
     if (checksum_count > MAX_CHECKSUM_ENTRIES)
         checksum_count = MAX_CHECKSUM_ENTRIES;
 
+    if (diff->len_changed) {
+        // Packet length changed - must recalculate checksums from scratch
+        // This is O(packet_length) but only happens when length varies
 #pragma unroll
-    for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
-        if (i >= checksum_count)
-            break;
-        __u32 csum_idx = i;
-        struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
-        if (!meta)
-            break;
-        if (recalc_checksum(ctx, meta, target_len) < 0) {
-            DEBUG_PRINT("recalc_checksum failed at %d\n", i);
+        for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
+            if (i >= checksum_count)
+                break;
+            __u32 csum_idx = i;
+            struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
+            if (!meta)
+                break;
+            if (recalc_checksum(ctx, meta, target_len) < 0) {
+                DEBUG_PRINT("recalc_checksum failed at %d\n", i);
+            }
+        }
+    } else {
+        // Packet length unchanged - use bpf_csum_diff for incremental updates
+#pragma unroll
+        for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
+            if (i >= checksum_count)
+                break;
+            __u32 csum_idx = i;
+            struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
+            if (!meta)
+                break;
+            if (apply_csum_with_bpf_diff(ctx, meta, diff->diffs, diff_count, target_len) < 0) {
+                DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
+            }
         }
     }
 

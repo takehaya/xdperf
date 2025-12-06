@@ -38,14 +38,15 @@ struct diff_value {
     __u16 offset; // Byte offset in packet
     __u8 size;    // 1, 2, or 4 bytes
     __u8 _pad;
-    __u32 value; // Value to write (big-endian)
+    __u32 old_value; // Original value from base packet (big-endian)
+    __u32 new_value; // New value to write (big-endian)
 };
 
 // Diff entry for one packet (contains all diffs for that packet)
 struct diff_entry {
-    __u16 pkt_len;   // Packet length (for variable length)
-    __u8 diff_count; // Actual number of diffs in this entry
-    __u8 _pad;
+    __u16 pkt_len;    // Packet length (for variable length)
+    __u8 diff_count;  // Actual number of diffs in this entry
+    __u8 len_changed; // 1 if pkt_len differs from base, 0 otherwise (affects checksum handling)
     struct diff_value diffs[MAX_DIFFS_PER_PACKET];
 };
 

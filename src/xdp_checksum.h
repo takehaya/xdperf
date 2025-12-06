@@ -18,35 +18,6 @@ static __always_inline __u16 csum_fold(__u32 csum)
     return (__u16)~csum;
 }
 
-// Update checksum incrementally using bpf_csum_diff
-// This is used when packet length doesn't change
-static __always_inline int update_csum_incremental(void *data, void *data_end, __u16 csum_offset, __u32 old_val, __u32 new_val,
-                                                   __u8 size)
-{
-    if (data + csum_offset + 2 > data_end)
-        return -1;
-
-    __be16 *csum_ptr = data + csum_offset;
-    __u32 old_csum = bpf_ntohs(*csum_ptr);
-
-    // Calculate diff using bpf_csum_diff
-    __be32 from_buf = bpf_htonl(old_val);
-    __be32 to_buf = bpf_htonl(new_val);
-
-    __s64 diff = bpf_csum_diff(&from_buf, size, &to_buf, size, 0);
-    if (diff < 0)
-        return -1;
-
-    // Apply diff to existing checksum
-    __u32 new_csum = ~old_csum & 0xFFFF;
-    new_csum += (__u32)diff;
-
-    // Fold and store
-    *csum_ptr = bpf_htons(csum_fold(new_csum));
-
-    return 0;
-}
-
 // Calculate full IPv4 header checksum
 static __always_inline __u16 calc_ipv4_header_csum(struct xdp_md *ctx, __u16 ip_offset)
 {

@@ -45,16 +45,17 @@ type BpfDiffDatarec struct {
 }
 
 type BpfDiffEntry struct {
-	_         structs.HostLayout
-	PktLen    uint16
-	DiffCount uint8
-	Pad       uint8
-	Diffs     [8]struct {
-		_      structs.HostLayout
-		Offset uint16
-		Size   uint8
-		Pad    uint8
-		Value  uint32
+	_          structs.HostLayout
+	PktLen     uint16
+	DiffCount  uint8
+	LenChanged uint8
+	Diffs      [8]struct {
+		_        structs.HostLayout
+		Offset   uint16
+		Size     uint8
+		Pad      uint8
+		OldValue uint32
+		NewValue uint32
 	}
 }
 

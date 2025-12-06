@@ -11,15 +11,17 @@ import (
 
 // DiffEntry represents a single diff entry for differential packet generation
 type DiffEntry struct {
-	PacketLen uint16
-	Diffs     []DiffValue
+	PacketLen  uint16
+	LenChanged bool // True if packet length differs from base (requires full checksum recalculation)
+	Diffs      []DiffValue
 }
 
 // DiffValue represents a single diff value
 type DiffValue struct {
-	Offset uint16
-	Size   uint8
-	Value  uint32
+	Offset   uint16
+	Size     uint8
+	OldValue uint32 // Original value from base packet
+	NewValue uint32 // New value to write
 }
 
 // checksumTypeToBPF converts guest.ChecksumType to BPF constant
@@ -102,9 +104,14 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 				}
 
 				e := entries[globalIdx]
+				var lenChanged uint8
+				if e.LenChanged {
+					lenChanged = 1
+				}
 				entrylist[cpu] = coreelf.BpfDiffEntry{
-					PktLen:    e.PacketLen,
-					DiffCount: uint8(len(e.Diffs)),
+					PktLen:     e.PacketLen,
+					DiffCount:  uint8(len(e.Diffs)),
+					LenChanged: lenChanged,
 				}
 
 				// Copy diff values
@@ -114,7 +121,8 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 					}
 					entrylist[cpu].Diffs[i].Offset = dv.Offset
 					entrylist[cpu].Diffs[i].Size = dv.Size
-					entrylist[cpu].Diffs[i].Value = dv.Value
+					entrylist[cpu].Diffs[i].OldValue = dv.OldValue
+					entrylist[cpu].Diffs[i].NewValue = dv.NewValue
 				}
 			}
 			// else: CPU not using this index, leave as zero value
