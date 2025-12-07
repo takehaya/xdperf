@@ -198,6 +198,88 @@ static __always_inline int recalc_checksum(struct xdp_md *ctx, struct checksum_m
     return 0;
 }
 
+// Update IP and transport layer length fields when packet length changed
+// Must be called after base packet copy, before checksum recalculation
+static __always_inline int update_packet_lengths(struct xdp_md *ctx, __u16 target_len)
+{
+    // Load Ethernet header to check protocol
+    struct ethhdr eth;
+    if (bpf_xdp_load_bytes(ctx, 0, &eth, sizeof(eth)) < 0)
+        return -1;
+
+    __u16 eth_proto = eth.h_proto;
+    __u16 l3_offset = sizeof(struct ethhdr);
+
+    // Handle VLAN (single or double)
+    if (eth_proto == bpf_htons(ETH_P_8021Q) || eth_proto == bpf_htons(ETH_P_8021AD)) {
+        __be16 vlan_proto;
+        if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &vlan_proto, 2) < 0)
+            return -1;
+        eth_proto = vlan_proto;
+        l3_offset += 4;
+
+        // Double VLAN (QinQ)
+        if (eth_proto == bpf_htons(ETH_P_8021Q)) {
+            if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &vlan_proto, 2) < 0)
+                return -1;
+            eth_proto = vlan_proto;
+            l3_offset += 4;
+        }
+    }
+
+    if (eth_proto == bpf_htons(ETH_P_IP)) {
+        // IPv4: update tot_len (offset 2 from IP header)
+        __u16 ip_len = target_len - l3_offset;
+        __be16 ip_len_be = bpf_htons(ip_len);
+        if (bpf_xdp_store_bytes(ctx, l3_offset + 2, &ip_len_be, 2) < 0)
+            return -1;
+
+        // Get protocol from IP header (offset 9)
+        __u8 proto;
+        if (bpf_xdp_load_bytes(ctx, l3_offset + 9, &proto, 1) < 0)
+            return -1;
+
+        // Get IHL (IP Header Length) from first byte
+        __u8 version_ihl;
+        if (bpf_xdp_load_bytes(ctx, l3_offset, &version_ihl, 1) < 0)
+            return -1;
+        __u16 ihl = (version_ihl & 0x0F) * 4;
+        __u16 l4_offset = l3_offset + ihl;
+
+        if (proto == IPPROTO_UDP) {
+            // UDP: update len field (offset 4 from UDP header)
+            __u16 udp_len = target_len - l4_offset;
+            __be16 udp_len_be = bpf_htons(udp_len);
+            if (bpf_xdp_store_bytes(ctx, l4_offset + 4, &udp_len_be, 2) < 0)
+                return -1;
+        }
+        // TCP doesn't have a length field in header
+    } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
+        // IPv6: update payload_len (offset 4 from IPv6 header)
+        __u16 payload_len = target_len - l3_offset - 40; // 40 = IPv6 header size
+        __be16 payload_len_be = bpf_htons(payload_len);
+        if (bpf_xdp_store_bytes(ctx, l3_offset + 4, &payload_len_be, 2) < 0)
+            return -1;
+
+        // Get next header (protocol) from IPv6 header (offset 6)
+        __u8 proto;
+        if (bpf_xdp_load_bytes(ctx, l3_offset + 6, &proto, 1) < 0)
+            return -1;
+
+        __u16 l4_offset = l3_offset + 40;
+
+        if (proto == IPPROTO_UDP) {
+            // UDP: update len field
+            __u16 udp_len = target_len - l4_offset;
+            __be16 udp_len_be = bpf_htons(udp_len);
+            if (bpf_xdp_store_bytes(ctx, l4_offset + 4, &udp_len_be, 2) < 0)
+                return -1;
+        }
+    }
+
+    return 0;
+}
+
 // Fold bpf_csum_diff result to 16-bit checksum
 static __always_inline __u16 csum_fold_helper(__u64 csum)
 {
@@ -247,23 +329,28 @@ static __always_inline bool diff_affects_checksum(struct diff_value *dv, struct 
 }
 
 // Apply checksum updates using bpf_csum_diff for each diff value
+// Uses old_value and new_value from diff_value struct directly, avoiding map access
+// Constructs 4-byte aligned values with padding that cancels out in bpf_csum_diff
 static __always_inline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, struct diff_value *diffs,
                                                     __u8 diff_count, __u16 pkt_len)
 {
-    // Load current checksum value
+    // Load current checksum value from packet (base packet was copied, checksum not yet modified)
     __be16 old_csum_be;
     if (bpf_xdp_load_bytes(ctx, meta->csum_offset, &old_csum_be, 2) < 0)
         return -1;
+    __u16 old_csum = bpf_ntohs(old_csum_be);
 
-    // Convert to host order and prepare seed (invert the checksum)
-    __u32 old_csum = bpf_ntohs(old_csum_be);
     // UDP checksum of 0 means "no checksum" but is stored as 0xFFFF
-    // For other protocols (TCP, IPv4 header), 0 is a valid checksum value
     if (old_csum == 0 && (meta->csum_type == CSUM_TYPE_UDP_IPV4 || meta->csum_type == CSUM_TYPE_UDP_IPV6))
         old_csum = 0xFFFF;
-    __u32 seed = ~old_csum & 0xFFFF;
 
-    // Apply bpf_csum_diff for each diff that affects this checksum
+    // Initialize seed with inverted checksum (katran-style)
+    __wsum csum = ~old_csum & 0xFFFF;
+
+    DEBUG_PRINT("csum_diff: type=%d old_csum=0x%x seed=0x%x diff_count=%d\n", meta->csum_type, old_csum, csum, diff_count);
+
+    // Apply bpf_csum_diff for each diff using values from diff_value struct
+    // No variable-offset map access needed
 #pragma unroll
     for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
         if (i >= diff_count)
@@ -275,31 +362,67 @@ static __always_inline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct c
         if (!diff_affects_checksum(dv, meta, pkt_len))
             continue;
 
-        // Prepare old and new values for bpf_csum_diff
-        // bpf_csum_diff requires 4-byte aligned sizes
-        // For odd offsets, the value is in the low byte of a 16-bit word,
-        // so we need to shift it to account for checksum calculation
-        __be32 old_val, new_val;
-        if (dv->offset & 1) {
-            // Odd offset: value is low byte, shift left by 8 bits
-            old_val = bpf_htonl(dv->old_value << 8);
-            new_val = bpf_htonl(dv->new_value << 8);
-        } else {
-            // Even offset: value is high byte (or 2/4 byte aligned)
-            old_val = bpf_htonl(dv->old_value);
-            new_val = bpf_htonl(dv->new_value);
+        // Get byte position within 16-bit word (0=high byte, 1=low byte)
+        __u8 word_pos = dv->offset & 1;
+
+        // Construct old and new 4-byte values with the diff at the correct position
+        // Padding bytes are identical in old and new, so they cancel out in bpf_csum_diff
+        union {
+            __be32 val;
+            __u8 bytes[4];
+        } old_u, new_u;
+
+        // Initialize with zeros (padding)
+        old_u.val = 0;
+        new_u.val = 0;
+
+        // On x86 (little-endian), csum_partial loads 32-bit values as LE and folds:
+        //   fold(0xAABBCCDD) = 0xCCDD + 0xAABB
+        // To get correct checksum contribution on LE:
+        // - For high byte (even offset): place at bytes[3] → folds to 0xVV00
+        // - For low byte (odd offset): place at bytes[0] → folds to 0x00VV
+        // - For 2-byte: store as 16-bit LE at bytes[0:1]
+        // - For 4-byte: store directly (no byte swap)
+        if (dv->size == 1) {
+            if (word_pos == 0) {
+                // Even offset = high byte of 16-bit word
+                // On LE: bytes[3] maps to high16 bits, folds to 0xVV00
+                old_u.bytes[3] = (__u8)dv->old_value;
+                new_u.bytes[3] = (__u8)dv->new_value;
+            } else {
+                // Odd offset = low byte of 16-bit word
+                // On LE: bytes[0] maps to low16 bits, folds to 0x00VV
+                old_u.bytes[0] = (__u8)dv->old_value;
+                new_u.bytes[0] = (__u8)dv->new_value;
+            }
+        } else if (dv->size == 2) {
+            // 2-byte value: store as 16-bit LE at bytes[0:1]
+            // Value 0x04D2 → memory [D2, 04, 00, 00] → folds to 0x04D2
+            old_u.bytes[0] = (__u8)(dv->old_value & 0xFF);
+            old_u.bytes[1] = (__u8)(dv->old_value >> 8);
+            new_u.bytes[0] = (__u8)(dv->new_value & 0xFF);
+            new_u.bytes[1] = (__u8)(dv->new_value >> 8);
+        } else if (dv->size == 4) {
+            // 4-byte value: store directly without byte swap
+            // Fold gives same sum regardless of byte order (commutative)
+            old_u.val = dv->old_value;
+            new_u.val = dv->new_value;
         }
 
-        // Calculate checksum difference using kernel helper
-        __s64 diff = bpf_csum_diff(&old_val, 4, &new_val, 4, 0);
-        seed += (__u32)diff;
+        DEBUG_PRINT("  diff[%d]: off=%u sz=%u old=0x%x new=0x%x\n", i, dv->offset, dv->size, bpf_ntohl(old_u.val),
+                    bpf_ntohl(new_u.val));
+
+        // bpf_csum_diff: padding bytes cancel out, only the diff contributes
+        csum = bpf_csum_diff(&old_u.val, 4, &new_u.val, 4, csum);
+        DEBUG_PRINT("    after csum_diff: csum=0x%llx\n", (unsigned long long)csum);
     }
 
     // Fold and finalize the checksum
-    __u16 new_csum = csum_fold_helper(seed);
+    DEBUG_PRINT("csum_diff: final csum=0x%llx\n", (unsigned long long)csum);
+    __u16 new_csum = csum_fold_helper(csum);
+    DEBUG_PRINT("csum_diff: folded new_csum=0x%x\n", new_csum);
 
     // UDP checksum of 0 means "no checksum", use 0xFFFF instead per RFC 768
-    // For other protocols (TCP, IPv4 header), 0 is a valid checksum value
     if (new_csum == 0 && (meta->csum_type == CSUM_TYPE_UDP_IPV4 || meta->csum_type == CSUM_TYPE_UDP_IPV6))
         new_csum = 0xFFFF;
 
@@ -488,7 +611,12 @@ int xdp_tx(struct xdp_md *ctx)
     __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
 
     if (diff->len_changed) {
-        // Packet length changed - must recalculate checksums from scratch
+        // Packet length changed - update IP/UDP length fields first
+        if (update_packet_lengths(ctx, target_len) < 0) {
+            DEBUG_PRINT("update_packet_lengths failed\n");
+        }
+
+        // Then recalculate checksums from scratch
         // This is O(packet_length) but only happens when length varies
 #pragma unroll
         for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
@@ -504,6 +632,7 @@ int xdp_tx(struct xdp_md *ctx)
         }
     } else {
         // Packet length unchanged - use bpf_csum_diff for incremental updates
+        // Uses katran-style approach with actual 4-byte aligned packet data
 #pragma unroll
         for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
             if (i >= checksum_count)
