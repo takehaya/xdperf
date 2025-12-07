@@ -16,8 +16,8 @@ import (
 type BpfBasePacket struct {
 	_             structs.HostLayout
 	Len           uint16
-	DiffCount     uint8
 	ChecksumCount uint8
+	Pad           uint8
 	Data          [2048]uint8
 }
 

@@ -16,6 +16,12 @@
 #include <stdbool.h>
 #include <string.h>
 
+// Incremental checksum calculation assumes little-endian architecture.
+// Big-endian systems (e.g., s390x) are not supported.
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#error "Big-endian architecture is not supported for incremental checksum calculation"
+#endif
+
 char _license[] SEC("license") = "GPL";
 
 SEC("xdp")
@@ -376,13 +382,13 @@ static __always_inline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct c
         old_u.val = 0;
         new_u.val = 0;
 
-        // On x86 (little-endian), csum_partial loads 32-bit values as LE and folds:
-        //   fold(0xAABBCCDD) = 0xCCDD + 0xAABB
-        // To get correct checksum contribution on LE:
-        // - For high byte (even offset): place at bytes[3] → folds to 0xVV00
-        // - For low byte (odd offset): place at bytes[0] → folds to 0x00VV
-        // - For 2-byte: store as 16-bit LE at bytes[0:1]
-        // - For 4-byte: store directly (no byte swap)
+        // Little-endian checksum calculation (see compile-time check above).
+        // csum_partial loads 32-bit values as LE and folds: fold(0xAABBCCDD) = 0xCCDD + 0xAABB
+        // Byte placement for correct checksum contribution:
+        // - High byte (even offset): bytes[3] → folds to 0xVV00
+        // - Low byte (odd offset): bytes[0] → folds to 0x00VV
+        // - 2-byte: 16-bit LE at bytes[0:1]
+        // - 4-byte: store directly
         if (dv->size == 1) {
             if (word_pos == 0) {
                 // Even offset = high byte of 16-bit word
@@ -584,8 +590,8 @@ int xdp_tx(struct xdp_md *ctx)
     if (diff_count > MAX_DIFFS_PER_PACKET)
         diff_count = MAX_DIFFS_PER_PACKET;
 
-    // Intentionally continue on failures
-    // Individual diff failures should not abort entire packet transmission.
+        // Intentionally continue on failures
+        // Individual diff failures should not abort entire packet transmission.
 #pragma unroll
     for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
         if (i >= diff_count)

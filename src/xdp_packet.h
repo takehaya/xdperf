@@ -33,8 +33,8 @@
 // Base packet structure (stored once per variant)
 struct base_packet {
     __u16 len;                    // Base packet length
-    __u8 diff_count;              // Number of diff positions
     __u8 checksum_count;          // Number of checksums to recalculate
+    __u8 _pad;                    // Padding for alignment
     __u8 data[MAX_TEMPLATE_SIZE]; // Base packet data
 };
 

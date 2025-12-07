@@ -71,7 +71,6 @@ func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 		for i := 0; i < numCpus; i++ {
 			basePackets[i] = coreelf.BpfBasePacket{
 				Len:           info.Base.Length,
-				DiffCount:     0, // Not used in current implementation
 				ChecksumCount: uint8(len(info.Checksums)),
 			}
 			copy(basePackets[i].Data[:], info.Base.Data)
