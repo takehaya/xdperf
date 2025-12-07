@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -306,8 +307,9 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	}
 	defer func() {
 		// free input memory
-		// Ignore errors - memory will be reclaimed when WASM instance is closed
-		_, _ = p.functions.free.Call(ctx, uint64(inPtr))
+		if _, err := p.functions.free.Call(ctx, uint64(inPtr)); err != nil {
+			log.Printf("Warning: failed to free WASM input memory (potential leak): %v", err)
+		}
 	}()
 
 	// allocate memory for output
@@ -319,8 +321,9 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	outPtr := uint32(res[0])
 	defer func() {
 		// free output memory
-		// Ignore errors - memory will be reclaimed when WASM instance is closed
-		_, _ = p.functions.free.Call(ctx, uint64(outPtr))
+		if _, err := p.functions.free.Call(ctx, uint64(outPtr)); err != nil {
+			log.Printf("Warning: failed to free WASM output memory (potential leak): %v", err)
+		}
 	}()
 
 	// call plugin function

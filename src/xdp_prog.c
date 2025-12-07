@@ -588,14 +588,18 @@ int xdp_tx(struct xdp_md *ctx)
     if (diff_count > MAX_DIFFS_PER_PACKET)
         diff_count = MAX_DIFFS_PER_PACKET;
 
-        // Intentionally continue on failures
-        // Individual diff failures should not abort entire packet transmission.
+    // Track diff errors for debugging (looked up later for stats)
+    __u8 diff_errors = 0;
+
+    // Intentionally continue on failures
+    // Individual diff failures should not abort entire packet transmission.
 #pragma unroll
     for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
         if (i >= diff_count)
             break;
         if (apply_diff(ctx, &diff->diffs[i]) < 0) {
             DEBUG_PRINT("apply_diff failed at %d\n", i);
+            diff_errors++;
         }
     }
 
@@ -616,12 +620,16 @@ int xdp_tx(struct xdp_md *ctx)
     // Checksum key offset for this base: base_idx * MAX_CHECKSUM_ENTRIES
     __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
 
+    // Track checksum errors for debugging
+    __u8 checksum_errors = 0;
+
     // Intentionally continue on checksum failures: performance-critical path.
     // Partial checksum errors should not abort packet transmission.
     if (diff->len_changed) {
         // Packet length changed - update IP/UDP length fields first
         if (update_packet_lengths(ctx, target_len) < 0) {
             DEBUG_PRINT("update_packet_lengths failed\n");
+            checksum_errors++;
         }
 
         // Then recalculate checksums from scratch
@@ -636,6 +644,7 @@ int xdp_tx(struct xdp_md *ctx)
                 break;
             if (recalc_checksum(ctx, meta, target_len) < 0) {
                 DEBUG_PRINT("recalc_checksum failed at %d\n", i);
+                checksum_errors++;
             }
         }
     } else {
@@ -651,6 +660,7 @@ int xdp_tx(struct xdp_md *ctx)
                 break;
             if (apply_csum_with_bpf_diff(ctx, meta, diff->diffs, diff_count, target_len) < 0) {
                 DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
+                checksum_errors++;
             }
         }
     }
@@ -666,6 +676,10 @@ int xdp_tx(struct xdp_md *ctx)
     if (rec) {
         rec->packets++;
         rec->bytes += target_len;
+        if (diff_errors)
+            rec->diff_errors += diff_errors;
+        if (checksum_errors)
+            rec->checksum_errors += checksum_errors;
     }
 
     DEBUG_PRINT("xdp_tx: cnt=%u idx=%u len=%u\n", count, local_idx, target_len);

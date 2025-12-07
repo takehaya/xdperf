@@ -33,9 +33,11 @@ type BpfChecksumMeta struct {
 }
 
 type BpfDatarec struct {
-	_       structs.HostLayout
-	Packets uint64
-	Bytes   uint64
+	_              structs.HostLayout
+	Packets        uint64
+	Bytes          uint64
+	DiffErrors     uint64
+	ChecksumErrors uint64
 }
 
 type BpfDiffEntry struct {

@@ -15,6 +15,8 @@
 struct datarec {
     __u64 packets;
     __u64 bytes;
+    __u64 diff_errors;     // Failed diff applications
+    __u64 checksum_errors; // Failed checksum calculations
 };
 
 struct {

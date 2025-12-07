@@ -32,6 +32,7 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 
 	var prevTxPackets, prevTxBytes uint64
 	var prevRxPackets, prevRxBytes uint64
+	var prevDiffErrors, prevChecksumErrors uint64
 
 	txStatsMap := x.bpfobjs.TxStatsMap
 
@@ -40,17 +41,27 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 		case <-ticker.C:
 			switch ty {
 			case TrafficTypeTX:
-				deltaPackets, deltaBytes := x.getStats(txStatsMap, recs, &prevTxPackets, &prevTxBytes)
-				p.Printf("%d xmit/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
+				deltaPackets, deltaBytes, deltaDiffErr, deltaCsumErr := x.getStatsWithErrors(txStatsMap, recs, &prevTxPackets, &prevTxBytes, &prevDiffErrors, &prevChecksumErrors)
+				if deltaDiffErr > 0 || deltaCsumErr > 0 {
+					p.Printf("%d xmit/s, %.2f Mbps (diff_err: %d, csum_err: %d)\n", deltaPackets, float64(deltaBytes*8)/1024/1024, deltaDiffErr, deltaCsumErr)
+				} else {
+					p.Printf("%d xmit/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
+				}
 			case TrafficTypeRX:
 				deltaPackets, deltaBytes := x.getStats(x.bpfobjs.RxStatsMap, recs, &prevRxPackets, &prevRxBytes)
 				p.Printf("%d recv/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
 			case TrafficTypeBoth:
-				txDeltaPackets, txDeltaBytes := x.getStats(txStatsMap, recs, &prevTxPackets, &prevTxBytes)
+				txDeltaPackets, txDeltaBytes, deltaDiffErr, deltaCsumErr := x.getStatsWithErrors(txStatsMap, recs, &prevTxPackets, &prevTxBytes, &prevDiffErrors, &prevChecksumErrors)
 				rxDeltaPackets, rxDeltaBytes := x.getStats(x.bpfobjs.RxStatsMap, recs, &prevRxPackets, &prevRxBytes)
-				p.Printf("%d xmit/s, %.2f Mbps(xmit), %d recv/s, %.2f Mbps(recv)\n",
-					txDeltaPackets, float64(txDeltaBytes*8)/1024/1024,
-					rxDeltaPackets, float64(rxDeltaBytes*8)/1024/1024)
+				if deltaDiffErr > 0 || deltaCsumErr > 0 {
+					p.Printf("%d xmit/s, %.2f Mbps(xmit) [diff_err: %d, csum_err: %d], %d recv/s, %.2f Mbps(recv)\n",
+						txDeltaPackets, float64(txDeltaBytes*8)/1024/1024, deltaDiffErr, deltaCsumErr,
+						rxDeltaPackets, float64(rxDeltaBytes*8)/1024/1024)
+				} else {
+					p.Printf("%d xmit/s, %.2f Mbps(xmit), %d recv/s, %.2f Mbps(recv)\n",
+						txDeltaPackets, float64(txDeltaBytes*8)/1024/1024,
+						rxDeltaPackets, float64(rxDeltaBytes*8)/1024/1024)
+				}
 			default:
 				fmt.Printf("unknown traffic type: %s\n", ty)
 				return
@@ -79,6 +90,31 @@ func (x *Xdperf) getStats(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPack
 	*prevPackets = sumPackets
 	*prevBytes = sumBytes
 	return deltaPackets, deltaBytes
+}
+
+func (x *Xdperf) getStatsWithErrors(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPackets, prevBytes, prevDiffErrors, prevChecksumErrors *uint64) (deltaPackets, deltaBytes, deltaDiffErrors, deltaChecksumErrors uint64) {
+	var key uint32
+	err := statMap.Lookup(&key, &recs)
+	if err != nil {
+		fmt.Printf("failed to lookup stats_map: %v\n", err)
+		return 0, 0, 0, 0
+	}
+	var sumPackets, sumBytes, sumDiffErrors, sumChecksumErrors uint64
+	for _, rec := range recs {
+		sumPackets += rec.Packets
+		sumBytes += rec.Bytes
+		sumDiffErrors += rec.DiffErrors
+		sumChecksumErrors += rec.ChecksumErrors
+	}
+	deltaPackets = sumPackets - *prevPackets
+	deltaBytes = sumBytes - *prevBytes
+	deltaDiffErrors = sumDiffErrors - *prevDiffErrors
+	deltaChecksumErrors = sumChecksumErrors - *prevChecksumErrors
+	*prevPackets = sumPackets
+	*prevBytes = sumBytes
+	*prevDiffErrors = sumDiffErrors
+	*prevChecksumErrors = sumChecksumErrors
+	return deltaPackets, deltaBytes, deltaDiffErrors, deltaChecksumErrors
 }
 
 // NICStats holds NIC-level statistics for XDP
@@ -130,18 +166,26 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 		x.Logger.Error("failed to lookup stats_map", zap.Error(err))
 		return
 	}
-	var sumPackets uint64
-	var sumBytes uint64
+	var sumPackets, sumBytes, sumDiffErrors, sumChecksumErrors uint64
 	for _, rec := range recs {
 		sumPackets += rec.Packets
 		sumBytes += rec.Bytes
+		sumDiffErrors += rec.DiffErrors
+		sumChecksumErrors += rec.ChecksumErrors
 	}
 
-	x.Logger.Info("final statistics",
+	fields := []zap.Field{
 		zap.Uint64("packets_processed", sumPackets),
 		zap.Uint64("total_bytes", sumBytes),
 		zap.Float64("total_megabytes", float64(sumBytes)/1024/1024),
-	)
+	}
+	if sumDiffErrors > 0 || sumChecksumErrors > 0 {
+		fields = append(fields,
+			zap.Uint64("diff_errors", sumDiffErrors),
+			zap.Uint64("checksum_errors", sumChecksumErrors),
+		)
+	}
+	x.Logger.Info("final statistics", fields...)
 
 	// NIC statistics (only if flag is set)
 	if x.cfg.ShowNICStats {

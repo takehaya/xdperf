@@ -10,6 +10,8 @@
 #include <linux/udp.h>
 #include <linux/tcp.h>
 
+#include "xdp_prog.h" // For DEBUG_PRINT
+
 // Fold 32-bit checksum to 16-bit
 static __always_inline __u16 csum_fold(__u32 csum)
 {
@@ -24,8 +26,10 @@ static __always_inline __u16 calc_ipv4_header_csum(struct xdp_md *ctx, __u16 ip_
     struct iphdr iph;
 
     // Load IP header to stack using helper - handles bounds internally
-    if (bpf_xdp_load_bytes(ctx, ip_offset, &iph, sizeof(iph)) < 0)
+    if (bpf_xdp_load_bytes(ctx, ip_offset, &iph, sizeof(iph)) < 0) {
+        DEBUG_PRINT("calc_ipv4_header_csum: failed to load IP header at offset %u\n", ip_offset);
         return 0;
+    }
 
     __u16 *ptr = (__u16 *)&iph;
     __u32 sum = 0;
@@ -69,8 +73,10 @@ static __always_inline __u16 calc_transport_csum_ipv4(struct xdp_md *ctx, __u16 
     struct iphdr iph;
 
     // Load IP header using helper
-    if (bpf_xdp_load_bytes(ctx, ip_offset, &iph, sizeof(iph)) < 0)
+    if (bpf_xdp_load_bytes(ctx, ip_offset, &iph, sizeof(iph)) < 0) {
+        DEBUG_PRINT("calc_transport_csum_ipv4: failed to load IP header at offset %u\n", ip_offset);
         return 0;
+    }
 
     __u32 sum = 0;
 
@@ -88,26 +94,33 @@ static __always_inline __u16 calc_transport_csum_ipv4(struct xdp_md *ctx, __u16 
     // Clear checksum field in packet using helper
     __be16 zero_csum = 0;
     __u16 csum_field_offset = (protocol == IPPROTO_UDP) ? 6 : 16;
-    if (bpf_xdp_store_bytes(ctx, transport_offset + csum_field_offset, &zero_csum, 2) < 0)
+    if (bpf_xdp_store_bytes(ctx, transport_offset + csum_field_offset, &zero_csum, 2) < 0) {
+        DEBUG_PRINT("calc_transport_csum_ipv4: failed to clear checksum at offset %u\n", transport_offset + csum_field_offset);
         return 0;
+    }
 
     // Sum transport header + payload using bpf_loop with safe callback
+    // Only iterate over complete 2-byte pairs to avoid read failures at odd lengths
     struct csum_safe_ctx sctx = {
         .ctx = ctx,
         .offset = transport_offset,
         .sum = 0,
     };
 
-    __u32 iterations = (transport_len + 1) / 2;
-    bpf_loop(iterations, csum_safe_callback, &sctx, 0);
+    __u32 full_pairs = transport_len / 2;
+    bpf_loop(full_pairs, csum_safe_callback, &sctx, 0);
 
     sum += sctx.sum;
 
-    // Handle odd byte
+    // Handle odd byte separately (not included in loop to avoid 2-byte read failure)
     if (transport_len & 1) {
         __u8 odd_byte;
-        if (bpf_xdp_load_bytes(ctx, transport_offset + transport_len - 1, &odd_byte, 1) == 0)
+        if (bpf_xdp_load_bytes(ctx, transport_offset + transport_len - 1, &odd_byte, 1) < 0) {
+            DEBUG_PRINT("calc_transport_csum_ipv4: failed to load odd byte at offset %u\n", transport_offset + transport_len - 1);
+            // Continue with partial checksum - odd byte contributes 0
+        } else {
             sum += odd_byte << 8;
+        }
     }
 
     __u16 result = csum_fold(sum);
@@ -126,8 +139,10 @@ static __always_inline __u16 calc_transport_csum_ipv6(struct xdp_md *ctx, __u16 
     struct ipv6hdr ip6h;
 
     // Load IPv6 header using helper
-    if (bpf_xdp_load_bytes(ctx, ip6_offset, &ip6h, sizeof(ip6h)) < 0)
+    if (bpf_xdp_load_bytes(ctx, ip6_offset, &ip6h, sizeof(ip6h)) < 0) {
+        DEBUG_PRINT("calc_transport_csum_ipv6: failed to load IPv6 header at offset %u\n", ip6_offset);
         return 0;
+    }
 
     __u32 sum = 0;
 
@@ -159,29 +174,37 @@ static __always_inline __u16 calc_transport_csum_ipv6(struct xdp_md *ctx, __u16 
         csum_field_offset = 2;
         break;
     default:
+        DEBUG_PRINT("calc_transport_csum_ipv6: unsupported protocol %u\n", protocol);
         return 0;
     }
 
-    if (bpf_xdp_store_bytes(ctx, transport_offset + csum_field_offset, &zero_csum, 2) < 0)
+    if (bpf_xdp_store_bytes(ctx, transport_offset + csum_field_offset, &zero_csum, 2) < 0) {
+        DEBUG_PRINT("calc_transport_csum_ipv6: failed to clear checksum at offset %u\n", transport_offset + csum_field_offset);
         return 0;
+    }
 
     // Sum transport header + payload using bpf_loop with safe callback
+    // Only iterate over complete 2-byte pairs to avoid read failures at odd lengths
     struct csum_safe_ctx sctx = {
         .ctx = ctx,
         .offset = transport_offset,
         .sum = 0,
     };
 
-    __u32 iterations = (transport_len + 1) / 2;
-    bpf_loop(iterations, csum_safe_callback, &sctx, 0);
+    __u32 full_pairs = transport_len / 2;
+    bpf_loop(full_pairs, csum_safe_callback, &sctx, 0);
 
     sum += sctx.sum;
 
-    // Handle odd byte
+    // Handle odd byte separately (not included in loop to avoid 2-byte read failure)
     if (transport_len & 1) {
         __u8 odd_byte;
-        if (bpf_xdp_load_bytes(ctx, transport_offset + transport_len - 1, &odd_byte, 1) == 0)
+        if (bpf_xdp_load_bytes(ctx, transport_offset + transport_len - 1, &odd_byte, 1) < 0) {
+            DEBUG_PRINT("calc_transport_csum_ipv6: failed to load odd byte at offset %u\n", transport_offset + transport_len - 1);
+            // Continue with partial checksum - odd byte contributes 0
+        } else {
             sum += odd_byte << 8;
+        }
     }
 
     return bpf_htons(csum_fold(sum));
