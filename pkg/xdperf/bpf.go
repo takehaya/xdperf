@@ -94,10 +94,22 @@ func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 	return nil
 }
 
+// maxDiffsPerPacket must match MAX_DIFFS_PER_PACKET in src/xdp_packet.h
+const maxDiffsPerPacket = 8
+
 // initDiffMap initializes the diff map with pre-computed diff entries
 func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus int) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("no diff entries")
+	}
+
+	// Warn once if any entry exceeds max diffs
+	for _, e := range entries {
+		if len(e.Diffs) > maxDiffsPerPacket {
+			x.Logger.Warn("some entries exceed MAX_DIFFS_PER_PACKET, diffs will be truncated",
+				zap.Int("max_diffs", maxDiffsPerPacket))
+			break
+		}
 	}
 
 	// Calculate starting offset for each CPU in the entries slice
@@ -137,10 +149,10 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 					LenChanged: lenChanged,
 				}
 
-				// Copy diff values
+				// Copy diff values (up to maxDiffsPerPacket)
 				for i, dv := range e.Diffs {
-					if i >= 8 {
-						break // MAX_DIFFS_PER_PACKET
+					if i >= maxDiffsPerPacket {
+						break
 					}
 					entrylist[cpu].Diffs[i].Offset = dv.Offset
 					entrylist[cpu].Diffs[i].Size = dv.Size
@@ -174,9 +186,17 @@ const maxChecksumEntriesPerBase = 4
 func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo) error {
 	totalChecksums := 0
 	for baseIdx, info := range bases {
+		// Warn if checksums exceed limit
+		if len(info.Checksums) > maxChecksumEntriesPerBase {
+			x.Logger.Warn("checksum count exceeds limit, truncating",
+				zap.Int("base_idx", baseIdx),
+				zap.Int("total_checksums", len(info.Checksums)),
+				zap.Int("max_checksums", maxChecksumEntriesPerBase))
+		}
+
 		for csIdx, cs := range info.Checksums {
 			if csIdx >= maxChecksumEntriesPerBase {
-				break // MAX_CHECKSUM_ENTRIES per base
+				break
 			}
 
 			key := uint32(baseIdx*maxChecksumEntriesPerBase + csIdx)

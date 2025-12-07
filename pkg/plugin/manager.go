@@ -306,9 +306,8 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	}
 	defer func() {
 		// free input memory
-		if _, err := p.functions.free.Call(ctx, uint64(inPtr)); err != nil {
-			panic(fmt.Sprintf("Warning: failed to free input memory: %v\n", err))
-		}
+		// Ignore errors - memory will be reclaimed when WASM instance is closed
+		_, _ = p.functions.free.Call(ctx, uint64(inPtr))
 	}()
 
 	// allocate memory for output
@@ -320,9 +319,8 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	outPtr := uint32(res[0])
 	defer func() {
 		// free output memory
-		if _, err := p.functions.free.Call(ctx, uint64(outPtr)); err != nil {
-			panic(fmt.Sprintf("Warning: failed to free output memory: %v\n", err))
-		}
+		// Ignore errors - memory will be reclaimed when WASM instance is closed
+		_, _ = p.functions.free.Call(ctx, uint64(outPtr))
 	}()
 
 	// call plugin function

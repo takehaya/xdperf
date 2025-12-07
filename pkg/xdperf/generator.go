@@ -113,7 +113,8 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 		}
 	}
 
-	var allEntries []DiffEntry
+	// Pre-allocate slice to avoid reallocations during append
+	allEntries := make([]DiffEntry, 0, totalCount)
 
 	switch variantSet.Pattern {
 	case guest.VariantSelectionModeSequential:
