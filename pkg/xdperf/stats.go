@@ -23,14 +23,6 @@ const (
 	TrafficTypeBoth TrafficType = "both"
 )
 
-// getTxStatsMap returns the appropriate TX stats map based on the mode
-func (x *Xdperf) getTxStatsMap() *ebpf.Map {
-	if x.useDifferential {
-		return x.bpfobjs.DiffTxStatsMap
-	}
-	return x.bpfobjs.TxStatsMap
-}
-
 func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 	possibleCPUs := ebpf.MustPossibleCPU()
 	recs := make([]coreelf.BpfDatarec, possibleCPUs)
@@ -41,7 +33,7 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 	var prevTxPackets, prevTxBytes uint64
 	var prevRxPackets, prevRxBytes uint64
 
-	txStatsMap := x.getTxStatsMap()
+	txStatsMap := x.bpfobjs.TxStatsMap
 
 	for {
 		select {
@@ -132,10 +124,8 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 	possibleCPUs := ebpf.MustPossibleCPU()
 	recs := make([]coreelf.BpfDatarec, possibleCPUs)
 
-	txStatsMap := x.getTxStatsMap()
-
 	var key uint32
-	err := txStatsMap.Lookup(&key, &recs)
+	err := x.bpfobjs.TxStatsMap.Lookup(&key, &recs)
 	if err != nil {
 		x.Logger.Error("failed to lookup stats_map", zap.Error(err))
 		return

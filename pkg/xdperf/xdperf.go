@@ -26,13 +26,12 @@ import (
 
 type CancelFunc func(ctx context.Context) error
 type Xdperf struct {
-	Logger          *zap.Logger
-	PluginManager   *plugin.Manager
-	cleanupFnList   []CancelFunc
-	bpfobjs         *coreelf.BpfObjects
-	Device          *net.Interface
-	cfg             Config
-	useDifferential bool // true when using differential packet generation mode
+	Logger        *zap.Logger
+	PluginManager *plugin.Manager
+	cleanupFnList []CancelFunc
+	bpfobjs       *coreelf.BpfObjects
+	Device        *net.Interface
+	cfg           Config
 }
 
 func NewXdperf(cfg Config) (*Xdperf, error) {
@@ -128,37 +127,10 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 
 	x.Logger.Debug("plugin call successful for verbose logging", zap.Any("response", resp))
 
-	// Use differential mode for variable templates
-	if resp.TemplateType == guest.GeneratorTemplateTypeVariable {
-		if err := x.initDifferentialMode(resp); err != nil {
-			x.Logger.Error("failed to init differential mode", zap.Error(err))
-			return err
-		}
-	} else {
-		// Raw template mode - use legacy full packet expansion
-		entries, err := x.convToTxOverrideEntry(resp)
-		if err != nil {
-			x.Logger.Error("failed to convert to tx override entry", zap.Error(err))
-			return err
-		}
-		x.Logger.Info("conversion to tx override entry successful", zap.Int("entry_count", len(entries)))
-
-		if x.cfg.DebugMode > 0 {
-			x.Logger.Debug("debug mode is enabled, dumping packets...")
-			for i, e := range entries {
-				packet := gopacket.NewPacket(e.Data, layers.LayerTypeEthernet, gopacket.Default)
-				x.Logger.Debug("constructed packet from entry", zap.Int("entry_index", i))
-				for _, layer := range packet.Layers() {
-					x.Logger.Debug("packet layer", zap.String("layer_type", fmt.Sprintf("%T", layer)), zap.Any("layer", layer))
-				}
-			}
-		}
-
-		if err := x.initEbpfMap(entries); err != nil {
-			x.Logger.Error("failed to init ebpf map", zap.Error(err))
-			return err
-		}
-		x.Logger.Info("ebpf map initialization successful")
+	// Initialize packet generation
+	if err := x.initPacketGeneration(resp); err != nil {
+		x.Logger.Error("failed to init packet generation", zap.Error(err))
+		return err
 	}
 
 	if err := x.runTXPacket(ctx); err != nil {
@@ -169,15 +141,23 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 	return nil
 }
 
-// initDifferentialMode initializes the differential packet generation mode
-// This uses base packet + diff entries instead of full packet expansion
-func (x *Xdperf) initDifferentialMode(resp *guest.GeneratorProcessResponse) error {
-	x.Logger.Info("using differential packet generation mode")
+// initPacketGeneration initializes packet generation from plugin response
+// Uses base packet + diff entries approach for memory efficiency
+func (x *Xdperf) initPacketGeneration(resp *guest.GeneratorProcessResponse) error {
+	var bases []BasePacketInfo
+	var diffEntries []DiffEntry
+	var err error
 
-	// Convert variable template to differential format
-	bases, diffEntries, err := ConvertVariableTemplateToDifferential(*resp, int(x.cfg.Count))
-	if err != nil {
-		return fmt.Errorf("failed to convert to differential format: %w", err)
+	switch resp.TemplateType {
+	case guest.GeneratorTemplateTypeVariable:
+		bases, diffEntries, err = GenerateVariableEntries(*resp, int(x.cfg.Count))
+		if err != nil {
+			return fmt.Errorf("failed to generate variable entries: %w", err)
+		}
+	case guest.GeneratorTemplateTypeRaw:
+		bases, diffEntries = GenerateRawEntries(resp.RawPacketTemplate, int(x.cfg.Count))
+	default:
+		return fmt.Errorf("unknown template type: %s", resp.TemplateType)
 	}
 
 	// Count total checksums across all bases
@@ -186,9 +166,10 @@ func (x *Xdperf) initDifferentialMode(resp *guest.GeneratorProcessResponse) erro
 		totalChecksums += len(b.Checksums)
 	}
 
-	x.Logger.Info("differential conversion successful",
+	x.Logger.Info("packet entries generated",
+		zap.String("template_type", string(resp.TemplateType)),
 		zap.Int("num_bases", len(bases)),
-		zap.Int("diff_entries", len(diffEntries)),
+		zap.Int("num_entries", len(diffEntries)),
 		zap.Int("total_checksums", totalChecksums),
 	)
 
@@ -208,13 +189,26 @@ func (x *Xdperf) initDifferentialMode(resp *guest.GeneratorProcessResponse) erro
 		}
 	}
 
-	// Initialize differential maps
-	if err := x.initDifferentialMaps(bases, diffEntries); err != nil {
-		return fmt.Errorf("failed to init differential maps: %w", err)
+	// Debug: dump base packets
+	if x.cfg.DebugMode > 0 && len(bases) > 0 {
+		for i, base := range bases {
+			packet := gopacket.NewPacket(base.Base.Data[:base.Base.Length], layers.LayerTypeEthernet, gopacket.Default)
+			x.Logger.Debug("base packet",
+				zap.Int("index", i),
+				zap.Uint16("length", base.Base.Length),
+				zap.Int("checksums", len(base.Checksums)),
+			)
+			for _, layer := range packet.Layers() {
+				x.Logger.Debug("packet layer", zap.String("layer_type", fmt.Sprintf("%T", layer)), zap.Any("layer", layer))
+			}
+		}
 	}
 
-	x.useDifferential = true
-	x.Logger.Info("differential mode initialization successful")
+	// Initialize BPF maps
+	if err := x.initBpfMaps(bases, diffEntries); err != nil {
+		return fmt.Errorf("failed to init BPF maps: %w", err)
+	}
+
 	return nil
 }
 
@@ -279,41 +273,6 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessRespons
 	return resp, nil
 }
 
-func (x *Xdperf) convToTxOverrideEntry(resp *guest.GeneratorProcessResponse) ([]*TxOverrideEntry, error) {
-	switch resp.TemplateType {
-	case guest.GeneratorTemplateTypeRaw:
-		return x.convRawTemplate(resp.RawPacketTemplate)
-	case guest.GeneratorTemplateTypeVariable:
-		// Variable templates should use differential mode via initDifferentialMode
-		return nil, fmt.Errorf("variable templates should use differential mode, not legacy expansion")
-	default:
-		return nil, fmt.Errorf("unknown template type: %s", resp.TemplateType)
-	}
-}
-
-func (x *Xdperf) convRawTemplate(packets []guest.BasePacket) ([]*TxOverrideEntry, error) {
-	var entries []*TxOverrideEntry
-	for _, r := range packets {
-		data := []byte(r.Data)
-		if len(data) < int(r.Length) {
-			return nil, fmt.Errorf("invalid packet length: data size %d < length %d", len(data), r.Length)
-		}
-		entry := &TxOverrideEntry{
-			Data:   data,
-			Length: r.Length,
-		}
-		entries = append(entries, entry)
-	}
-	return entries, nil
-}
-
-func (x *Xdperf) choiceTXBPFProgram() *ebpf.Program {
-	if x.useDifferential {
-		return x.bpfobjs.XdpTxDifferential
-	}
-	return x.bpfobjs.XdpTx
-}
-
 func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	in, err := x.BuildSamplePacket()
 	if err != nil {
@@ -362,7 +321,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	defer cancel()
 
 	go x.ShowStats(ctx, ttype)
-	prog := x.choiceTXBPFProgram()
+	prog := x.bpfobjs.XdpTx
 
 	mode := "max speed"
 	if x.cfg.Infinite {

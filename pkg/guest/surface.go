@@ -189,7 +189,6 @@ type PacketVariant struct {
 	Params []VariableParams `json:"variable_params"`
 
 	// Checksum specifications for recalculation after applying diffs.
-	// Used by the differential packet generation mode.
 	Checksums []ChecksumSpec `json:"checksums,omitempty"`
 
 	// Weight used during variant selection.

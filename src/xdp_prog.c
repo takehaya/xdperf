@@ -1,5 +1,5 @@
 #include "xdp_prog.h"
-#include "xdp_differential.h"
+#include "xdp_packet.h"
 #include "xdp_checksum.h"
 #include "xdpcap.h"
 #include "xdp_utils.h"
@@ -17,91 +17,6 @@
 #include <string.h>
 
 char _license[] SEC("license") = "GPL";
-
-SEC("xdp")
-int xdp_tx(struct xdp_md *ctx)
-{
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-    __u32 zero = 0;
-
-    // Get per-CPU packet state
-    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
-    if (!state) {
-        DEBUG_PRINT("pkt_state_map lookup failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-
-    __u32 count = state->count;
-    if (count == 0) {
-        DEBUG_PRINT("count=0, skipping\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-    if (count > MAX_PACKET_ENTRY)
-        count = MAX_PACKET_ENTRY;
-
-    __u32 local_idx = state->idx;
-    if (local_idx >= count)
-        local_idx = 0;
-
-    __u32 idx = local_idx;
-
-    struct pkt_template *pt = bpf_map_lookup_elem(&tx_override_map, &idx);
-    if (!pt) {
-        DEBUG_PRINT("tx_override_map lookup failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-
-    __u32 tlen = pt->len;
-    if (tlen > MAX_TEMPLATE_SIZE)
-        tlen = MAX_TEMPLATE_SIZE;
-    // Minimum packet size check (Ethernet header = 14 bytes minimum)
-    // This also ensures tlen > 0 for bpf_xdp_store_bytes
-    if (tlen < sizeof(struct ethhdr)) {
-        DEBUG_PRINT("packet too small: %u\n", tlen);
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-
-    __u32 cur_len = data_end - data;
-    if (cur_len != tlen) {
-        int delta = (int)tlen - (int)cur_len;
-        if (bpf_xdp_adjust_tail(ctx, delta) < 0) {
-            DEBUG_PRINT("bpf_xdp_adjust_tail failed\n");
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-        }
-        data = (void *)(long)ctx->data;
-        data_end = (void *)(long)ctx->data_end;
-    }
-
-    // Bounds check for verifier
-    if (data + tlen > data_end) {
-        DEBUG_PRINT("data out of bounds\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-
-    long ret = bpf_xdp_store_bytes(ctx, 0, pt->data, tlen);
-    if (ret < 0) {
-        DEBUG_PRINT("bpf_xdp_store_bytes failed: %ld\n", ret);
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-
-    // next local index
-    __u32 next = local_idx + 1;
-    if (next >= count)
-        next = 0;
-    state->idx = next;
-
-    // stats
-    struct datarec *rec = bpf_map_lookup_elem(&tx_stats_map, &zero);
-    if (!rec) {
-        DEBUG_PRINT("stats_map lookup failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-    rec->packets++;
-    rec->bytes += ctx->data_end - ctx->data;
-    DEBUG_PRINT("tx: cnt=%u idx=%u len=%u\n", count, idx, ctx->data_end - ctx->data);
-    RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
-};
 
 SEC("xdp")
 int xdp_pass_dummy(struct xdp_md *ctx)
@@ -386,22 +301,22 @@ static __always_inline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct c
 }
 
 SEC("xdp")
-int xdp_tx_differential(struct xdp_md *ctx)
+int xdp_tx(struct xdp_md *ctx)
 {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     __u32 zero = 0;
 
     // 1. Get per-CPU packet state
-    struct diff_pkt_state *state = bpf_map_lookup_elem(&diff_pkt_state_map, &zero);
+    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
     if (!state) {
-        DEBUG_PRINT("diff_pkt_state_map lookup failed\n");
+        DEBUG_PRINT("pkt_state_map lookup failed\n");
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
     __u32 count = state->count;
     if (count == 0) {
-        DEBUG_PRINT("diff count=0, skipping\n");
+        DEBUG_PRINT("count=0, skipping\n");
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
     if (count > MAX_DIFF_ENTRIES)
@@ -460,12 +375,12 @@ int xdp_tx_differential(struct xdp_md *ctx)
 // 6. Copy base packet
 // The verifier loses scalar bounds after helper calls.
 // Solution: Copy in fixed-size chunks with compile-time constants.
-// Require minimum 64 byte packets for differential mode.
+// Require minimum 64 byte packets for chunk-based copy.
 #define COPY_CHUNK_SIZE 64
 
     // Require minimum packet size of 64 bytes
     if (target_len < COPY_CHUNK_SIZE) {
-        DEBUG_PRINT("packet too small for differential mode: %u\n", target_len);
+        DEBUG_PRINT("packet too small (min 64 bytes): %u\n", target_len);
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
@@ -600,12 +515,12 @@ int xdp_tx_differential(struct xdp_md *ctx)
     state->idx = next;
 
     // 10. Update stats
-    struct diff_datarec *rec = bpf_map_lookup_elem(&diff_tx_stats_map, &zero);
+    struct datarec *rec = bpf_map_lookup_elem(&tx_stats_map, &zero);
     if (rec) {
         rec->packets++;
         rec->bytes += target_len;
     }
 
-    DEBUG_PRINT("diff_tx: cnt=%u idx=%u len=%u\n", count, local_idx, target_len);
+    DEBUG_PRINT("xdp_tx: cnt=%u idx=%u len=%u\n", count, local_idx, target_len);
     RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
 }

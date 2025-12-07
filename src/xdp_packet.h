@@ -1,5 +1,5 @@
-#ifndef XDP_DIFFERENTIAL_H
-#define XDP_DIFFERENTIAL_H
+#ifndef XDP_PACKET_H
+#define XDP_PACKET_H
 
 #include <linux/types.h>
 #include <bpf/bpf_helpers.h>
@@ -67,7 +67,7 @@ struct checksum_meta {
 };
 
 // Per-CPU packet state
-struct diff_pkt_state {
+struct pkt_state {
     __u32 count; // Number of valid diff entries
     __u32 idx;   // Current index (round-robin)
 };
@@ -102,20 +102,15 @@ struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
-    __type(value, struct diff_pkt_state);
-} diff_pkt_state_map SEC(".maps");
+    __type(value, struct pkt_state);
+} pkt_state_map SEC(".maps");
 
-// Stats map for differential mode
-struct diff_datarec {
-    __u64 packets;
-    __u64 bytes;
-};
-
+// TX stats map (uses struct datarec from xdp_prog.h)
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
-    __type(value, struct diff_datarec);
+    __type(value, struct datarec);
     __uint(max_entries, 1);
-} diff_tx_stats_map SEC(".maps");
+} tx_stats_map SEC(".maps");
 
-#endif // XDP_DIFFERENTIAL_H
+#endif // XDP_PACKET_H

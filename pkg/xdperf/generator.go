@@ -209,13 +209,58 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 	return bases, allEntries
 }
 
-// ConvertVariableTemplateToDifferential converts a variable template response
-// to the differential format (base packets + diff entries)
-func ConvertVariableTemplateToDifferential(response guest.GeneratorProcessResponse, count int) ([]BasePacketInfo, []DiffEntry, error) {
+// GenerateVariableEntries generates packet entries from a variable template response
+func GenerateVariableEntries(response guest.GeneratorProcessResponse, count int) ([]BasePacketInfo, []DiffEntry, error) {
 	if response.TemplateType != guest.GeneratorTemplateTypeVariable {
 		return nil, nil, nil
 	}
 
 	bases, entries := generateDiffEntriesFromVariantSet(response.VariablePacketTemplate, count)
 	return bases, entries, nil
+}
+
+// GenerateRawEntries generates packet entries from raw packets
+// Raw packets become base packets with diff_count=0, enabling memory deduplication
+func GenerateRawEntries(packets []guest.BasePacket, count int) ([]BasePacketInfo, []DiffEntry) {
+	if len(packets) == 0 {
+		return nil, nil
+	}
+
+	// Deduplicate base packets
+	bases := []BasePacketInfo{}
+	baseKeyToIdx := make(map[string]uint8)
+	packetToBaseIdx := make([]uint8, len(packets))
+
+	for i, pkt := range packets {
+		key := basePacketKey(pkt)
+		if idx, exists := baseKeyToIdx[key]; exists {
+			// Reuse existing base
+			packetToBaseIdx[i] = idx
+		} else {
+			// New unique base
+			idx := uint8(len(bases))
+			baseKeyToIdx[key] = idx
+			packetToBaseIdx[i] = idx
+			bases = append(bases, BasePacketInfo{
+				Base:      pkt,
+				Checksums: nil, // Raw packets have pre-computed checksums
+			})
+		}
+	}
+
+	// Create diff entries with diff_count=0 (no modifications needed)
+	// Round-robin through raw packets to fill count entries
+	entries := make([]DiffEntry, count)
+	for i := 0; i < count; i++ {
+		pktIdx := i % len(packets)
+		baseIdx := packetToBaseIdx[pktIdx]
+		entries[i] = DiffEntry{
+			BaseIdx:    baseIdx,
+			PacketLen:  packets[pktIdx].Length,
+			LenChanged: false,
+			Diffs:      nil, // No diffs for raw packets
+		}
+	}
+
+	return bases, entries
 }
