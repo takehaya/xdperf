@@ -152,7 +152,10 @@ func TestGenerateDiffEntriesFromVariantSet_Sequential(t *testing.T) {
 		},
 	}
 
-	bases, entries := generateDiffEntriesFromVariantSet(variantSet, 100)
+	bases, entries, err := generateDiffEntriesFromVariantSet(variantSet, 100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Should have 2 bases (one per variant, no deduplication)
 	if len(bases) != 2 {
@@ -229,7 +232,10 @@ func TestGenerateDiffEntriesFromVariantSet_Mixed(t *testing.T) {
 		},
 	}
 
-	bases, entries := generateDiffEntriesFromVariantSet(variantSet, 1000)
+	bases, entries, err := generateDiffEntriesFromVariantSet(variantSet, 1000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Should have 2 bases
 	if len(bases) != 2 {
@@ -302,7 +308,10 @@ func TestGenerateRawEntries(t *testing.T) {
 		{Data: make([]byte, 256), Length: 256},
 	}
 
-	bases, entries := GenerateRawEntries(packets, 10)
+	bases, entries, err := GenerateRawEntries(packets, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Should have 3 bases (one per packet)
 	if len(bases) != 3 {
@@ -338,8 +347,11 @@ func TestGenerateRawEntries(t *testing.T) {
 }
 
 func TestGenerateRawEntries_Empty(t *testing.T) {
-	bases, entries := GenerateRawEntries([]guest.BasePacket{}, 100)
+	bases, entries, err := GenerateRawEntries([]guest.BasePacket{}, 100)
 
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	if bases != nil {
 		t.Errorf("bases should be nil for empty input")
 	}

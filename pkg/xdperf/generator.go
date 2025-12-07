@@ -2,10 +2,14 @@ package xdperf
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math/rand"
 
 	"github.com/takehaya/xdperf/pkg/guest"
 )
+
+// maxBasePackets must match MAX_BASE_PACKETS in src/xdp_packet.h
+const maxBasePackets = 16
 
 // readValueAt reads a value from the packet at the given offset
 func readValueAt(data []byte, offset uint16, size uint8) uint32 {
@@ -91,9 +95,13 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 
 // generateDiffEntriesFromVariantSet generates diff entries from a variant set
 // Returns base packets (one per variant) and diff entries with proper baseIdx
-func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalCount int) ([]BasePacketInfo, []DiffEntry) {
+func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalCount int) ([]BasePacketInfo, []DiffEntry, error) {
 	if len(variantSet.Variants) == 0 {
-		return nil, nil
+		return nil, nil, nil
+	}
+
+	if len(variantSet.Variants) > maxBasePackets {
+		return nil, nil, fmt.Errorf("too many variants: %d (max %d)", len(variantSet.Variants), maxBasePackets)
 	}
 
 	// Collect base packets (one per variant, no deduplication)
@@ -176,7 +184,7 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 		}
 	}
 
-	return bases, allEntries
+	return bases, allEntries, nil
 }
 
 // GenerateVariableEntries generates packet entries from a variable template response
@@ -185,15 +193,18 @@ func GenerateVariableEntries(response guest.GeneratorProcessResponse, count int)
 		return nil, nil, nil
 	}
 
-	bases, entries := generateDiffEntriesFromVariantSet(response.VariablePacketTemplate, count)
-	return bases, entries, nil
+	return generateDiffEntriesFromVariantSet(response.VariablePacketTemplate, count)
 }
 
 // GenerateRawEntries generates packet entries from raw packets
 // Raw packets become base packets with diff_count=0
-func GenerateRawEntries(packets []guest.BasePacket, count int) ([]BasePacketInfo, []DiffEntry) {
+func GenerateRawEntries(packets []guest.BasePacket, count int) ([]BasePacketInfo, []DiffEntry, error) {
 	if len(packets) == 0 {
-		return nil, nil
+		return nil, nil, nil
+	}
+
+	if len(packets) > maxBasePackets {
+		return nil, nil, fmt.Errorf("too many raw packets: %d (max %d)", len(packets), maxBasePackets)
 	}
 
 	// Each raw packet gets its own base (no deduplication)
@@ -218,5 +229,5 @@ func GenerateRawEntries(packets []guest.BasePacket, count int) ([]BasePacketInfo
 		}
 	}
 
-	return bases, entries
+	return bases, entries, nil
 }

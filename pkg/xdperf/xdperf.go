@@ -155,7 +155,10 @@ func (x *Xdperf) initPacketGeneration(resp *guest.GeneratorProcessResponse) erro
 			return fmt.Errorf("failed to generate variable entries: %w", err)
 		}
 	case guest.GeneratorTemplateTypeRaw:
-		bases, diffEntries = GenerateRawEntries(resp.RawPacketTemplate, int(x.cfg.Count))
+		bases, diffEntries, err = GenerateRawEntries(resp.RawPacketTemplate, int(x.cfg.Count))
+		if err != nil {
+			return fmt.Errorf("failed to generate raw entries: %w", err)
+		}
 	default:
 		return fmt.Errorf("unknown template type: %s", resp.TemplateType)
 	}
