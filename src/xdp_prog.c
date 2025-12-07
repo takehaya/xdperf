@@ -17,10 +17,8 @@
 #include <string.h>
 
 // Incremental checksum calculation assumes little-endian architecture.
-// Big-endian systems (e.g., s390x) are not supported.
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-#error "Big-endian architecture is not supported for incremental checksum calculation"
-#endif
+// Big-endian systems (e.g., s390x) are not supported and will produce
+// incorrect checksums. The bpf_bpfeb.o is generated but should not be used.
 
 char _license[] SEC("license") = "GPL";
 
