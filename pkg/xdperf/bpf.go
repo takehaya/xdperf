@@ -157,7 +157,7 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 	return nil
 }
 
-// MAX_CHECKSUM_ENTRIES must match the BPF definition
+// maxChecksumEntriesPerBase must match MAX_CHECKSUM_ENTRIES in src/xdp_packet.h
 const maxChecksumEntriesPerBase = 4
 
 // initChecksumMetaMaps initializes the checksum metadata map for all bases
