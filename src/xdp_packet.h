@@ -15,9 +15,11 @@
 #define MAX_DIFF_ENTRIES 131072
 
 // Maximum number of checksum metadata entries per base packet
+// Must match maxChecksumEntriesPerBase in pkg/xdperf/bpf.go
 #define MAX_CHECKSUM_ENTRIES 4
 
 // Maximum number of base packets (variants)
+// Must match maxBasePackets in pkg/xdperf/generator.go
 #define MAX_BASE_PACKETS 16
 
 // Checksum types

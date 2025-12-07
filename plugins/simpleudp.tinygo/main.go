@@ -42,11 +42,9 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		return -1
 	}
 	reqJSON, _ := json.Marshal(req)
-	// show input
 	guest.Log(1, "plugin_process called: count="+strconv.FormatUint(req.Count, 10))
 	guest.Log(1, "show input: "+string(reqJSON))
 
-	// dummy ethernet packet as base_packet
 	dstMAC := [6]byte{}
 	dmac, err := guest.ParseMAC(req.DstMac)
 	if err != nil {
@@ -79,15 +77,6 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		payload[i] = byte(i % 256)
 	}
 
-	// Packet structure:
-	//   Ethernet header: 14 bytes (offset 0-13)
-	//   IP header: 20 bytes (offset 14-33)
-	//     - Dst IP: offset 30-33 (last octet at 33)
-	//   UDP header: 8 bytes (offset 34-41)
-	//     - Source port: offset 34-35
-	//     - Dst port: offset 36-37
-	//   Payload: offset 42+
-	// Both variants use the same base packet
 	packetBytes := BuildSimpleUDPPacket(
 		[6]byte(req.DeviceMacAddr), dstMAC,
 		req.SrcIP, req.DstIP,
@@ -125,7 +114,6 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		},
 	}
 
-	// marshal to JSON
 	wres, err := guest.WriteResponse(&res, outputPtr, outputMaxLen)
 	if err != nil {
 		guest.Log(3, "failed to write response: "+err.Error())

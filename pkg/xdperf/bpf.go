@@ -51,9 +51,19 @@ func checksumTypeToBPF(t guest.ChecksumType) uint8 {
 	}
 }
 
+// minPacketSize is the minimum packet size required by the BPF program.
+// Must match COPY_CHUNK_SIZE in src/xdp_prog.c
+const minPacketSize = 64
+
 // initBasePacketMaps initializes the base packet map with multiple base packets
 func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 	for baseIdx, info := range bases {
+		// Validate minimum packet size (BPF verifier constraint)
+		if info.Base.Length < minPacketSize {
+			return fmt.Errorf("base packet %d too small: %d bytes (minimum %d)",
+				baseIdx, info.Base.Length, minPacketSize)
+		}
+
 		key := uint32(baseIdx)
 
 		// Create per-CPU values (all CPUs get the same base packet)
