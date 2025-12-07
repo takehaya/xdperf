@@ -89,48 +89,21 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 	return entry
 }
 
-// basePacketKey creates a unique key for a base packet (for deduplication)
-func basePacketKey(base guest.BasePacket) string {
-	return string(base.Data[:base.Length])
-}
-
-// collectUniqueBases collects unique base packets from variants and returns
-// the base info list and a mapping from variant index to base index
-func collectUniqueBases(variants []guest.PacketVariant) ([]BasePacketInfo, map[int]uint8) {
-	bases := []BasePacketInfo{}
-	variantToBaseIdx := make(map[int]uint8)
-	baseKeyToIdx := make(map[string]uint8)
-
-	for i, v := range variants {
-		key := basePacketKey(v.Base)
-
-		if idx, exists := baseKeyToIdx[key]; exists {
-			// Reuse existing base
-			variantToBaseIdx[i] = idx
-		} else {
-			// New unique base
-			idx := uint8(len(bases))
-			baseKeyToIdx[key] = idx
-			variantToBaseIdx[i] = idx
-			bases = append(bases, BasePacketInfo{
-				Base:      v.Base,
-				Checksums: v.Checksums,
-			})
-		}
-	}
-
-	return bases, variantToBaseIdx
-}
-
 // generateDiffEntriesFromVariantSet generates diff entries from a variant set
-// Returns unique base packets and diff entries with proper baseIdx
+// Returns base packets (one per variant) and diff entries with proper baseIdx
 func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalCount int) ([]BasePacketInfo, []DiffEntry) {
 	if len(variantSet.Variants) == 0 {
 		return nil, nil
 	}
 
-	// Collect unique base packets
-	bases, variantToBaseIdx := collectUniqueBases(variantSet.Variants)
+	// Collect base packets (one per variant, no deduplication)
+	bases := make([]BasePacketInfo, len(variantSet.Variants))
+	for i, v := range variantSet.Variants {
+		bases[i] = BasePacketInfo{
+			Base:      v.Base,
+			Checksums: v.Checksums,
+		}
+	}
 
 	var allEntries []DiffEntry
 
@@ -154,10 +127,9 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 			}
 
 			if variantCount > 0 {
-				baseIdx := variantToBaseIdx[i]
 				state := newVariantState(v.Params)
 				for j := 0; j < variantCount; j++ {
-					entry := generateSingleEntry(v, state, baseIdx)
+					entry := generateSingleEntry(v, state, uint8(i))
 					allEntries = append(allEntries, entry)
 				}
 			}
@@ -191,17 +163,15 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 			}
 
 			// Generate single entry from selected variant using its state
-			baseIdx := variantToBaseIdx[selectedIdx]
-			entry := generateSingleEntry(variantSet.Variants[selectedIdx], variantStates[selectedIdx], baseIdx)
+			entry := generateSingleEntry(variantSet.Variants[selectedIdx], variantStates[selectedIdx], uint8(selectedIdx))
 			allEntries = append(allEntries, entry)
 		}
 
 	default:
 		// Default to first variant
-		baseIdx := variantToBaseIdx[0]
 		state := newVariantState(variantSet.Variants[0].Params)
 		for i := 0; i < totalCount; i++ {
-			entry := generateSingleEntry(variantSet.Variants[0], state, baseIdx)
+			entry := generateSingleEntry(variantSet.Variants[0], state, 0)
 			allEntries = append(allEntries, entry)
 		}
 	}
@@ -220,31 +190,18 @@ func GenerateVariableEntries(response guest.GeneratorProcessResponse, count int)
 }
 
 // GenerateRawEntries generates packet entries from raw packets
-// Raw packets become base packets with diff_count=0, enabling memory deduplication
+// Raw packets become base packets with diff_count=0
 func GenerateRawEntries(packets []guest.BasePacket, count int) ([]BasePacketInfo, []DiffEntry) {
 	if len(packets) == 0 {
 		return nil, nil
 	}
 
-	// Deduplicate base packets
-	bases := []BasePacketInfo{}
-	baseKeyToIdx := make(map[string]uint8)
-	packetToBaseIdx := make([]uint8, len(packets))
-
+	// Each raw packet gets its own base (no deduplication)
+	bases := make([]BasePacketInfo, len(packets))
 	for i, pkt := range packets {
-		key := basePacketKey(pkt)
-		if idx, exists := baseKeyToIdx[key]; exists {
-			// Reuse existing base
-			packetToBaseIdx[i] = idx
-		} else {
-			// New unique base
-			idx := uint8(len(bases))
-			baseKeyToIdx[key] = idx
-			packetToBaseIdx[i] = idx
-			bases = append(bases, BasePacketInfo{
-				Base:      pkt,
-				Checksums: nil, // Raw packets have pre-computed checksums
-			})
+		bases[i] = BasePacketInfo{
+			Base:      pkt,
+			Checksums: nil, // Raw packets have pre-computed checksums
 		}
 	}
 
@@ -253,9 +210,8 @@ func GenerateRawEntries(packets []guest.BasePacket, count int) ([]BasePacketInfo
 	entries := make([]DiffEntry, count)
 	for i := 0; i < count; i++ {
 		pktIdx := i % len(packets)
-		baseIdx := packetToBaseIdx[pktIdx]
 		entries[i] = DiffEntry{
-			BaseIdx:    baseIdx,
+			BaseIdx:    uint8(pktIdx),
 			PacketLen:  packets[pktIdx].Length,
 			LenChanged: false,
 			Diffs:      nil, // No diffs for raw packets
