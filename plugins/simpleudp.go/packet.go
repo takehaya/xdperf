@@ -8,11 +8,14 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-func BuildSamplePacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) ([]byte, error) {
+const ethHeaderLen = 14
+
+func BuildSamplePacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) ([]byte, uint64, error) {
 	buf := gopacket.NewSerializeBuffer()
 	var ethLayer gopacket.SerializableLayer
 	var ipLayer gopacket.SerializableLayer
 	var udpLayer *layers.UDP
+
 	ethLayer = &layers.Ethernet{
 		SrcMAC:       net.HardwareAddr(srcMAC[:]),
 		DstMAC:       net.HardwareAddr(dstMAC[:]),
@@ -30,17 +33,21 @@ func BuildSamplePacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, dst
 		SrcPort: layers.UDPPort(srcPort),
 		DstPort: layers.UDPPort(dstPort),
 	}
-	err := udpLayer.SetNetworkLayerForChecksum(ip4)
-	if err != nil {
-		return nil, fmt.Errorf("failed to set network layer for checksum: %w", err)
+	if err := udpLayer.SetNetworkLayerForChecksum(ip4); err != nil {
+		return nil, 0, fmt.Errorf("failed to set network layer for checksum: %w", err)
 	}
 	ipLayer = ip4
-	// Use the provided payload directly instead of recomputing or shadowing the variable.
-	err = gopacket.SerializeLayers(buf,
+
+	if err := gopacket.SerializeLayers(
+		buf,
 		gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
-		ethLayer, ipLayer, udpLayer, gopacket.Payload(payload))
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize packet: %w", err)
+		ethLayer, ipLayer, udpLayer, gopacket.Payload(payload),
+	); err != nil {
+		return nil, 0, fmt.Errorf("failed to serialize packet: %w", err)
 	}
-	return buf.Bytes(), nil
+
+	udpHeaderOffset := ethHeaderLen + int(ip4.IHL)*4
+	srcPortOffset := udpHeaderOffset
+
+	return buf.Bytes(), uint64(srcPortOffset), nil
 }
