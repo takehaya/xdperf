@@ -277,8 +277,18 @@ static __always_inline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct c
 
         // Prepare old and new values for bpf_csum_diff
         // bpf_csum_diff requires 4-byte aligned sizes
-        __be32 old_val = bpf_htonl(dv->old_value);
-        __be32 new_val = bpf_htonl(dv->new_value);
+        // For odd offsets, the value is in the low byte of a 16-bit word,
+        // so we need to shift it to account for checksum calculation
+        __be32 old_val, new_val;
+        if (dv->offset & 1) {
+            // Odd offset: value is low byte, shift left by 8 bits
+            old_val = bpf_htonl(dv->old_value << 8);
+            new_val = bpf_htonl(dv->new_value << 8);
+        } else {
+            // Even offset: value is high byte (or 2/4 byte aligned)
+            old_val = bpf_htonl(dv->old_value);
+            new_val = bpf_htonl(dv->new_value);
+        }
 
         // Calculate checksum difference using kernel helper
         __s64 diff = bpf_csum_diff(&old_val, 4, &new_val, 4, 0);
@@ -393,8 +403,8 @@ int xdp_tx(struct xdp_md *ctx)
 
 // Second chunk: copy remaining bytes if packet > 64 bytes
 // Use fixed-size chunks with compile-time constant for verifier
-// Support up to 1600 bytes (25 chunks of 64 bytes)
-#define MAX_COPY_CHUNKS 25
+// Support up to 2048 bytes (32 chunks of 64 bytes) to match MAX_TEMPLATE_SIZE
+#define MAX_COPY_CHUNKS 32
 
 #pragma unroll
     for (int chunk = 1; chunk <= MAX_COPY_CHUNKS; chunk++) {
