@@ -197,6 +197,10 @@ func TestGenerateDiffEntriesFromVariantSet_Sequential(t *testing.T) {
 }
 
 func TestGenerateDiffEntriesFromVariantSet_Mixed(t *testing.T) {
+	// Note: This test uses the global rand which is auto-seeded in Go 1.20+.
+	// The wide tolerance (30%) accounts for random variation.
+	// For debugging specific failures, temporarily use: rand.New(rand.NewSource(42))
+
 	basePacket := guest.BasePacket{
 		Data:   make([]byte, 100),
 		Length: 100,

@@ -338,7 +338,7 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	// Check for error return (negative values)
 	retVal := int32(r[0])
 	if retVal < 0 {
-		return nil, fmt.Errorf("plugin returned error code: %d", retVal)
+		return nil, fmt.Errorf("plugin error: %s (code %d)", pluginErrorMessage(retVal), retVal)
 	}
 
 	outLen := uint32(retVal)
@@ -406,4 +406,22 @@ func (p *wasmPlugin) writeToMemory(ctx context.Context, data []byte) (uint32, er
 		return 0, fmt.Errorf("write failed")
 	}
 	return ptr, nil
+}
+
+// pluginErrorMessage returns a human-readable message for plugin error codes.
+func pluginErrorMessage(code int32) string {
+	switch code {
+	case guest.PluginErrReadRequest:
+		return "failed to read/parse request"
+	case guest.PluginErrWriteResponse:
+		return "failed to write/serialize response"
+	case guest.PluginErrNeighborLookup:
+		return "ARP/neighbor resolution failed"
+	case guest.PluginErrParseMAC:
+		return "MAC address parsing failed"
+	case guest.PluginErrBuildPacket:
+		return "packet construction failed"
+	default:
+		return "unknown error"
+	}
 }

@@ -9,6 +9,7 @@
 #define MAX_TEMPLATE_SIZE 2048
 
 // Maximum number of diffs per packet
+// Must match maxDiffsPerPacket in pkg/xdperf/bpf.go
 #define MAX_DIFFS_PER_PACKET 8
 
 // Maximum number of diff entries (per CPU)

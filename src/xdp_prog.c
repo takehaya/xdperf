@@ -50,7 +50,8 @@ int xdp_rx(struct xdp_md *ctx)
     eth_proto = eth->h_proto;
     l3_hdr = data + sizeof(*eth);
 
-    // Handle VLAN (single or double tagging)
+    // Handle VLAN (single or double tagging).
+    // Note: Triple-tagged packets (e.g., 802.1ad + 802.1Q + 802.1Q) are not supported.
     if (eth_proto == bpf_htons(ETH_P_8021Q) || eth_proto == bpf_htons(ETH_P_8021AD)) {
         vlan = l3_hdr;
         if ((void *)vlan + sizeof(*vlan) > data_end)
@@ -214,7 +215,8 @@ static __always_inline int update_packet_lengths(struct xdp_md *ctx, __u16 targe
     __u16 eth_proto = eth.h_proto;
     __u16 l3_offset = sizeof(struct ethhdr);
 
-    // Handle VLAN (single or double)
+    // Handle VLAN (single or double).
+    // Note: Triple-tagged packets are not supported.
     if (eth_proto == bpf_htons(ETH_P_8021Q) || eth_proto == bpf_htons(ETH_P_8021AD)) {
         __be16 vlan_proto;
         if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &vlan_proto, 2) < 0)
@@ -293,11 +295,14 @@ static __always_inline __u16 csum_fold_helper(__u64 csum)
     return (__u16)~sum;
 }
 
-// Check if a diff affects a particular checksum
+// Check if a diff affects a particular checksum.
+// Assumption: dv->offset + dv->size does not overflow __u16.
+// This is guaranteed because valid packet offsets are < 2048 (MAX_TEMPLATE_SIZE)
+// and size is at most 4 bytes.
 static __always_inline bool diff_affects_checksum(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 diff_start = dv->offset;
-    __u16 diff_end = dv->offset + dv->size;
+    __u16 diff_end = dv->offset + dv->size; // Safe: offset < 2048, size <= 4
 
     switch (meta->csum_type) {
     case CSUM_TYPE_IPV4_HEADER: {

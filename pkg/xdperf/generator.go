@@ -3,6 +3,7 @@ package xdperf
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math/rand"
 
 	"github.com/takehaya/xdperf/pkg/guest"
@@ -11,9 +12,11 @@ import (
 // maxBasePackets must match MAX_BASE_PACKETS in src/xdp_packet.h
 const maxBasePackets = 16
 
-// readValueAt reads a value from the packet at the given offset
+// readValueAt reads a value from the packet at the given offset.
+// Supported sizes: 1, 2, or 4 bytes. Other sizes return 0 with a warning log.
 func readValueAt(data []byte, offset uint16, size uint8) uint32 {
 	if int(offset)+int(size) > len(data) {
+		log.Printf("readValueAt: offset %d + size %d exceeds data length %d", offset, size, len(data))
 		return 0
 	}
 
@@ -24,8 +27,10 @@ func readValueAt(data []byte, offset uint16, size uint8) uint32 {
 		return uint32(binary.BigEndian.Uint16(data[offset:]))
 	case 4:
 		return binary.BigEndian.Uint32(data[offset:])
+	default:
+		log.Printf("readValueAt: unsupported size %d (only 1, 2, 4 are supported)", size)
+		return 0
 	}
-	return 0
 }
 
 // variantState tracks the sequential state for a single variant
