@@ -335,8 +335,9 @@ static __always_inline bool diff_affects_checksum(struct diff_value *dv, struct 
 // Apply checksum updates using bpf_csum_diff for each diff value
 // Uses old_value and new_value from diff_value struct directly, avoiding map access
 // Constructs 4-byte aligned values with padding that cancels out in bpf_csum_diff
-static __always_inline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, struct diff_value *diffs,
-                                                    __u8 diff_count, __u16 pkt_len)
+// Note: __noinline prevents verifier state explosion when called from unrolled loop
+static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, struct diff_value *diffs,
+                                               __u8 diff_count, __u16 pkt_len)
 {
     // Load current checksum value from packet (base packet was copied, checksum not yet modified)
     __be16 old_csum_be;
