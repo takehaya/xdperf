@@ -47,7 +47,7 @@ type BpfDiffEntry struct {
 	PktLen     uint16
 	LenChanged uint8
 	Pad        [3]uint8
-	Diffs      [8]struct {
+	Diffs      [4]struct {
 		_        structs.HostLayout
 		Offset   uint16
 		Size     uint8

@@ -105,7 +105,8 @@ int xdp_rx(struct xdp_md *ctx)
 // Apply a single diff value to the packet
 // Uses bpf_xdp_store_bytes() to avoid verifier issues with variable-offset writes
 // new_value is stored in big-endian (network byte order)
-static __always_inline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
+// Note: __noinline prevents verifier state explosion when called from unrolled loop
+static __noinline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 {
     __u16 offset = dv->offset;
     __u8 size = dv->size;
@@ -116,6 +117,8 @@ static __always_inline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
     // Use bpf_xdp_store_bytes which handles bounds checking internally
     // This avoids verifier issues with variable-offset packet writes
     // new_value is already in network byte order, so write directly
+    // Reduce switch cases to minimize verifier state explosion
+    // Common cases (1, 2, 4) are explicit, others use variable size
     switch (size) {
     case 1:
         if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 1) < 0)
@@ -129,20 +132,13 @@ static __always_inline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
         if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 4) < 0)
             return -1;
         break;
-    case 6:
-        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 6) < 0)
-            return -1;
-        break;
-    case 8:
-        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 8) < 0)
-            return -1;
-        break;
-    case 16:
-        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 16) < 0)
-            return -1;
-        break;
     default:
-        return -1;
+        // For sizes 6, 8, 16: use size directly (verifier tracks size is bounded)
+        if (size > 16)
+            return -1;
+        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, size) < 0)
+            return -1;
+        break;
     }
 
     return 0;
@@ -436,21 +432,13 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
                     bpf_ntohl(new_u.val));
 
         // For sizes <= 4, use the 4-byte padded values
-        // For larger sizes (6, 8, 16), call bpf_csum_diff directly with the arrays
+        // For larger sizes (6, 8, 16), call bpf_csum_diff with 16 bytes
+        // (unused bytes are zero in both old/new, so they cancel out)
         if (dv->size <= 4) {
             // bpf_csum_diff: padding bytes cancel out, only the diff contributes
             csum = bpf_csum_diff(&old_u.val, 4, &new_u.val, 4, csum);
-        } else if (dv->size == 6) {
-            // 6 bytes (e.g., MAC address): round up to 8 bytes for bpf_csum_diff
-            __u8 old_padded[8] = {0};
-            __u8 new_padded[8] = {0};
-            __builtin_memcpy(old_padded, dv->old_value, 6);
-            __builtin_memcpy(new_padded, dv->new_value, 6);
-            csum = bpf_csum_diff((__be32 *)old_padded, 8, (__be32 *)new_padded, 8, csum);
-        } else if (dv->size == 8) {
-            csum = bpf_csum_diff((__be32 *)dv->old_value, 8, (__be32 *)dv->new_value, 8, csum);
-        } else if (dv->size == 16) {
-            // 16 bytes (e.g., IPv6 address)
+        } else {
+            // size > 4: use full 16-byte arrays (zeros cancel out)
             csum = bpf_csum_diff((__be32 *)dv->old_value, 16, (__be32 *)dv->new_value, 16, csum);
         }
         DEBUG_PRINT("    after csum_diff: csum=0x%llx\n", (unsigned long long)csum);

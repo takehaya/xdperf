@@ -10,7 +10,8 @@
 
 // Maximum number of diffs per packet
 // Must match maxDiffsPerPacket in pkg/xdperf/bpf.go
-#define MAX_DIFFS_PER_PACKET 8
+// Reduced from 8 to 4 to stay within BPF verifier limits with 16-byte values
+#define MAX_DIFFS_PER_PACKET 4
 
 // Maximum number of diff entries (per CPU)
 #define MAX_DIFF_ENTRIES 131072
