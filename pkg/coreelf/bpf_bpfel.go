@@ -52,8 +52,8 @@ type BpfDiffEntry struct {
 		Offset   uint16
 		Size     uint8
 		Pad      uint8
-		OldValue uint32
-		NewValue uint32
+		OldValue [16]uint8
+		NewValue [16]uint8
 	}
 }
 

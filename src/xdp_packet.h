@@ -24,12 +24,14 @@
 #define MAX_BASE_PACKETS 16
 
 // Checksum types
+// Must match checksumTypeToBPF() in pkg/xdperf/bpf.go
 #define CSUM_TYPE_IPV4_HEADER 0
 #define CSUM_TYPE_UDP_IPV4 1
 #define CSUM_TYPE_TCP_IPV4 2
 #define CSUM_TYPE_UDP_IPV6 3
 #define CSUM_TYPE_TCP_IPV6 4
 #define CSUM_TYPE_ICMPV6 5
+#define CSUM_TYPE_INVALID 0xFF // Invalid/unknown checksum type
 
 // Base packet structure (stored once per variant)
 struct base_packet {
@@ -42,10 +44,10 @@ struct base_packet {
 // Single diff value
 struct diff_value {
     __u16 offset; // Byte offset in packet
-    __u8 size;    // 1, 2, or 4 bytes
+    __u8 size;    // 1, 2, 4, 6, 8, or 16 bytes
     __u8 _pad;
-    __u32 old_value; // Original value from base packet (big-endian)
-    __u32 new_value; // New value to write (big-endian)
+    __u8 old_value[16]; // Original value from base packet (big-endian)
+    __u8 new_value[16]; // New value to write (big-endian)
 };
 
 // Diff entry for one packet (contains all diffs for that packet)

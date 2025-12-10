@@ -12,25 +12,47 @@ import (
 // maxBasePackets must match MAX_BASE_PACKETS in src/xdp_packet.h
 const maxBasePackets = 16
 
-// readValueAt reads a value from the packet at the given offset.
-// Supported sizes: 1, 2, or 4 bytes. Other sizes return 0 with a warning log.
-func readValueAt(data []byte, offset uint16, size uint8) uint32 {
+// readBytesAt reads bytes from the packet at the given offset.
+// Returns the bytes in a [16]byte array (network byte order).
+// Supported sizes: 1, 2, 4, 6, 8, or 16 bytes.
+func readBytesAt(data []byte, offset uint16, size uint8) [16]byte {
+	var result [16]byte
 	if int(offset)+int(size) > len(data) {
-		log.Printf("readValueAt: offset %d + size %d exceeds data length %d", offset, size, len(data))
-		return 0
+		log.Printf("readBytesAt: offset %d + size %d exceeds data length %d", offset, size, len(data))
+		return result
 	}
 
 	switch size {
-	case 1:
-		return uint32(data[offset])
-	case 2:
-		return uint32(binary.BigEndian.Uint16(data[offset:]))
-	case 4:
-		return binary.BigEndian.Uint32(data[offset:])
+	case 1, 2, 4, 6, 8, 16:
+		copy(result[:size], data[offset:offset+uint16(size)])
 	default:
-		log.Printf("readValueAt: unsupported size %d (only 1, 2, 4 are supported)", size)
-		return 0
+		log.Printf("readBytesAt: unsupported size %d (only 1, 2, 4, 6, 8, 16 are supported)", size)
 	}
+	return result
+}
+
+// valueToBytes converts a uint64 value to [16]byte in network byte order (big-endian).
+// The value is placed in the first 'size' bytes.
+func valueToBytes(value uint64, size uint8) [16]byte {
+	var result [16]byte
+	switch size {
+	case 1:
+		result[0] = byte(value)
+	case 2:
+		binary.BigEndian.PutUint16(result[:2], uint16(value))
+	case 4:
+		binary.BigEndian.PutUint32(result[:4], uint32(value))
+	case 8:
+		binary.BigEndian.PutUint64(result[:8], value)
+	default:
+		// For other sizes (6, 16), treat as big-endian bytes
+		// This handles IPv6 addresses when value represents the numeric form
+		for i := size; i > 0; i-- {
+			result[i-1] = byte(value)
+			value >>= 8
+		}
+	}
+	return result
 }
 
 // variantState tracks the sequential state for a single variant
@@ -82,12 +104,13 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 		} else {
 			// Regular byte modification
 			// Read old value from base packet for bpf_csum_diff
-			oldValue := readValueAt(variant.Base.Data, uint16(p.ByteStart), uint8(p.ByteSize))
+			oldValue := readBytesAt(variant.Base.Data, uint16(p.ByteStart), uint8(p.ByteSize))
+			newValue := valueToBytes(value, uint8(p.ByteSize))
 			entry.Diffs = append(entry.Diffs, DiffValue{
 				Offset:   uint16(p.ByteStart),
 				Size:     uint8(p.ByteSize),
 				OldValue: oldValue,
-				NewValue: uint32(value),
+				NewValue: newValue,
 			})
 		}
 	}

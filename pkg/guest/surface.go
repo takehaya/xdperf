@@ -1,24 +1,5 @@
 package guest
 
-// Plugin error codes returned by plugin functions.
-// These codes are returned as negative int32 values from WASM exports.
-const (
-	// PluginErrReadRequest indicates failure to read/parse the input request.
-	PluginErrReadRequest int32 = -1
-
-	// PluginErrWriteResponse indicates failure to write/serialize the response.
-	PluginErrWriteResponse int32 = -3
-
-	// PluginErrNeighborLookup indicates ARP/neighbor resolution failure.
-	PluginErrNeighborLookup int32 = -4
-
-	// PluginErrParseMAC indicates MAC address parsing failure.
-	PluginErrParseMAC int32 = -5
-
-	// PluginErrBuildPacket indicates packet construction failure.
-	PluginErrBuildPacket int32 = -6
-)
-
 // plugin_init
 type GeneratorInitRequest struct {
 	// Configuration data specific to the packet generation plugin.

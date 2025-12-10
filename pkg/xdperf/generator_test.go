@@ -1,10 +1,27 @@
 package xdperf
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/takehaya/xdperf/pkg/guest"
 )
+
+// bytesToUint64 extracts a uint64 from [16]byte in big-endian order
+func bytesToUint64(b [16]byte, size uint8) uint64 {
+	switch size {
+	case 1:
+		return uint64(b[0])
+	case 2:
+		return uint64(binary.BigEndian.Uint16(b[:2]))
+	case 4:
+		return uint64(binary.BigEndian.Uint32(b[:4]))
+	case 8:
+		return binary.BigEndian.Uint64(b[:8])
+	default:
+		return 0
+	}
+}
 
 func TestGenerateSingleEntry(t *testing.T) {
 	basePacket := guest.BasePacket{
@@ -49,8 +66,8 @@ func TestGenerateSingleEntry(t *testing.T) {
 				if entry.Diffs[0].Size != 2 {
 					t.Errorf("Diffs[0].Size = %d, want 2", entry.Diffs[0].Size)
 				}
-				if entry.Diffs[0].NewValue != 1024 {
-					t.Errorf("Diffs[0].NewValue = %d, want 1024", entry.Diffs[0].NewValue)
+				if bytesToUint64(entry.Diffs[0].NewValue, entry.Diffs[0].Size) != 1024 {
+					t.Errorf("Diffs[0].NewValue = %d, want 1024", bytesToUint64(entry.Diffs[0].NewValue, entry.Diffs[0].Size))
 				}
 			},
 		},
@@ -189,9 +206,10 @@ func TestGenerateDiffEntriesFromVariantSet_Sequential(t *testing.T) {
 	// Check that sequential values cycle correctly for first variant
 	// Should cycle: 1000, 1001, 1002, 1000, 1001, ...
 	for i := 0; i < 75; i++ {
-		expectedVal := uint32(1000 + (i % 3))
-		if entries[i].Diffs[0].NewValue != expectedVal {
-			t.Errorf("entries[%d].Diffs[0].NewValue = %d, want %d", i, entries[i].Diffs[0].NewValue, expectedVal)
+		expectedVal := uint64(1000 + (i % 3))
+		actualVal := bytesToUint64(entries[i].Diffs[0].NewValue, entries[i].Diffs[0].Size)
+		if actualVal != expectedVal {
+			t.Errorf("entries[%d].Diffs[0].NewValue = %d, want %d", i, actualVal, expectedVal)
 		}
 	}
 }
@@ -275,9 +293,10 @@ func TestGenerateDiffEntriesFromVariantSet_Mixed(t *testing.T) {
 
 	// Verify sequential state is maintained per variant
 	// Track the sequential values for each base
-	lastValBase0 := uint32(0)
-	lastValBase1 := uint32(0)
+	lastValBase0 := uint64(0)
+	lastValBase1 := uint64(0)
 	for _, e := range entries {
+		actualVal := bytesToUint64(e.Diffs[0].NewValue, e.Diffs[0].Size)
 		if e.BaseIdx == 0 {
 			if lastValBase0 > 0 {
 				// Value should increase or wrap around
@@ -285,24 +304,24 @@ func TestGenerateDiffEntriesFromVariantSet_Mixed(t *testing.T) {
 				if expected > 1100 {
 					expected = 1000
 				}
-				if e.Diffs[0].NewValue != expected {
-					t.Errorf("Base0 sequential broken: got %d after %d", e.Diffs[0].NewValue, lastValBase0)
+				if actualVal != expected {
+					t.Errorf("Base0 sequential broken: got %d after %d", actualVal, lastValBase0)
 					break
 				}
 			}
-			lastValBase0 = e.Diffs[0].NewValue
+			lastValBase0 = actualVal
 		} else {
 			if lastValBase1 > 0 {
 				expected := lastValBase1 + 1
 				if expected > 2100 {
 					expected = 2000
 				}
-				if e.Diffs[0].NewValue != expected {
-					t.Errorf("Base1 sequential broken: got %d after %d", e.Diffs[0].NewValue, lastValBase1)
+				if actualVal != expected {
+					t.Errorf("Base1 sequential broken: got %d after %d", actualVal, lastValBase1)
 					break
 				}
 			}
-			lastValBase1 = e.Diffs[0].NewValue
+			lastValBase1 = actualVal
 		}
 	}
 }

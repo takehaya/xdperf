@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -308,7 +307,7 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	defer func() {
 		// free input memory
 		if _, err := p.functions.free.Call(ctx, uint64(inPtr)); err != nil {
-			log.Printf("Warning: failed to free WASM input memory (potential leak): %v", err)
+			panic(fmt.Sprintf("Warning: failed to free input memory: %v\n", err))
 		}
 	}()
 
@@ -322,7 +321,7 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	defer func() {
 		// free output memory
 		if _, err := p.functions.free.Call(ctx, uint64(outPtr)); err != nil {
-			log.Printf("Warning: failed to free WASM output memory (potential leak): %v", err)
+			panic(fmt.Sprintf("Warning: failed to free output memory: %v\n", err))
 		}
 	}()
 
@@ -335,13 +334,7 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 		return nil, fmt.Errorf("no return value")
 	}
 
-	// Check for error return (negative values)
-	retVal := int32(r[0])
-	if retVal < 0 {
-		return nil, fmt.Errorf("plugin error: %s (code %d)", pluginErrorMessage(retVal), retVal)
-	}
-
-	outLen := uint32(retVal)
+	outLen := uint32(r[0])
 	if outLen > cap {
 		return nil, fmt.Errorf("output size exceeds capacity")
 	}
@@ -406,22 +399,4 @@ func (p *wasmPlugin) writeToMemory(ctx context.Context, data []byte) (uint32, er
 		return 0, fmt.Errorf("write failed")
 	}
 	return ptr, nil
-}
-
-// pluginErrorMessage returns a human-readable message for plugin error codes.
-func pluginErrorMessage(code int32) string {
-	switch code {
-	case guest.PluginErrReadRequest:
-		return "failed to read/parse request"
-	case guest.PluginErrWriteResponse:
-		return "failed to write/serialize response"
-	case guest.PluginErrNeighborLookup:
-		return "ARP/neighbor resolution failed"
-	case guest.PluginErrParseMAC:
-		return "MAC address parsing failed"
-	case guest.PluginErrBuildPacket:
-		return "packet construction failed"
-	default:
-		return "unknown error"
-	}
 }

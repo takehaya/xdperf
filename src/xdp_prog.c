@@ -104,36 +104,43 @@ int xdp_rx(struct xdp_md *ctx)
 
 // Apply a single diff value to the packet
 // Uses bpf_xdp_store_bytes() to avoid verifier issues with variable-offset writes
+// new_value is stored in big-endian (network byte order)
 static __always_inline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 {
     __u16 offset = dv->offset;
     __u8 size = dv->size;
-    __u32 value = dv->new_value;
 
     if (size == 0 || offset == 0xFFFF)
         return 0; // Skip empty diff
 
     // Use bpf_xdp_store_bytes which handles bounds checking internally
     // This avoids verifier issues with variable-offset packet writes
+    // new_value is already in network byte order, so write directly
     switch (size) {
-    case 1: {
-        __u8 v = (__u8)value;
-        if (bpf_xdp_store_bytes(ctx, offset, &v, 1) < 0)
+    case 1:
+        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 1) < 0)
             return -1;
         break;
-    }
-    case 2: {
-        __be16 v = bpf_htons((__u16)value);
-        if (bpf_xdp_store_bytes(ctx, offset, &v, 2) < 0)
+    case 2:
+        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 2) < 0)
             return -1;
         break;
-    }
-    case 4: {
-        __be32 v = bpf_htonl(value);
-        if (bpf_xdp_store_bytes(ctx, offset, &v, 4) < 0)
+    case 4:
+        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 4) < 0)
             return -1;
         break;
-    }
+    case 6:
+        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 6) < 0)
+            return -1;
+        break;
+    case 8:
+        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 8) < 0)
+            return -1;
+        break;
+    case 16:
+        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 16) < 0)
+            return -1;
+        break;
     default:
         return -1;
     }
@@ -386,6 +393,7 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
         old_u.val = 0;
         new_u.val = 0;
 
+        // old_value/new_value are stored in network byte order (big-endian)
         // Little-endian checksum calculation (see compile-time check above).
         // csum_partial loads 32-bit values as LE and folds: fold(0xAABBCCDD) = 0xCCDD + 0xAABB
         // Byte placement for correct checksum contribution:
@@ -397,33 +405,54 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
             if (word_pos == 0) {
                 // Even offset = high byte of 16-bit word
                 // On LE: bytes[3] maps to high16 bits, folds to 0xVV00
-                old_u.bytes[3] = (__u8)dv->old_value;
-                new_u.bytes[3] = (__u8)dv->new_value;
+                old_u.bytes[3] = dv->old_value[0];
+                new_u.bytes[3] = dv->new_value[0];
             } else {
                 // Odd offset = low byte of 16-bit word
                 // On LE: bytes[0] maps to low16 bits, folds to 0x00VV
-                old_u.bytes[0] = (__u8)dv->old_value;
-                new_u.bytes[0] = (__u8)dv->new_value;
+                old_u.bytes[0] = dv->old_value[0];
+                new_u.bytes[0] = dv->new_value[0];
             }
         } else if (dv->size == 2) {
-            // 2-byte value: store as 16-bit LE at bytes[0:1]
-            // Value 0x04D2 → memory [D2, 04, 00, 00] → folds to 0x04D2
-            old_u.bytes[0] = (__u8)(dv->old_value & 0xFF);
-            old_u.bytes[1] = (__u8)(dv->old_value >> 8);
-            new_u.bytes[0] = (__u8)(dv->new_value & 0xFF);
-            new_u.bytes[1] = (__u8)(dv->new_value >> 8);
+            // 2-byte value: stored as BE [high, low], convert to LE at bytes[0:1]
+            // BE [0x04, 0xD2] → LE memory [D2, 04, 00, 00] → folds to 0x04D2
+            old_u.bytes[0] = dv->old_value[1]; // low byte
+            old_u.bytes[1] = dv->old_value[0]; // high byte
+            new_u.bytes[0] = dv->new_value[1];
+            new_u.bytes[1] = dv->new_value[0];
         } else if (dv->size == 4) {
-            // 4-byte value: store directly without byte swap
-            // Fold gives same sum regardless of byte order (commutative)
-            old_u.val = dv->old_value;
-            new_u.val = dv->new_value;
+            // 4-byte value: stored as BE, convert to LE
+            old_u.bytes[0] = dv->old_value[3];
+            old_u.bytes[1] = dv->old_value[2];
+            old_u.bytes[2] = dv->old_value[1];
+            old_u.bytes[3] = dv->old_value[0];
+            new_u.bytes[0] = dv->new_value[3];
+            new_u.bytes[1] = dv->new_value[2];
+            new_u.bytes[2] = dv->new_value[1];
+            new_u.bytes[3] = dv->new_value[0];
         }
 
         DEBUG_PRINT("  diff[%d]: off=%u sz=%u old=0x%x new=0x%x\n", i, dv->offset, dv->size, bpf_ntohl(old_u.val),
                     bpf_ntohl(new_u.val));
 
-        // bpf_csum_diff: padding bytes cancel out, only the diff contributes
-        csum = bpf_csum_diff(&old_u.val, 4, &new_u.val, 4, csum);
+        // For sizes <= 4, use the 4-byte padded values
+        // For larger sizes (6, 8, 16), call bpf_csum_diff directly with the arrays
+        if (dv->size <= 4) {
+            // bpf_csum_diff: padding bytes cancel out, only the diff contributes
+            csum = bpf_csum_diff(&old_u.val, 4, &new_u.val, 4, csum);
+        } else if (dv->size == 6) {
+            // 6 bytes (e.g., MAC address): round up to 8 bytes for bpf_csum_diff
+            __u8 old_padded[8] = {0};
+            __u8 new_padded[8] = {0};
+            __builtin_memcpy(old_padded, dv->old_value, 6);
+            __builtin_memcpy(new_padded, dv->new_value, 6);
+            csum = bpf_csum_diff((__be32 *)old_padded, 8, (__be32 *)new_padded, 8, csum);
+        } else if (dv->size == 8) {
+            csum = bpf_csum_diff((__be32 *)dv->old_value, 8, (__be32 *)dv->new_value, 8, csum);
+        } else if (dv->size == 16) {
+            // 16 bytes (e.g., IPv6 address)
+            csum = bpf_csum_diff((__be32 *)dv->old_value, 16, (__be32 *)dv->new_value, 16, csum);
+        }
         DEBUG_PRINT("    after csum_diff: csum=0x%llx\n", (unsigned long long)csum);
     }
 
@@ -646,8 +675,11 @@ int xdp_tx(struct xdp_md *ctx)
                 break;
             __u32 csum_idx = csum_base_offset + i;
             struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
-            if (!meta)
+            if (!meta) {
+                DEBUG_PRINT("checksum_meta_map lookup failed at %d\n", i);
+                checksum_errors++;
                 break;
+            }
             if (recalc_checksum(ctx, meta, target_len) < 0) {
                 DEBUG_PRINT("recalc_checksum failed at %d\n", i);
                 checksum_errors++;
@@ -662,8 +694,11 @@ int xdp_tx(struct xdp_md *ctx)
                 break;
             __u32 csum_idx = csum_base_offset + i;
             struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
-            if (!meta)
+            if (!meta) {
+                DEBUG_PRINT("checksum_meta_map lookup failed at %d\n", i);
+                checksum_errors++;
                 break;
+            }
             if (apply_csum_with_bpf_diff(ctx, meta, diff->diffs, diff_count, target_len) < 0) {
                 DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
                 checksum_errors++;

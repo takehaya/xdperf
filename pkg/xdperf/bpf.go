@@ -24,30 +24,45 @@ type BasePacketInfo struct {
 }
 
 // DiffValue represents a single diff value
+// Values are stored in network byte order (big-endian)
 type DiffValue struct {
 	Offset   uint16
 	Size     uint8
-	OldValue uint32 // Original value from base packet
-	NewValue uint32 // New value to write
+	_        uint8      // padding
+	OldValue [16]byte   // Original value from base packet (network byte order)
+	NewValue [16]byte   // New value to write (network byte order)
 }
 
-// checksumTypeToBPF converts guest.ChecksumType to BPF constant
+// BPF checksum type constants (must match src/xdp_packet.h)
+const (
+	csumTypeIPv4Header uint8 = 0
+	csumTypeUDPIPv4    uint8 = 1
+	csumTypeTCPIPv4    uint8 = 2
+	csumTypeUDPIPv6    uint8 = 3
+	csumTypeTCPIPv6    uint8 = 4
+	csumTypeICMPv6     uint8 = 5
+	csumTypeInvalid    uint8 = 0xFF // Invalid/unknown type
+)
+
+// checksumTypeToBPF converts guest.ChecksumType to BPF constant.
+// Returns csumTypeInvalid (0xFF) for unknown types which will cause
+// the BPF program to skip checksum calculation for that entry.
 func checksumTypeToBPF(t guest.ChecksumType) uint8 {
 	switch t {
 	case guest.ChecksumTypeIPv4Header:
-		return 0 // CSUM_TYPE_IPV4_HEADER
+		return csumTypeIPv4Header
 	case guest.ChecksumTypeUDPIPv4:
-		return 1 // CSUM_TYPE_UDP_IPV4
+		return csumTypeUDPIPv4
 	case guest.ChecksumTypeTCPIPv4:
-		return 2 // CSUM_TYPE_TCP_IPV4
+		return csumTypeTCPIPv4
 	case guest.ChecksumTypeUDPIPv6:
-		return 3 // CSUM_TYPE_UDP_IPV6
+		return csumTypeUDPIPv6
 	case guest.ChecksumTypeTCPIPv6:
-		return 4 // CSUM_TYPE_TCP_IPV6
+		return csumTypeTCPIPv6
 	case guest.ChecksumTypeICMPv6:
-		return 5 // CSUM_TYPE_ICMPV6
+		return csumTypeICMPv6
 	default:
-		return 0
+		return csumTypeInvalid
 	}
 }
 
