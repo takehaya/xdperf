@@ -147,7 +147,8 @@ static __noinline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 // Recalculate checksum from scratch using bpf_xdp_load_bytes/bpf_xdp_store_bytes
 // Used when packet length changes (incremental update not possible)
 // This is O(packet_length) - only use when necessary
-static __always_inline int recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
+// Note: __noinline prevents verifier state explosion when called from loops
+static __noinline int recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 csum;
     __u16 transport_len;
@@ -208,7 +209,8 @@ static __always_inline int recalc_checksum(struct xdp_md *ctx, struct checksum_m
 
 // Update IP and transport layer length fields when packet length changed
 // Must be called after base packet copy, before checksum recalculation
-static __always_inline int update_packet_lengths(struct xdp_md *ctx, __u16 target_len)
+// Note: __noinline prevents verifier state explosion
+static __noinline int update_packet_lengths(struct xdp_md *ctx, __u16 target_len)
 {
     // Load Ethernet header to check protocol
     struct ethhdr eth;
@@ -302,7 +304,8 @@ static __always_inline __u16 csum_fold_helper(__u64 csum)
 // Assumption: dv->offset + dv->size does not overflow __u16.
 // This is guaranteed because valid packet offsets are < 2048 (MAX_TEMPLATE_SIZE)
 // and size is at most 4 bytes.
-static __always_inline bool diff_affects_checksum(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len)
+// Note: __noinline prevents verifier state explosion when called from loops
+static __noinline bool diff_affects_checksum(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 diff_start = dv->offset;
     __u16 diff_end = dv->offset + dv->size; // Safe: offset < 2048, size <= 4
@@ -340,6 +343,81 @@ static __always_inline bool diff_affects_checksum(struct diff_value *dv, struct 
     }
 }
 
+// Process a single diff for checksum update
+// Note: __noinline prevents verifier state explosion from size-based branching
+static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len,
+                                                 __wsum csum)
+{
+    // Skip if this diff doesn't affect the checksum
+    if (!diff_affects_checksum(dv, meta, pkt_len))
+        return csum;
+
+    // Get byte position within 16-bit word (0=high byte, 1=low byte)
+    __u8 word_pos = dv->offset & 1;
+
+    // Construct old and new 4-byte values with the diff at the correct position
+    // Padding bytes are identical in old and new, so they cancel out in bpf_csum_diff
+    union {
+        __be32 val;
+        __u8 bytes[4];
+    } old_u, new_u;
+
+    // Initialize with zeros (padding)
+    old_u.val = 0;
+    new_u.val = 0;
+
+    // old_value/new_value are stored in network byte order (big-endian)
+    // Little-endian checksum calculation (see compile-time check above).
+    // csum_partial loads 32-bit values as LE and folds: fold(0xAABBCCDD) = 0xCCDD + 0xAABB
+    // Use __builtin_memcpy + bpf_ntoh* to minimize verifier state explosion
+    // (individual byte accesses in unrolled loops cause state explosion)
+    if (dv->size == 1) {
+        if (word_pos == 0) {
+            // Even offset = high byte of 16-bit word
+            // On LE: bytes[3] maps to high16 bits, folds to 0xVV00
+            old_u.bytes[3] = dv->old_value[0];
+            new_u.bytes[3] = dv->new_value[0];
+        } else {
+            // Odd offset = low byte of 16-bit word
+            // On LE: bytes[0] maps to low16 bits, folds to 0x00VV
+            old_u.bytes[0] = dv->old_value[0];
+            new_u.bytes[0] = dv->new_value[0];
+        }
+    } else if (dv->size == 2) {
+        // 2-byte value: stored as BE, convert to LE using bpf_ntohs
+        // BE [0x04, 0xD2] → bpf_ntohs → LE 0x04D2 → stored at bytes[0:1]
+        __be16 old_be16, new_be16;
+        __builtin_memcpy(&old_be16, dv->old_value, 2);
+        __builtin_memcpy(&new_be16, dv->new_value, 2);
+        *(__u16 *)&old_u.bytes[0] = bpf_ntohs(old_be16);
+        *(__u16 *)&new_u.bytes[0] = bpf_ntohs(new_be16);
+    } else if (dv->size == 4) {
+        // 4-byte value: stored as BE, convert to LE using bpf_ntohl
+        __be32 old_be32, new_be32;
+        __builtin_memcpy(&old_be32, dv->old_value, 4);
+        __builtin_memcpy(&new_be32, dv->new_value, 4);
+        old_u.val = bpf_ntohl(old_be32);
+        new_u.val = bpf_ntohl(new_be32);
+    }
+
+    DEBUG_PRINT("  csum_diff: off=%u sz=%u old=0x%x new=0x%x\n", dv->offset, dv->size, bpf_ntohl(old_u.val),
+                bpf_ntohl(new_u.val));
+
+    // For sizes <= 4, use the 4-byte padded values
+    // For larger sizes (6, 8, 16), call bpf_csum_diff with 16 bytes
+    // (unused bytes are zero in both old/new, so they cancel out)
+    if (dv->size <= 4) {
+        // bpf_csum_diff: padding bytes cancel out, only the diff contributes
+        csum = bpf_csum_diff(&old_u.val, 4, &new_u.val, 4, csum);
+    } else {
+        // size > 4: use full 16-byte arrays (zeros cancel out)
+        csum = bpf_csum_diff((__be32 *)dv->old_value, 16, (__be32 *)dv->new_value, 16, csum);
+    }
+    DEBUG_PRINT("    after csum_diff: csum=0x%llx\n", (unsigned long long)csum);
+
+    return csum;
+}
+
 // Apply checksum updates using bpf_csum_diff for each diff value
 // Uses old_value and new_value from diff_value struct directly, avoiding map access
 // Constructs 4-byte aligned values with padding that cancels out in bpf_csum_diff
@@ -364,84 +442,13 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
 
     // Apply bpf_csum_diff for each diff using values from diff_value struct
     // No variable-offset map access needed
-#pragma unroll
+    // NOTE: Do NOT use #pragma unroll here - it causes verifier state explosion
+    // The bounded loop (i < MAX_DIFFS_PER_PACKET where MAX=8) is handled by the verifier
+    // Each iteration calls __noinline apply_single_csum_diff to isolate branching
     for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
         if (i >= diff_count)
             break;
-
-        struct diff_value *dv = &diffs[i];
-
-        // Skip if this diff doesn't affect the checksum
-        if (!diff_affects_checksum(dv, meta, pkt_len))
-            continue;
-
-        // Get byte position within 16-bit word (0=high byte, 1=low byte)
-        __u8 word_pos = dv->offset & 1;
-
-        // Construct old and new 4-byte values with the diff at the correct position
-        // Padding bytes are identical in old and new, so they cancel out in bpf_csum_diff
-        union {
-            __be32 val;
-            __u8 bytes[4];
-        } old_u, new_u;
-
-        // Initialize with zeros (padding)
-        old_u.val = 0;
-        new_u.val = 0;
-
-        // old_value/new_value are stored in network byte order (big-endian)
-        // Little-endian checksum calculation (see compile-time check above).
-        // csum_partial loads 32-bit values as LE and folds: fold(0xAABBCCDD) = 0xCCDD + 0xAABB
-        // Byte placement for correct checksum contribution:
-        // - High byte (even offset): bytes[3] → folds to 0xVV00
-        // - Low byte (odd offset): bytes[0] → folds to 0x00VV
-        // - 2-byte: 16-bit LE at bytes[0:1]
-        // - 4-byte: store directly
-        if (dv->size == 1) {
-            if (word_pos == 0) {
-                // Even offset = high byte of 16-bit word
-                // On LE: bytes[3] maps to high16 bits, folds to 0xVV00
-                old_u.bytes[3] = dv->old_value[0];
-                new_u.bytes[3] = dv->new_value[0];
-            } else {
-                // Odd offset = low byte of 16-bit word
-                // On LE: bytes[0] maps to low16 bits, folds to 0x00VV
-                old_u.bytes[0] = dv->old_value[0];
-                new_u.bytes[0] = dv->new_value[0];
-            }
-        } else if (dv->size == 2) {
-            // 2-byte value: stored as BE [high, low], convert to LE at bytes[0:1]
-            // BE [0x04, 0xD2] → LE memory [D2, 04, 00, 00] → folds to 0x04D2
-            old_u.bytes[0] = dv->old_value[1]; // low byte
-            old_u.bytes[1] = dv->old_value[0]; // high byte
-            new_u.bytes[0] = dv->new_value[1];
-            new_u.bytes[1] = dv->new_value[0];
-        } else if (dv->size == 4) {
-            // 4-byte value: stored as BE, convert to LE
-            old_u.bytes[0] = dv->old_value[3];
-            old_u.bytes[1] = dv->old_value[2];
-            old_u.bytes[2] = dv->old_value[1];
-            old_u.bytes[3] = dv->old_value[0];
-            new_u.bytes[0] = dv->new_value[3];
-            new_u.bytes[1] = dv->new_value[2];
-            new_u.bytes[2] = dv->new_value[1];
-            new_u.bytes[3] = dv->new_value[0];
-        }
-
-        DEBUG_PRINT("  diff[%d]: off=%u sz=%u old=0x%x new=0x%x\n", i, dv->offset, dv->size, bpf_ntohl(old_u.val),
-                    bpf_ntohl(new_u.val));
-
-        // For sizes <= 4, use the 4-byte padded values
-        // For larger sizes (6, 8, 16), call bpf_csum_diff with 16 bytes
-        // (unused bytes are zero in both old/new, so they cancel out)
-        if (dv->size <= 4) {
-            // bpf_csum_diff: padding bytes cancel out, only the diff contributes
-            csum = bpf_csum_diff(&old_u.val, 4, &new_u.val, 4, csum);
-        } else {
-            // size > 4: use full 16-byte arrays (zeros cancel out)
-            csum = bpf_csum_diff((__be32 *)dv->old_value, 16, (__be32 *)dv->new_value, 16, csum);
-        }
-        DEBUG_PRINT("    after csum_diff: csum=0x%llx\n", (unsigned long long)csum);
+        csum = apply_single_csum_diff(&diffs[i], meta, pkt_len, csum);
     }
 
     // Fold and finalize the checksum
@@ -616,7 +623,7 @@ int xdp_tx(struct xdp_md *ctx)
 
     // Intentionally continue on failures
     // Individual diff failures should not abort entire packet transmission.
-#pragma unroll
+    // NOTE: Do NOT use #pragma unroll - bounded loop is fine and reduces verifier states
     for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
         if (i >= diff_count)
             break;
@@ -635,20 +642,71 @@ int xdp_tx(struct xdp_md *ctx)
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // 8. Handle checksums - use incremental or full recalculation based on length change
-    __u8 checksum_count = base->checksum_count;
+    // 8. Store context for tail call and jump to checksum program
+    // This splits the verifier work between two programs
+    struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
+    if (!tc_ctx) {
+        DEBUG_PRINT("tail_call_ctx_map lookup failed\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    tc_ctx->base_idx = base_idx;
+    tc_ctx->local_idx = local_idx;
+    tc_ctx->target_len = target_len;
+    tc_ctx->diff_count = diff_count;
+    tc_ctx->checksum_count = base->checksum_count;
+    tc_ctx->len_changed = diff->len_changed;
+    tc_ctx->diff_errors = diff_errors;
+
+    // Tail call to checksum program
+    // If tail call fails, fall through to return XDP_ABORTED
+    bpf_tail_call(ctx, &xdp_progs, XDP_PROG_CHECKSUM);
+
+    // Tail call failed - this should not happen if prog_array is properly set up
+    DEBUG_PRINT("tail call to xdp_tx_checksum failed\n");
+    RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+}
+
+// Second part of xdp_tx: checksum processing and stats update
+// Called via tail call from xdp_tx to avoid verifier instruction limit
+SEC("xdp")
+int xdp_tx_checksum(struct xdp_md *ctx)
+{
+    __u32 zero = 0;
+
+    // 1. Retrieve context from tail call
+    struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
+    if (!tc_ctx) {
+        DEBUG_PRINT("tail_call_ctx_map lookup failed in checksum\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    __u32 base_idx = tc_ctx->base_idx;
+    __u32 local_idx = tc_ctx->local_idx;
+    __u16 target_len = tc_ctx->target_len;
+    __u8 diff_count = tc_ctx->diff_count;
+    __u8 checksum_count = tc_ctx->checksum_count;
+    __u8 len_changed = tc_ctx->len_changed;
+    __u8 diff_errors = tc_ctx->diff_errors;
+
+    // Bounds check
     if (checksum_count > MAX_CHECKSUM_ENTRIES)
         checksum_count = MAX_CHECKSUM_ENTRIES;
+    if (base_idx >= MAX_BASE_PACKETS)
+        base_idx = 0;
 
-    // Checksum key offset for this base: base_idx * MAX_CHECKSUM_ENTRIES
+    // 2. Get diff entry for incremental checksum (need diffs array)
+    struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
+    if (!diff) {
+        DEBUG_PRINT("diff_map lookup failed in checksum\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    // 3. Handle checksums - use incremental or full recalculation based on length change
     __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
-
-    // Track checksum errors for debugging
     __u8 checksum_errors = 0;
 
-    // Intentionally continue on checksum failures: performance-critical path.
-    // Partial checksum errors should not abort packet transmission.
-    if (diff->len_changed) {
+    if (len_changed) {
         // Packet length changed - update IP/UDP length fields first
         if (update_packet_lengths(ctx, target_len) < 0) {
             DEBUG_PRINT("update_packet_lengths failed\n");
@@ -656,8 +714,6 @@ int xdp_tx(struct xdp_md *ctx)
         }
 
         // Then recalculate checksums from scratch
-        // This is O(packet_length) but only happens when length varies
-#pragma unroll
         for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
             if (i >= checksum_count)
                 break;
@@ -675,8 +731,6 @@ int xdp_tx(struct xdp_md *ctx)
         }
     } else {
         // Packet length unchanged - use bpf_csum_diff for incremental updates
-        // Uses katran-style approach with actual 4-byte aligned packet data
-#pragma unroll
         for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
             if (i >= checksum_count)
                 break;
@@ -694,13 +748,19 @@ int xdp_tx(struct xdp_md *ctx)
         }
     }
 
-    // 9. Update index (round-robin)
-    __u32 next = local_idx + 1;
-    if (next >= count)
-        next = 0;
-    state->idx = next;
+    // 4. Update index (round-robin)
+    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
+    if (state) {
+        __u32 count = state->count;
+        if (count > MAX_DIFF_ENTRIES)
+            count = MAX_DIFF_ENTRIES;
+        __u32 next = local_idx + 1;
+        if (next >= count)
+            next = 0;
+        state->idx = next;
+    }
 
-    // 10. Update stats
+    // 5. Update stats
     struct datarec *rec = bpf_map_lookup_elem(&tx_stats_map, &zero);
     if (rec) {
         rec->packets++;
@@ -711,6 +771,6 @@ int xdp_tx(struct xdp_md *ctx)
             rec->checksum_errors += checksum_errors;
     }
 
-    DEBUG_PRINT("xdp_tx: cnt=%u idx=%u len=%u\n", count, local_idx, target_len);
+    DEBUG_PRINT("xdp_tx_checksum: idx=%u len=%u\n", local_idx, target_len);
     RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
 }

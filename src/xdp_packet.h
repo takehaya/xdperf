@@ -10,8 +10,7 @@
 
 // Maximum number of diffs per packet
 // Must match maxDiffsPerPacket in pkg/xdperf/bpf.go
-// Reduced from 8 to 4 to stay within BPF verifier limits with 16-byte values
-#define MAX_DIFFS_PER_PACKET 4
+#define MAX_DIFFS_PER_PACKET 8
 
 // Maximum number of diff entries (per CPU)
 #define MAX_DIFF_ENTRIES 131072
@@ -118,5 +117,37 @@ struct {
     __type(value, struct datarec);
     __uint(max_entries, 1);
 } tx_stats_map SEC(".maps");
+
+// Tail call context - passed between xdp_tx and xdp_tx_checksum
+// This allows splitting the program to avoid verifier instruction limit
+struct tail_call_ctx {
+    __u32 base_idx;      // Index into base_packet_map
+    __u32 local_idx;     // Current diff index for round-robin update
+    __u16 target_len;    // Target packet length
+    __u8 diff_count;     // Number of diffs applied
+    __u8 checksum_count; // Number of checksums to process
+    __u8 len_changed;    // Whether packet length changed from base
+    __u8 diff_errors;    // Count of diff application errors
+    __u8 _pad[2];        // Padding for alignment
+};
+
+// Tail call context map (per-CPU) - passes data between tail-called programs
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct tail_call_ctx);
+} tail_call_ctx_map SEC(".maps");
+
+// Program array for tail calls
+// Index 0: xdp_tx_checksum
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} xdp_progs SEC(".maps");
+
+#define XDP_PROG_CHECKSUM 0
 
 #endif // XDP_PACKET_H

@@ -67,6 +67,17 @@ func ReadCollection(constants map[string]interface{}, mapSize uint32) (*BpfObjec
 		}
 		return nil, fmt.Errorf("fail to load and assign bpf objects: %w", err)
 	}
+
+	// Populate the prog_array for tail calls
+	// xdp_tx tail-calls to xdp_tx_checksum at index 0
+	if objs.XdpProgs != nil && objs.XdpTxChecksum != nil {
+		checksumProgFD := uint32(objs.XdpTxChecksum.FD())
+		if err := objs.XdpProgs.Put(uint32(0), checksumProgFD); err != nil {
+			objs.Close()
+			return nil, fmt.Errorf("fail to populate xdp_progs map: %w", err)
+		}
+	}
+
 	return objs, nil
 }
 

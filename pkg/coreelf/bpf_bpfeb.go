@@ -47,7 +47,7 @@ type BpfDiffEntry struct {
 	PktLen     uint16
 	LenChanged uint8
 	Pad        [3]uint8
-	Diffs      [4]struct {
+	Diffs      [8]struct {
 		_        structs.HostLayout
 		Offset   uint16
 		Size     uint8
@@ -61,6 +61,18 @@ type BpfPktState struct {
 	_     structs.HostLayout
 	Count uint32
 	Idx   uint32
+}
+
+type BpfTailCallCtx struct {
+	_             structs.HostLayout
+	BaseIdx       uint32
+	LocalIdx      uint32
+	TargetLen     uint16
+	DiffCount     uint8
+	ChecksumCount uint8
+	LenChanged    uint8
+	DiffErrors    uint8
+	Pad           [2]uint8
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.
@@ -105,9 +117,10 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	XdpPassDummy *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
-	XdpRx        *ebpf.ProgramSpec `ebpf:"xdp_rx"`
-	XdpTx        *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpPassDummy  *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
+	XdpRx         *ebpf.ProgramSpec `ebpf:"xdp_rx"`
+	XdpTx         *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpTxChecksum *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -119,7 +132,9 @@ type BpfMapSpecs struct {
 	DiffMap         *ebpf.MapSpec `ebpf:"diff_map"`
 	PktStateMap     *ebpf.MapSpec `ebpf:"pkt_state_map"`
 	RxStatsMap      *ebpf.MapSpec `ebpf:"rx_stats_map"`
+	TailCallCtxMap  *ebpf.MapSpec `ebpf:"tail_call_ctx_map"`
 	TxStatsMap      *ebpf.MapSpec `ebpf:"tx_stats_map"`
+	XdpProgs        *ebpf.MapSpec `ebpf:"xdp_progs"`
 	XdpcapHook      *ebpf.MapSpec `ebpf:"xdpcap_hook"`
 }
 
@@ -156,7 +171,9 @@ type BpfMaps struct {
 	DiffMap         *ebpf.Map `ebpf:"diff_map"`
 	PktStateMap     *ebpf.Map `ebpf:"pkt_state_map"`
 	RxStatsMap      *ebpf.Map `ebpf:"rx_stats_map"`
+	TailCallCtxMap  *ebpf.Map `ebpf:"tail_call_ctx_map"`
 	TxStatsMap      *ebpf.Map `ebpf:"tx_stats_map"`
+	XdpProgs        *ebpf.Map `ebpf:"xdp_progs"`
 	XdpcapHook      *ebpf.Map `ebpf:"xdpcap_hook"`
 }
 
@@ -167,7 +184,9 @@ func (m *BpfMaps) Close() error {
 		m.DiffMap,
 		m.PktStateMap,
 		m.RxStatsMap,
+		m.TailCallCtxMap,
 		m.TxStatsMap,
+		m.XdpProgs,
 		m.XdpcapHook,
 	)
 }
@@ -184,9 +203,10 @@ type BpfVariables struct {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	XdpPassDummy *ebpf.Program `ebpf:"xdp_pass_dummy"`
-	XdpRx        *ebpf.Program `ebpf:"xdp_rx"`
-	XdpTx        *ebpf.Program `ebpf:"xdp_tx"`
+	XdpPassDummy  *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpRx         *ebpf.Program `ebpf:"xdp_rx"`
+	XdpTx         *ebpf.Program `ebpf:"xdp_tx"`
+	XdpTxChecksum *ebpf.Program `ebpf:"xdp_tx_checksum"`
 }
 
 func (p *BpfPrograms) Close() error {
@@ -194,6 +214,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpPassDummy,
 		p.XdpRx,
 		p.XdpTx,
+		p.XdpTxChecksum,
 	)
 }
 

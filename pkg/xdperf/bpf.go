@@ -110,8 +110,7 @@ func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 }
 
 // maxDiffsPerPacket must match MAX_DIFFS_PER_PACKET in src/xdp_packet.h
-// Reduced from 8 to 4 to stay within BPF verifier limits with 16-byte values
-const maxDiffsPerPacket = 4
+const maxDiffsPerPacket = 8
 
 // initDiffMap initializes the diff map with pre-computed diff entries
 func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus int) error {
