@@ -15,20 +15,19 @@ const maxBasePackets = 16
 // readBytesAt reads bytes from the packet at the given offset.
 // Returns the bytes in a [16]byte array (network byte order).
 // Supported sizes: 1, 2, 4, 6, 8, or 16 bytes.
-func readBytesAt(data []byte, offset uint16, size uint8) [16]byte {
+func readBytesAt(data []byte, offset uint16, size uint8) ([16]byte, error) {
 	var result [16]byte
 	if int(offset)+int(size) > len(data) {
-		log.Printf("readBytesAt: offset %d + size %d exceeds data length %d", offset, size, len(data))
-		return result
+		return result, fmt.Errorf("offset %d + size %d exceeds data length %d", offset, size, len(data))
 	}
 
 	switch size {
 	case 1, 2, 4, 6, 8, 16:
 		copy(result[:size], data[offset:offset+uint16(size)])
 	default:
-		log.Printf("readBytesAt: unsupported size %d (only 1, 2, 4, 6, 8, 16 are supported)", size)
+		return result, fmt.Errorf("unsupported size %d (only 1, 2, 4, 6, 8, 16 are supported)", size)
 	}
-	return result
+	return result, nil
 }
 
 // valueToBytes converts a uint64 value to [16]byte in network byte order (big-endian).
@@ -47,6 +46,10 @@ func valueToBytes(value uint64, size uint8) [16]byte {
 	default:
 		// For other sizes (6, 16), treat as big-endian bytes
 		// This handles IPv6 addresses when value represents the numeric form
+		if size > 16 {
+			log.Printf("valueToBytes: size %d exceeds maximum 16", size)
+			return result
+		}
 		for i := size; i > 0; i-- {
 			result[i-1] = byte(value)
 			value >>= 8
@@ -72,7 +75,7 @@ func newVariantState(params []guest.VariableParams) *variantState {
 }
 
 // generateSingleEntry generates a single diff entry from a variant using the given state
-func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseIdx uint8) DiffEntry {
+func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseIdx uint8) (DiffEntry, error) {
 	entry := DiffEntry{
 		BaseIdx:   baseIdx,
 		PacketLen: variant.Base.Length,
@@ -104,7 +107,10 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 		} else {
 			// Regular byte modification
 			// Read old value from base packet for bpf_csum_diff
-			oldValue := readBytesAt(variant.Base.Data, uint16(p.ByteStart), uint8(p.ByteSize))
+			oldValue, err := readBytesAt(variant.Base.Data, uint16(p.ByteStart), uint8(p.ByteSize))
+			if err != nil {
+				return entry, fmt.Errorf("failed to read bytes at offset %d: %w", p.ByteStart, err)
+			}
 			newValue := valueToBytes(value, uint8(p.ByteSize))
 			entry.Diffs = append(entry.Diffs, DiffValue{
 				Offset:   uint16(p.ByteStart),
@@ -118,7 +124,7 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 	// Check if packet length changed from base
 	entry.LenChanged = entry.PacketLen != variant.Base.Length
 
-	return entry
+	return entry, nil
 }
 
 // generateDiffEntriesFromVariantSet generates diff entries from a variant set
@@ -166,7 +172,10 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 			if variantCount > 0 {
 				state := newVariantState(v.Params)
 				for j := 0; j < variantCount; j++ {
-					entry := generateSingleEntry(v, state, uint8(i))
+					entry, err := generateSingleEntry(v, state, uint8(i))
+					if err != nil {
+						return nil, nil, fmt.Errorf("variant %d entry %d: %w", i, j, err)
+					}
 					allEntries = append(allEntries, entry)
 				}
 			}
@@ -200,7 +209,10 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 			}
 
 			// Generate single entry from selected variant using its state
-			entry := generateSingleEntry(variantSet.Variants[selectedIdx], variantStates[selectedIdx], uint8(selectedIdx))
+			entry, err := generateSingleEntry(variantSet.Variants[selectedIdx], variantStates[selectedIdx], uint8(selectedIdx))
+			if err != nil {
+				return nil, nil, fmt.Errorf("mixed mode entry %d (variant %d): %w", i, selectedIdx, err)
+			}
 			allEntries = append(allEntries, entry)
 		}
 
@@ -208,7 +220,10 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 		// Default to first variant
 		state := newVariantState(variantSet.Variants[0].Params)
 		for i := 0; i < totalCount; i++ {
-			entry := generateSingleEntry(variantSet.Variants[0], state, 0)
+			entry, err := generateSingleEntry(variantSet.Variants[0], state, 0)
+			if err != nil {
+				return nil, nil, fmt.Errorf("default mode entry %d: %w", i, err)
+			}
 			allEntries = append(allEntries, entry)
 		}
 	}

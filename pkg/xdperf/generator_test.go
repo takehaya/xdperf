@@ -127,7 +127,10 @@ func TestGenerateSingleEntry(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			state := newVariantState(tt.variant.Params)
-			entry := generateSingleEntry(tt.variant, state, tt.baseIdx)
+			entry, err := generateSingleEntry(tt.variant, state, tt.baseIdx)
+			if err != nil {
+				t.Fatalf("generateSingleEntry failed: %v", err)
+			}
 			tt.checkFn(t, entry)
 		})
 	}

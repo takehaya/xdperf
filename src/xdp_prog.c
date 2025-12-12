@@ -303,12 +303,12 @@ static __always_inline __u16 csum_fold_helper(__u64 csum)
 // Check if a diff affects a particular checksum.
 // Assumption: dv->offset + dv->size does not overflow __u16.
 // This is guaranteed because valid packet offsets are < 2048 (MAX_TEMPLATE_SIZE)
-// and size is at most 4 bytes.
+// and size is at most 16 bytes (see diff_value struct).
 // Note: __noinline prevents verifier state explosion when called from loops
 static __noinline bool diff_affects_checksum(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 diff_start = dv->offset;
-    __u16 diff_end = dv->offset + dv->size; // Safe: offset < 2048, size <= 4
+    __u16 diff_end = dv->offset + dv->size; // Safe: offset < 2048, size <= 16
 
     switch (meta->csum_type) {
     case CSUM_TYPE_IPV4_HEADER: {
@@ -345,8 +345,7 @@ static __noinline bool diff_affects_checksum(struct diff_value *dv, struct check
 
 // Process a single diff for checksum update
 // Note: __noinline prevents verifier state explosion from size-based branching
-static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len,
-                                                 __wsum csum)
+static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len, __wsum csum)
 {
     // Skip if this diff doesn't affect the checksum
     if (!diff_affects_checksum(dv, meta, pkt_len))
@@ -386,6 +385,11 @@ static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, struct ch
     } else if (dv->size == 2) {
         // 2-byte value: stored as BE, convert to LE using bpf_ntohs
         // BE [0x04, 0xD2] → bpf_ntohs → LE 0x04D2 → stored at bytes[0:1]
+        // Note: 2-byte values at odd offsets would require special handling,
+        // but in practice protocol fields are always word-aligned.
+        if (word_pos != 0) {
+            DEBUG_PRINT("Warning: 2-byte diff at odd offset %u may cause incorrect checksum\n", dv->offset);
+        }
         __be16 old_be16, new_be16;
         __builtin_memcpy(&old_be16, dv->old_value, 2);
         __builtin_memcpy(&new_be16, dv->new_value, 2);
@@ -400,8 +404,7 @@ static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, struct ch
         new_u.val = bpf_ntohl(new_be32);
     }
 
-    DEBUG_PRINT("  csum_diff: off=%u sz=%u old=0x%x new=0x%x\n", dv->offset, dv->size, bpf_ntohl(old_u.val),
-                bpf_ntohl(new_u.val));
+    DEBUG_PRINT("  csum_diff: off=%u sz=%u old=0x%x new=0x%x\n", dv->offset, dv->size, bpf_ntohl(old_u.val), bpf_ntohl(new_u.val));
 
     // For sizes <= 4, use the 4-byte padded values
     // For larger sizes (6, 8, 16), call bpf_csum_diff with 16 bytes
