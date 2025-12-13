@@ -3,7 +3,6 @@ package xdperf
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"math/rand"
 
 	"github.com/takehaya/xdperf/pkg/guest"
@@ -32,7 +31,9 @@ func readBytesAt(data []byte, offset uint16, size uint8) ([16]byte, error) {
 
 // valueToBytes converts a uint64 value to [16]byte in network byte order (big-endian).
 // The value is placed in the first 'size' bytes.
-func valueToBytes(value uint64, size uint8) [16]byte {
+// Supported sizes: 1, 2, 4, 8 (what fits in uint64).
+// For larger sizes (6, 16), use readBytesAt to copy raw bytes from the packet instead.
+func valueToBytes(value uint64, size uint8) ([16]byte, error) {
 	var result [16]byte
 	switch size {
 	case 1:
@@ -44,18 +45,9 @@ func valueToBytes(value uint64, size uint8) [16]byte {
 	case 8:
 		binary.BigEndian.PutUint64(result[:8], value)
 	default:
-		// For other sizes (6, 16), treat as big-endian bytes
-		// This handles IPv6 addresses when value represents the numeric form
-		if size > 16 {
-			log.Printf("valueToBytes: size %d exceeds maximum 16", size)
-			return result
-		}
-		for i := size; i > 0; i-- {
-			result[i-1] = byte(value)
-			value >>= 8
-		}
+		return result, fmt.Errorf("unsupported size %d (only 1, 2, 4, 8 are supported for uint64 values)", size)
 	}
-	return result
+	return result, nil
 }
 
 // variantState tracks the sequential state for a single variant
@@ -111,7 +103,10 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 			if err != nil {
 				return entry, fmt.Errorf("failed to read bytes at offset %d: %w", p.ByteStart, err)
 			}
-			newValue := valueToBytes(value, uint8(p.ByteSize))
+			newValue, err := valueToBytes(value, uint8(p.ByteSize))
+			if err != nil {
+				return entry, fmt.Errorf("failed to convert value to bytes for param %d: %w", j, err)
+			}
 			entry.Diffs = append(entry.Diffs, DiffValue{
 				Offset:   uint16(p.ByteStart),
 				Size:     uint8(p.ByteSize),

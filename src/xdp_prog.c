@@ -402,20 +402,67 @@ static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, struct ch
         __builtin_memcpy(&new_be32, dv->new_value, 4);
         old_u.val = bpf_ntohl(old_be32);
         new_u.val = bpf_ntohl(new_be32);
+    } else if (dv->size == 6) {
+        // 6-byte value (MAC address): process as 4 bytes + 2 bytes
+        // First 4 bytes
+        __be32 old_be32, new_be32;
+        __builtin_memcpy(&old_be32, &dv->old_value[0], 4);
+        __builtin_memcpy(&new_be32, &dv->new_value[0], 4);
+        __u32 old_le = bpf_ntohl(old_be32);
+        __u32 new_le = bpf_ntohl(new_be32);
+        csum = bpf_csum_diff(&old_le, 4, &new_le, 4, csum);
+
+        // Remaining 2 bytes (with zero padding)
+        __be16 old_be16, new_be16;
+        __builtin_memcpy(&old_be16, &dv->old_value[4], 2);
+        __builtin_memcpy(&new_be16, &dv->new_value[4], 2);
+        old_u.val = 0;
+        new_u.val = 0;
+        *(__u16 *)&old_u.bytes[0] = bpf_ntohs(old_be16);
+        *(__u16 *)&new_u.bytes[0] = bpf_ntohs(new_be16);
+        DEBUG_PRINT("  csum_diff: size 6, processed 4+2 bytes\n");
+    } else if (dv->size == 8) {
+        // 8-byte value: process as two 4-byte chunks
+        __be32 old_be32_0, new_be32_0, old_be32_1, new_be32_1;
+        __builtin_memcpy(&old_be32_0, &dv->old_value[0], 4);
+        __builtin_memcpy(&new_be32_0, &dv->new_value[0], 4);
+        __builtin_memcpy(&old_be32_1, &dv->old_value[4], 4);
+        __builtin_memcpy(&new_be32_1, &dv->new_value[4], 4);
+
+        __u32 old_le_0 = bpf_ntohl(old_be32_0);
+        __u32 new_le_0 = bpf_ntohl(new_be32_0);
+        csum = bpf_csum_diff(&old_le_0, 4, &new_le_0, 4, csum);
+
+        __u32 old_le_1 = bpf_ntohl(old_be32_1);
+        __u32 new_le_1 = bpf_ntohl(new_be32_1);
+        csum = bpf_csum_diff(&old_le_1, 4, &new_le_1, 4, csum);
+        DEBUG_PRINT("  csum_diff: size 8, processed 2x4 bytes\n");
+        return csum;
+    } else if (dv->size == 16) {
+        // 16-byte value (IPv6 address): process as four 4-byte chunks
+        __be32 old_be32[4], new_be32[4];
+        __builtin_memcpy(&old_be32[0], &dv->old_value[0], 4);
+        __builtin_memcpy(&old_be32[1], &dv->old_value[4], 4);
+        __builtin_memcpy(&old_be32[2], &dv->old_value[8], 4);
+        __builtin_memcpy(&old_be32[3], &dv->old_value[12], 4);
+        __builtin_memcpy(&new_be32[0], &dv->new_value[0], 4);
+        __builtin_memcpy(&new_be32[1], &dv->new_value[4], 4);
+        __builtin_memcpy(&new_be32[2], &dv->new_value[8], 4);
+        __builtin_memcpy(&new_be32[3], &dv->new_value[12], 4);
+
+        for (int i = 0; i < 4; i++) {
+            __u32 old_le = bpf_ntohl(old_be32[i]);
+            __u32 new_le = bpf_ntohl(new_be32[i]);
+            csum = bpf_csum_diff(&old_le, 4, &new_le, 4, csum);
+        }
+        DEBUG_PRINT("  csum_diff: size 16, processed 4x4 bytes\n");
+        return csum;
     }
 
     DEBUG_PRINT("  csum_diff: off=%u sz=%u old=0x%x new=0x%x\n", dv->offset, dv->size, bpf_ntohl(old_u.val), bpf_ntohl(new_u.val));
 
-    // For sizes <= 4, use the 4-byte padded values
-    // For larger sizes (6, 8, 16), call bpf_csum_diff with 16 bytes
-    // (unused bytes are zero in both old/new, so they cancel out)
-    if (dv->size <= 4) {
-        // bpf_csum_diff: padding bytes cancel out, only the diff contributes
-        csum = bpf_csum_diff(&old_u.val, 4, &new_u.val, 4, csum);
-    } else {
-        // size > 4: use full 16-byte arrays (zeros cancel out)
-        csum = bpf_csum_diff((__be32 *)dv->old_value, 16, (__be32 *)dv->new_value, 16, csum);
-    }
+    // bpf_csum_diff: padding bytes cancel out, only the diff contributes
+    csum = bpf_csum_diff(&old_u.val, 4, &new_u.val, 4, csum);
     DEBUG_PRINT("    after csum_diff: csum=0x%llx\n", (unsigned long long)csum);
 
     return csum;
