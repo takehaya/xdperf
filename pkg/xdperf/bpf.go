@@ -118,12 +118,10 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 		return fmt.Errorf("no diff entries")
 	}
 
-	// Warn once if any entry exceeds max diffs
-	for _, e := range entries {
+	// Check if any entry exceeds max diffs
+	for i, e := range entries {
 		if len(e.Diffs) > maxDiffsPerPacket {
-			x.Logger.Warn("some entries exceed MAX_DIFFS_PER_PACKET, diffs will be truncated",
-				zap.Int("max_diffs", maxDiffsPerPacket))
-			break
+			return fmt.Errorf("entry %d has %d diffs, exceeds MAX_DIFFS_PER_PACKET (%d)", i, len(e.Diffs), maxDiffsPerPacket)
 		}
 	}
 
