@@ -3,6 +3,7 @@ package xdperf
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"math/rand"
 
 	"github.com/takehaya/xdperf/pkg/guest"
@@ -27,6 +28,23 @@ func readBytesAt(data []byte, offset uint16, size uint8) ([16]byte, error) {
 		return result, fmt.Errorf("unsupported size %d (only 1, 2, 4, 6, 8 are supported)", size)
 	}
 	return result, nil
+}
+
+// randomInRange returns a random value in [start, end].
+// Returns error if range is invalid (start > end).
+func randomInRange(start, end uint64) (uint64, error) {
+	if end < start {
+		return 0, fmt.Errorf("invalid range: start %d > end %d", start, end)
+	}
+	rangeSize := end - start + 1
+	if rangeSize == 0 {
+		// Full uint64 range (start=0, end=MaxUint64)
+		return rand.Uint64(), nil
+	}
+	if rangeSize > math.MaxInt64 {
+		return start + rand.Uint64()%rangeSize, nil
+	}
+	return start + uint64(rand.Int63n(int64(rangeSize))), nil
 }
 
 // valueToBytes converts a uint64 value to [16]byte in network byte order (big-endian).
@@ -78,6 +96,7 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 		if p.ByteStart == guest.ByteStartPacketLength {
 			// Packet length uses uint64 range
 			var value uint64
+			var err error
 			switch p.PatternType {
 			case guest.ValuePatternTypeSequential:
 				value = state.currentValues[j]
@@ -86,8 +105,10 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 					state.currentValues[j] = p.ByteRange.Start
 				}
 			case guest.ValuePatternTypeMixed:
-				rangeSize := p.ByteRange.End - p.ByteRange.Start + 1
-				value = p.ByteRange.Start + uint64(rand.Int63n(int64(rangeSize)))
+				value, err = randomInRange(p.ByteRange.Start, p.ByteRange.End)
+				if err != nil {
+					return entry, fmt.Errorf("packet length range error: %w", err)
+				}
 			default:
 				value = p.ByteRange.Start
 			}
@@ -111,8 +132,11 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 				state.currentValues[j] = p.ByteRange.Start
 			}
 		case guest.ValuePatternTypeMixed:
-			rangeSize := p.ByteRange.End - p.ByteRange.Start + 1
-			value = p.ByteRange.Start + uint64(rand.Int63n(int64(rangeSize)))
+			var rangeErr error
+			value, rangeErr = randomInRange(p.ByteRange.Start, p.ByteRange.End)
+			if rangeErr != nil {
+				return entry, fmt.Errorf("param %d range error: %w", j, rangeErr)
+			}
 		default:
 			value = p.ByteRange.Start
 		}
