@@ -50,18 +50,55 @@ func valueToBytes(value uint64, size uint8) ([16]byte, error) {
 	return result, nil
 }
 
+// incrementBytes increments a byte array value by 1 (big-endian).
+// Only the first 'size' bytes are considered.
+func incrementBytes(value [16]byte, size uint8) [16]byte {
+	for i := int(size) - 1; i >= 0; i-- {
+		value[i]++
+		if value[i] != 0 {
+			break // No carry
+		}
+	}
+	return value
+}
+
+// compareBytes compares two byte arrays (big-endian).
+// Returns -1 if a < b, 0 if a == b, 1 if a > b.
+// Only the first 'size' bytes are compared.
+func compareBytes(a, b [16]byte, size uint8) int {
+	for i := 0; i < int(size); i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
 // variantState tracks the sequential state for a single variant
 type variantState struct {
-	currentValues []uint64 // Current value for each param (for sequential patterns)
+	currentValues      []uint64   // Current value for each param (for sizes <= 8)
+	currentBytesValues [][16]byte // Current value for each param (for sizes > 8, e.g., 16)
+	useBytesValue      []bool     // Whether to use currentBytesValues[i] instead of currentValues[i]
 }
 
 // newVariantState creates a new state initialized from variant params
 func newVariantState(params []guest.VariableParams) *variantState {
 	state := &variantState{
-		currentValues: make([]uint64, len(params)),
+		currentValues:      make([]uint64, len(params)),
+		currentBytesValues: make([][16]byte, len(params)),
+		useBytesValue:      make([]bool, len(params)),
 	}
 	for i, p := range params {
-		state.currentValues[i] = p.ByteRange.Start
+		// Use byte array for sizes > 8 when ByteRangeBytes is provided
+		if p.ByteSize > 8 && p.ByteRangeBytes != nil {
+			state.useBytesValue[i] = true
+			state.currentBytesValues[i] = p.ByteRangeBytes.Start
+		} else {
+			state.currentValues[i] = p.ByteRange.Start
+		}
 	}
 	return state
 }
@@ -75,45 +112,89 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 	}
 
 	for j, p := range variant.Params {
-		var value uint64
-
-		switch p.PatternType {
-		case guest.ValuePatternTypeSequential:
-			value = state.currentValues[j]
-			// Increment for next iteration
-			state.currentValues[j]++
-			if state.currentValues[j] > p.ByteRange.End {
-				state.currentValues[j] = p.ByteRange.Start
-			}
-		case guest.ValuePatternTypeMixed:
-			// Random value within range
-			rangeSize := p.ByteRange.End - p.ByteRange.Start + 1
-			value = p.ByteRange.Start + uint64(rand.Int63n(int64(rangeSize)))
-		default:
-			value = p.ByteRange.Start
-		}
-
 		// Check if this is a packet length variation
 		if p.ByteStart == guest.ByteStartPacketLength {
-			entry.PacketLen = uint16(value)
-		} else {
-			// Regular byte modification
-			// Read old value from base packet for bpf_csum_diff
-			oldValue, err := readBytesAt(variant.Base.Data, uint16(p.ByteStart), uint8(p.ByteSize))
-			if err != nil {
-				return entry, fmt.Errorf("failed to read bytes at offset %d: %w", p.ByteStart, err)
+			// Packet length uses uint64 range
+			var value uint64
+			switch p.PatternType {
+			case guest.ValuePatternTypeSequential:
+				value = state.currentValues[j]
+				state.currentValues[j]++
+				if state.currentValues[j] > p.ByteRange.End {
+					state.currentValues[j] = p.ByteRange.Start
+				}
+			case guest.ValuePatternTypeMixed:
+				rangeSize := p.ByteRange.End - p.ByteRange.Start + 1
+				value = p.ByteRange.Start + uint64(rand.Int63n(int64(rangeSize)))
+			default:
+				value = p.ByteRange.Start
 			}
-			newValue, err := valueToBytes(value, uint8(p.ByteSize))
+			entry.PacketLen = uint16(value)
+			continue
+		}
+
+		// Read old value from base packet for bpf_csum_diff
+		oldValue, err := readBytesAt(variant.Base.Data, uint16(p.ByteStart), uint8(p.ByteSize))
+		if err != nil {
+			return entry, fmt.Errorf("failed to read bytes at offset %d: %w", p.ByteStart, err)
+		}
+
+		var newValue [16]byte
+
+		// Use byte array values for large sizes (> 8 bytes)
+		if state.useBytesValue[j] {
+			switch p.PatternType {
+			case guest.ValuePatternTypeSequential:
+				newValue = state.currentBytesValues[j]
+				// Increment for next iteration
+				state.currentBytesValues[j] = incrementBytes(state.currentBytesValues[j], uint8(p.ByteSize))
+				// Wrap around if exceeded end
+				if compareBytes(state.currentBytesValues[j], p.ByteRangeBytes.End, uint8(p.ByteSize)) > 0 {
+					state.currentBytesValues[j] = p.ByteRangeBytes.Start
+				}
+			case guest.ValuePatternTypeMixed:
+				// For mixed mode with bytes, use random offset from start
+				// This is a simplified approach: random increment from start
+				newValue = p.ByteRangeBytes.Start
+				// Add random increments (limited to avoid overflow complexity)
+				randomInc := rand.Intn(256) // Simple random for now
+				for i := 0; i < randomInc; i++ {
+					newValue = incrementBytes(newValue, uint8(p.ByteSize))
+					if compareBytes(newValue, p.ByteRangeBytes.End, uint8(p.ByteSize)) > 0 {
+						newValue = p.ByteRangeBytes.Start
+					}
+				}
+			default:
+				newValue = p.ByteRangeBytes.Start
+			}
+		} else {
+			// Use uint64 values for small sizes (<= 8 bytes)
+			var value uint64
+			switch p.PatternType {
+			case guest.ValuePatternTypeSequential:
+				value = state.currentValues[j]
+				state.currentValues[j]++
+				if state.currentValues[j] > p.ByteRange.End {
+					state.currentValues[j] = p.ByteRange.Start
+				}
+			case guest.ValuePatternTypeMixed:
+				rangeSize := p.ByteRange.End - p.ByteRange.Start + 1
+				value = p.ByteRange.Start + uint64(rand.Int63n(int64(rangeSize)))
+			default:
+				value = p.ByteRange.Start
+			}
+			newValue, err = valueToBytes(value, uint8(p.ByteSize))
 			if err != nil {
 				return entry, fmt.Errorf("failed to convert value to bytes for param %d: %w", j, err)
 			}
-			entry.Diffs = append(entry.Diffs, DiffValue{
-				Offset:   uint16(p.ByteStart),
-				Size:     uint8(p.ByteSize),
-				OldValue: oldValue,
-				NewValue: newValue,
-			})
 		}
+
+		entry.Diffs = append(entry.Diffs, DiffValue{
+			Offset:   uint16(p.ByteStart),
+			Size:     uint8(p.ByteSize),
+			OldValue: oldValue,
+			NewValue: newValue,
+		})
 	}
 
 	// Check if packet length changed from base
