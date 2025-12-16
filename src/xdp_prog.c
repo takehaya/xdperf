@@ -383,18 +383,23 @@ static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, struct ch
             new_u.bytes[0] = dv->new_value[0];
         }
     } else if (dv->size == 2) {
-        // 2-byte value: stored as BE, convert to LE using bpf_ntohs
-        // BE [0x04, 0xD2] → bpf_ntohs → LE 0x04D2 → stored at bytes[0:1]
-        // Note: 2-byte values at odd offsets would require special handling,
-        // but in practice protocol fields are always word-aligned.
-        if (word_pos != 0) {
-            DEBUG_PRINT("Warning: 2-byte diff at odd offset %u may cause incorrect checksum\n", dv->offset);
+        if (word_pos == 0) {
+            // Even offset: 2 bytes within the same 16-bit word
+            // BE [0x04, 0xD2] → bpf_ntohs → LE 0x04D2 → stored at bytes[0:1]
+            __be16 old_be16, new_be16;
+            __builtin_memcpy(&old_be16, dv->old_value, 2);
+            __builtin_memcpy(&new_be16, dv->new_value, 2);
+            *(__u16 *)&old_u.bytes[0] = bpf_ntohs(old_be16);
+            *(__u16 *)&new_u.bytes[0] = bpf_ntohs(new_be16);
+        } else {
+            // Odd offset: 2 bytes span across two 16-bit words
+            // byte[0] → low byte of previous word (bytes[0] on LE)
+            // byte[1] → high byte of next word (bytes[3] on LE)
+            old_u.bytes[0] = dv->old_value[0];
+            old_u.bytes[3] = dv->old_value[1];
+            new_u.bytes[0] = dv->new_value[0];
+            new_u.bytes[3] = dv->new_value[1];
         }
-        __be16 old_be16, new_be16;
-        __builtin_memcpy(&old_be16, dv->old_value, 2);
-        __builtin_memcpy(&new_be16, dv->new_value, 2);
-        *(__u16 *)&old_u.bytes[0] = bpf_ntohs(old_be16);
-        *(__u16 *)&new_u.bytes[0] = bpf_ntohs(new_be16);
     } else if (dv->size == 4) {
         // 4-byte value: stored as BE, convert to LE using bpf_ntohl
         __be32 old_be32, new_be32;

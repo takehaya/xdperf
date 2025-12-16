@@ -13,7 +13,7 @@ const maxBasePackets = 16
 
 // readBytesAt reads bytes from the packet at the given offset.
 // Returns the bytes in a [16]byte array (network byte order).
-// Supported sizes: 1, 2, 4, 6, 8, or 16 bytes.
+// Supported sizes: 1, 2, 4, 6, 8 bytes.
 func readBytesAt(data []byte, offset uint16, size uint8) ([16]byte, error) {
 	var result [16]byte
 	if int(offset)+int(size) > len(data) {
@@ -21,10 +21,10 @@ func readBytesAt(data []byte, offset uint16, size uint8) ([16]byte, error) {
 	}
 
 	switch size {
-	case 1, 2, 4, 6, 8, 16:
+	case 1, 2, 4, 6, 8:
 		copy(result[:size], data[offset:offset+uint16(size)])
 	default:
-		return result, fmt.Errorf("unsupported size %d (only 1, 2, 4, 6, 8, 16 are supported)", size)
+		return result, fmt.Errorf("unsupported size %d (only 1, 2, 4, 6, 8 are supported)", size)
 	}
 	return result, nil
 }
@@ -32,7 +32,6 @@ func readBytesAt(data []byte, offset uint16, size uint8) ([16]byte, error) {
 // valueToBytes converts a uint64 value to [16]byte in network byte order (big-endian).
 // The value is placed in the first 'size' bytes.
 // Supported sizes: 1, 2, 4, 8 (what fits in uint64).
-// For larger sizes (6, 16), use readBytesAt to copy raw bytes from the packet instead.
 func valueToBytes(value uint64, size uint8) ([16]byte, error) {
 	var result [16]byte
 	switch size {
