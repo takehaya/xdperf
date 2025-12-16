@@ -105,37 +105,22 @@ type VariableParams struct {
 	// Ignored when ByteStart is ByteStartPacketLength.
 	ByteSize uint64 `json:"byte_size"`
 
-	// Value range used for applying variations (for sizes 1, 2, 4, 8).
+	// Value range used for applying variations.
 	// When ByteStart is ByteStartPacketLength, this specifies the packet length range.
 	ByteRange TemplateRange `json:"byte_range"`
-
-	// Value range using byte arrays (for sizes 6, 16).
-	// If set, this takes precedence over ByteRange for large sizes.
-	ByteRangeBytes *TemplateRangeBytes `json:"byte_range_bytes,omitempty"`
 
 	// Pattern type used for value variation.
 	PatternType ValuePatternType `json:"pattern_type"`
 }
 
 // TemplateRange represents a simple numerical range used when generating
-// varying values. Used for sizes 1, 2, 4, 8 bytes (values that fit in uint64).
+// varying values.
 type TemplateRange struct {
 	// Start value.
 	Start uint64 `json:"start"`
 
 	// End value.
 	End uint64 `json:"end"`
-}
-
-// TemplateRangeBytes represents a range using byte arrays for large values
-// (6 bytes for MAC address, 16 bytes for IPv6 address).
-// Values are stored in network byte order (big-endian).
-type TemplateRangeBytes struct {
-	// Start value (only first ByteSize bytes are used).
-	Start [16]byte `json:"start"`
-
-	// End value (only first ByteSize bytes are used).
-	End [16]byte `json:"end"`
 }
 
 // PacketVariantSet represents a set of packet variants along with a pattern

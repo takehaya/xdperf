@@ -133,8 +133,8 @@ static __noinline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
             return -1;
         break;
     default:
-        // For sizes 6, 8, 16: use size directly (verifier tracks size is bounded)
-        if (size > 16)
+        // For sizes 6, 8: use size directly (verifier tracks size is bounded)
+        if (size > 8)
             return -1;
         if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, size) < 0)
             return -1;
@@ -437,25 +437,6 @@ static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, struct ch
         __u32 new_le_1 = bpf_ntohl(new_be32_1);
         csum = bpf_csum_diff(&old_le_1, 4, &new_le_1, 4, csum);
         DEBUG_PRINT("  csum_diff: size 8, processed 2x4 bytes\n");
-        return csum;
-    } else if (dv->size == 16) {
-        // 16-byte value (IPv6 address): process as four 4-byte chunks
-        __be32 old_be32[4], new_be32[4];
-        __builtin_memcpy(&old_be32[0], &dv->old_value[0], 4);
-        __builtin_memcpy(&old_be32[1], &dv->old_value[4], 4);
-        __builtin_memcpy(&old_be32[2], &dv->old_value[8], 4);
-        __builtin_memcpy(&old_be32[3], &dv->old_value[12], 4);
-        __builtin_memcpy(&new_be32[0], &dv->new_value[0], 4);
-        __builtin_memcpy(&new_be32[1], &dv->new_value[4], 4);
-        __builtin_memcpy(&new_be32[2], &dv->new_value[8], 4);
-        __builtin_memcpy(&new_be32[3], &dv->new_value[12], 4);
-
-        for (int i = 0; i < 4; i++) {
-            __u32 old_le = bpf_ntohl(old_be32[i]);
-            __u32 new_le = bpf_ntohl(new_be32[i]);
-            csum = bpf_csum_diff(&old_le, 4, &new_le, 4, csum);
-        }
-        DEBUG_PRINT("  csum_diff: size 16, processed 4x4 bytes\n");
         return csum;
     }
 
