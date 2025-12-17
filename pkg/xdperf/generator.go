@@ -112,8 +112,19 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 			default:
 				value = p.ByteRange.Start
 			}
+			if value > math.MaxUint16 {
+				return entry, fmt.Errorf("packet length %d exceeds max uint16", value)
+			}
 			entry.PacketLen = uint16(value)
 			continue
+		}
+
+		// Validate narrowing conversions
+		if p.ByteStart > math.MaxUint16 {
+			return entry, fmt.Errorf("param %d: byte_start %d exceeds max uint16", j, p.ByteStart)
+		}
+		if p.ByteSize > 8 {
+			return entry, fmt.Errorf("param %d: byte_size %d exceeds max (8)", j, p.ByteSize)
 		}
 
 		// Read old value from base packet for bpf_csum_diff
@@ -179,17 +190,20 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 		}
 	}
 
+	// Calculate total weight once (used by both Sequential and Mixed modes)
+	var totalWeight uint32
+	for _, v := range variantSet.Variants {
+		totalWeight += v.Weight
+	}
+	if totalWeight == 0 {
+		return nil, nil, fmt.Errorf("total weight is zero: all variants have zero weight")
+	}
+
 	// Pre-allocate slice to avoid reallocations during append
 	allEntries := make([]DiffEntry, 0, totalCount)
 
 	switch variantSet.Pattern {
 	case guest.VariantSelectionModeSequential:
-		// Calculate total weight
-		var totalWeight uint32
-		for _, v := range variantSet.Variants {
-			totalWeight += v.Weight
-		}
-
 		// Distribute count across variants based on weight
 		remaining := totalCount
 		for i, v := range variantSet.Variants {
@@ -214,12 +228,6 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 		}
 
 	case guest.VariantSelectionModeMixed:
-		// Calculate total weight for weighted random selection
-		var totalWeight uint32
-		for _, v := range variantSet.Variants {
-			totalWeight += v.Weight
-		}
-
 		// Create state for each variant (to maintain sequential values across selections)
 		variantStates := make([]*variantState, len(variantSet.Variants))
 		for i, v := range variantSet.Variants {

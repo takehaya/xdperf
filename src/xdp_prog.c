@@ -174,27 +174,32 @@ static __noinline int recalc_checksum(struct xdp_md *ctx, struct checksum_meta *
         break;
     }
 
-    case CSUM_TYPE_UDP_IPV6:
-    case CSUM_TYPE_TCP_IPV6:
-    case CSUM_TYPE_ICMPV6: {
-        // Load IPv6 header to get payload length
+    case CSUM_TYPE_UDP_IPV6: {
         struct ipv6hdr ip6h;
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
             return -1;
         transport_len = bpf_ntohs(ip6h.payload_len);
-        __u8 proto;
-        switch (meta->csum_type) {
-        case CSUM_TYPE_UDP_IPV6:
-            proto = IPPROTO_UDP;
-            break;
-        case CSUM_TYPE_TCP_IPV6:
-            proto = IPPROTO_TCP;
-            break;
-        default:
-            proto = IPPROTO_ICMPV6;
-            break;
-        }
-        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, proto);
+        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, IPPROTO_UDP);
+        if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
+            return -1;
+        break;
+    }
+    case CSUM_TYPE_TCP_IPV6: {
+        struct ipv6hdr ip6h;
+        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
+            return -1;
+        transport_len = bpf_ntohs(ip6h.payload_len);
+        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, IPPROTO_TCP);
+        if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
+            return -1;
+        break;
+    }
+    case CSUM_TYPE_ICMPV6: {
+        struct ipv6hdr ip6h;
+        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
+            return -1;
+        transport_len = bpf_ntohs(ip6h.payload_len);
+        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, IPPROTO_ICMPV6);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return -1;
         break;
@@ -750,6 +755,9 @@ int xdp_tx_checksum(struct xdp_md *ctx)
         }
 
         // Then recalculate checksums from scratch
+        // Error handling strategy:
+        // - meta lookup fail: break (map issue, subsequent lookups likely fail too)
+        // - recalc fail: continue (only affects this checksum, others may succeed)
         for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
             if (i >= checksum_count)
                 break;
@@ -767,6 +775,7 @@ int xdp_tx_checksum(struct xdp_md *ctx)
         }
     } else {
         // Packet length unchanged - use bpf_csum_diff for incremental updates
+        // Same error handling strategy as above
         for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
             if (i >= checksum_count)
                 break;

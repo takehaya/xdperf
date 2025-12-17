@@ -81,14 +81,17 @@ func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 
 		key := uint32(baseIdx)
 
-		// Create per-CPU values (all CPUs get the same base packet)
+		// Create base packet template once
+		base := coreelf.BpfBasePacket{
+			Len:           info.Base.Length,
+			ChecksumCount: uint8(len(info.Checksums)),
+		}
+		copy(base.Data[:], info.Base.Data)
+
+		// Replicate to all CPUs (all CPUs get the same base packet)
 		basePackets := make([]coreelf.BpfBasePacket, numCpus)
-		for i := 0; i < numCpus; i++ {
-			basePackets[i] = coreelf.BpfBasePacket{
-				Len:           info.Base.Length,
-				ChecksumCount: uint8(len(info.Checksums)),
-			}
-			copy(basePackets[i].Data[:], info.Base.Data)
+		for i := range basePackets {
+			basePackets[i] = base
 		}
 
 		if err := x.bpfobjs.BpfMaps.BasePacketMap.Put(&key, basePackets); err != nil {

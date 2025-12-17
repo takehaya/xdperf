@@ -73,22 +73,9 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 }
 
 func (x *Xdperf) getStats(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPackets, prevBytes *uint64) (deltaPackets, deltaBytes uint64) {
-	var key uint32
-	err := statMap.Lookup(&key, &recs)
-	if err != nil {
-		fmt.Printf("failed to lookup stats_map: %v\n", err)
-		return 0, 0
-	}
-	var sumPackets uint64
-	var sumBytes uint64
-	for _, rec := range recs {
-		sumPackets += rec.Packets
-		sumBytes += rec.Bytes
-	}
-	deltaPackets = sumPackets - *prevPackets
-	deltaBytes = sumBytes - *prevBytes
-	*prevPackets = sumPackets
-	*prevBytes = sumBytes
+	// Reuse getStatsWithErrors and discard error counts
+	var unusedDiffErrors, unusedChecksumErrors uint64
+	deltaPackets, deltaBytes, _, _ = x.getStatsWithErrors(statMap, recs, prevPackets, prevBytes, &unusedDiffErrors, &unusedChecksumErrors)
 	return deltaPackets, deltaBytes
 }
 
