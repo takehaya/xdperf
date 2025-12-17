@@ -70,13 +70,25 @@ func checksumTypeToBPF(t guest.ChecksumType) uint8 {
 // Must match COPY_CHUNK_SIZE in src/xdp_prog.c
 const minPacketSize = 64
 
+// maxPacketSize is the maximum packet size supported by the BPF template.
+// Must match MAX_PACKET_SIZE in src/xdp_packet.h
+const maxPacketSize = 2048
+
 // initBasePacketMaps initializes the base packet map with multiple base packets
 func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 	for baseIdx, info := range bases {
-		// Validate minimum packet size (BPF verifier constraint)
+		// Validate packet size bounds
 		if info.Base.Length < minPacketSize {
 			return fmt.Errorf("base packet %d too small: %d bytes (minimum %d)",
 				baseIdx, info.Base.Length, minPacketSize)
+		}
+		if int(info.Base.Length) > len(info.Base.Data) {
+			return fmt.Errorf("base packet %d: length %d exceeds data size %d",
+				baseIdx, info.Base.Length, len(info.Base.Data))
+		}
+		if info.Base.Length > maxPacketSize {
+			return fmt.Errorf("base packet %d: length %d exceeds max template size %d",
+				baseIdx, info.Base.Length, maxPacketSize)
 		}
 
 		key := uint32(baseIdx)
@@ -86,7 +98,7 @@ func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 			Len:           info.Base.Length,
 			ChecksumCount: uint8(len(info.Checksums)),
 		}
-		copy(base.Data[:], info.Base.Data)
+		copy(base.Data[:], info.Base.Data[:info.Base.Length])
 
 		// Replicate to all CPUs (all CPUs get the same base packet)
 		basePackets := make([]coreelf.BpfBasePacket, numCpus)
@@ -294,24 +306,38 @@ func (x *Xdperf) initBpfMaps(bases []BasePacketInfo, diffEntries []DiffEntry) er
 		zap.Any("counts_per_cpu", countsPerCPU[:parallelism]),
 	)
 
-	// Initialize base packet maps (multiple bases)
+	// Initialize BPF maps in order of dependency.
+	// Note: Partial initialization may occur if an error happens mid-way.
+	// BPF maps are reset on next successful initialization or program reload.
+	var initStage string
+
+	initStage = "base_packet_maps"
 	if err := x.initBasePacketMaps(bases, numCpus); err != nil {
-		return fmt.Errorf("failed to init base packet maps: %w", err)
+		return fmt.Errorf("failed to init %s: %w", initStage, err)
 	}
 
-	// Initialize diff map
+	initStage = "diff_map"
 	if err := x.initDiffMap(diffEntries, countsPerCPU, numCpus); err != nil {
-		return fmt.Errorf("failed to init diff map: %w", err)
+		x.Logger.Warn("BPF map initialization failed after partial setup",
+			zap.String("failed_at", initStage),
+			zap.String("completed", "base_packet_maps"))
+		return fmt.Errorf("failed to init %s: %w", initStage, err)
 	}
 
-	// Initialize checksum meta maps (per base)
+	initStage = "checksum_meta_maps"
 	if err := x.initChecksumMetaMaps(bases); err != nil {
-		return fmt.Errorf("failed to init checksum meta maps: %w", err)
+		x.Logger.Warn("BPF map initialization failed after partial setup",
+			zap.String("failed_at", initStage),
+			zap.String("completed", "base_packet_maps, diff_map"))
+		return fmt.Errorf("failed to init %s: %w", initStage, err)
 	}
 
-	// Initialize packet state map
+	initStage = "pkt_state_map"
 	if err := x.initPktStateMap(countsPerCPU); err != nil {
-		return fmt.Errorf("failed to init pkt state map: %w", err)
+		x.Logger.Warn("BPF map initialization failed after partial setup",
+			zap.String("failed_at", initStage),
+			zap.String("completed", "base_packet_maps, diff_map, checksum_meta_maps"))
+		return fmt.Errorf("failed to init %s: %w", initStage, err)
 	}
 
 	x.Logger.Info("BPF maps initialized")
