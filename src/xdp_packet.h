@@ -23,15 +23,6 @@
 // Must match maxBasePackets in pkg/xdperf/generator.go
 #define MAX_BASE_PACKETS 16
 
-// Checksum types
-// Must match checksumTypeToBPF() in pkg/xdperf/bpf.go
-#define CSUM_TYPE_IPV4_HEADER 0
-#define CSUM_TYPE_UDP_IPV4 1
-#define CSUM_TYPE_TCP_IPV4 2
-#define CSUM_TYPE_UDP_IPV6 3
-#define CSUM_TYPE_TCP_IPV6 4
-#define CSUM_TYPE_ICMPV6 5
-#define CSUM_TYPE_INVALID 0xFF // Invalid/unknown checksum type
 
 // Base packet structure (stored once per variant)
 struct base_packet {
@@ -61,14 +52,13 @@ struct diff_entry {
 };
 
 // Checksum metadata (how to recalculate checksums)
+// The checksum type is auto-detected from packet content at ip_header_offset.
+// For IPv4 header checksum, set csum_offset == header_start (IP header start).
 struct checksum_meta {
-    __u8 csum_type; // CSUM_TYPE_* constant
-    __u8 _pad;
     __u16 csum_offset;      // Offset of checksum field in packet
     __u16 header_start;     // Start of header to checksum
     __u16 header_len;       // Length of header (0 = compute from IP/transport length)
     __u16 ip_header_offset; // Offset of IP header (for pseudo-header)
-    __u16 _pad2;
 };
 
 // Per-CPU packet state

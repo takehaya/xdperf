@@ -33,39 +33,6 @@ type DiffValue struct {
 	NewValue [16]byte   // New value to write (network byte order)
 }
 
-// BPF checksum type constants (must match src/xdp_packet.h)
-const (
-	csumTypeIPv4Header uint8 = 0
-	csumTypeUDPIPv4    uint8 = 1
-	csumTypeTCPIPv4    uint8 = 2
-	csumTypeUDPIPv6    uint8 = 3
-	csumTypeTCPIPv6    uint8 = 4
-	csumTypeICMPv6     uint8 = 5
-	csumTypeInvalid    uint8 = 0xFF // Invalid/unknown type
-)
-
-// checksumTypeToBPF converts guest.ChecksumType to BPF constant.
-// Returns csumTypeInvalid (0xFF) for unknown types which will cause
-// the BPF program to skip checksum calculation for that entry.
-func checksumTypeToBPF(t guest.ChecksumType) uint8 {
-	switch t {
-	case guest.ChecksumTypeIPv4Header:
-		return csumTypeIPv4Header
-	case guest.ChecksumTypeUDPIPv4:
-		return csumTypeUDPIPv4
-	case guest.ChecksumTypeTCPIPv4:
-		return csumTypeTCPIPv4
-	case guest.ChecksumTypeUDPIPv6:
-		return csumTypeUDPIPv6
-	case guest.ChecksumTypeTCPIPv6:
-		return csumTypeTCPIPv6
-	case guest.ChecksumTypeICMPv6:
-		return csumTypeICMPv6
-	default:
-		return csumTypeInvalid
-	}
-}
-
 // minPacketSize is the minimum packet size required by the BPF program.
 // Must match COPY_CHUNK_SIZE in src/xdp_prog.c
 const minPacketSize = 64
@@ -229,7 +196,6 @@ func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo) error {
 
 			key := uint32(baseIdx*maxChecksumEntriesPerBase + csIdx)
 			meta := coreelf.BpfChecksumMeta{
-				CsumType:       checksumTypeToBPF(cs.Type),
 				CsumOffset:     cs.ChecksumOffset,
 				HeaderStart:    cs.HeaderStart,
 				HeaderLen:      cs.HeaderLen,

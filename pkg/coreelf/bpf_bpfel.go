@@ -23,13 +23,10 @@ type BpfBasePacket struct {
 
 type BpfChecksumMeta struct {
 	_              structs.HostLayout
-	CsumType       uint8
-	Pad            uint8
 	CsumOffset     uint16
 	HeaderStart    uint16
 	HeaderLen      uint16
 	IpHeaderOffset uint16
-	Pad2           uint16
 }
 
 type BpfDatarec struct {

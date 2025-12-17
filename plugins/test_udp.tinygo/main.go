@@ -87,16 +87,17 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	maxLen := uint16(len(packetBytes))
 
 	// Checksum specifications for IPv4/UDP packets
+	// Type is auto-detected from packet content at IPHeaderOffset
 	checksums := []guest.ChecksumSpec{
 		{
-			Type:           guest.ChecksumTypeIPv4Header,
+			// IPv4 header checksum (detected by csum_offset == ip_header_offset + 10)
 			ChecksumOffset: 24, // 14 (Ethernet) + 10 (IP header offset to checksum)
 			HeaderStart:    14, // Start of IP header
 			HeaderLen:      20, // IPv4 header length
 			IPHeaderOffset: 14,
 		},
 		{
-			Type:           guest.ChecksumTypeUDPIPv4,
+			// UDP checksum (detected from IP protocol field)
 			ChecksumOffset: 40, // 34 (UDP start) + 6 (checksum offset in UDP)
 			HeaderStart:    34, // Start of UDP header
 			HeaderLen:      0,  // Computed from IP total length

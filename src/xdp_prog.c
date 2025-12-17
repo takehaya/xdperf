@@ -147,65 +147,53 @@ static __noinline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 // Recalculate checksum from scratch using bpf_xdp_load_bytes/bpf_xdp_store_bytes
 // Used when packet length changes (incremental update not possible)
 // This is O(packet_length) - only use when necessary
+// Auto-detects checksum type from packet content:
+// - IPv4 header checksum: csum_offset == ip_header_offset + 10 (IP header checksum field)
+// - Transport checksum: determined by IP protocol field
 // Note: __noinline prevents verifier state explosion when called from loops
 static __noinline int recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 csum;
     __u16 transport_len;
 
-    switch (meta->csum_type) {
-    case CSUM_TYPE_IPV4_HEADER:
+    // Check if this is IPv4 header checksum by comparing offsets
+    // IPv4 header checksum is at ip_header_offset + 10
+    if (meta->csum_offset == meta->ip_header_offset + 10) {
+        // IPv4 header checksum
         csum = calc_ipv4_header_csum(ctx, meta->ip_header_offset);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return -1;
-        break;
+        return 0;
+    }
 
-    case CSUM_TYPE_UDP_IPV4:
-    case CSUM_TYPE_TCP_IPV4: {
-        // Load IP header to get transport length
+    // Transport layer checksum - need to detect IPv4 vs IPv6
+    // Load first byte at ip_header_offset to get IP version
+    __u8 version_byte;
+    if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) < 0)
+        return -1;
+
+    __u8 ip_version = (version_byte >> 4) & 0x0F;
+
+    if (ip_version == 4) {
+        // IPv4 transport checksum
         struct iphdr iph;
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &iph, sizeof(iph)) < 0)
             return -1;
         transport_len = bpf_ntohs(iph.tot_len) - (iph.ihl * 4);
-        csum = calc_transport_csum_ipv4(ctx, meta->ip_header_offset, meta->header_start, transport_len,
-                                        meta->csum_type == CSUM_TYPE_UDP_IPV4 ? IPPROTO_UDP : IPPROTO_TCP);
+        csum = calc_transport_csum_ipv4(ctx, meta->ip_header_offset, meta->header_start, transport_len, iph.protocol);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return -1;
-        break;
-    }
-
-    case CSUM_TYPE_UDP_IPV6: {
+    } else if (ip_version == 6) {
+        // IPv6 transport checksum
         struct ipv6hdr ip6h;
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
             return -1;
         transport_len = bpf_ntohs(ip6h.payload_len);
-        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, IPPROTO_UDP);
+        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, ip6h.nexthdr);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return -1;
-        break;
-    }
-    case CSUM_TYPE_TCP_IPV6: {
-        struct ipv6hdr ip6h;
-        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
-            return -1;
-        transport_len = bpf_ntohs(ip6h.payload_len);
-        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, IPPROTO_TCP);
-        if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
-            return -1;
-        break;
-    }
-    case CSUM_TYPE_ICMPV6: {
-        struct ipv6hdr ip6h;
-        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
-            return -1;
-        transport_len = bpf_ntohs(ip6h.payload_len);
-        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, IPPROTO_ICMPV6);
-        if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
-            return -1;
-        break;
-    }
-
-    default:
+    } else {
+        // Unknown IP version
         return -1;
     }
 
@@ -308,52 +296,53 @@ static __always_inline __u16 csum_fold_helper(__u64 csum)
 // Check if a diff affects a particular checksum.
 // Assumption: dv->offset + dv->size does not overflow __u16.
 // This is guaranteed because valid packet offsets are < 2048 (MAX_TEMPLATE_SIZE)
-// and size is at most 16 bytes (see diff_value struct).
+// and size is at most 8 bytes.
+// Auto-detects checksum type (IPv4 header vs transport) from packet content.
 // Note: __noinline prevents verifier state explosion when called from loops
-static __noinline bool diff_affects_checksum(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len)
+static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 diff_start = dv->offset;
-    __u16 diff_end = dv->offset + dv->size; // Safe: offset < 2048, size <= 16
+    __u16 diff_end = dv->offset + dv->size; // Safe: offset < 2048, size <= 8
 
-    switch (meta->csum_type) {
-    case CSUM_TYPE_IPV4_HEADER: {
+    // Check if this is IPv4 header checksum (csum_offset == ip_header_offset + 10)
+    if (meta->csum_offset == meta->ip_header_offset + 10) {
         // IPv4 header checksum covers [ip_offset, ip_offset + 20)
         __u16 ip_start = meta->ip_header_offset;
         __u16 ip_end = ip_start + 20;
         return diff_start < ip_end && diff_end > ip_start;
     }
-    case CSUM_TYPE_UDP_IPV4:
-    case CSUM_TYPE_TCP_IPV4: {
-        // Pseudo-header: src IP at ip_offset+12, dst IP at ip_offset+16
+
+    // Transport layer checksum - detect IPv4 vs IPv6
+    __u8 version_byte;
+    if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) < 0)
+        return true; // On error, assume it affects checksum to be safe
+
+    __u8 ip_version = (version_byte >> 4) & 0x0F;
+
+    if (ip_version == 4) {
+        // IPv4: Pseudo-header includes src IP at ip_offset+12, dst IP at ip_offset+16
         __u16 src_ip = meta->ip_header_offset + 12;
         __u16 dst_ip_end = meta->ip_header_offset + 20;
         if (diff_start < dst_ip_end && diff_end > src_ip)
             return true;
-        // Transport layer
-        return diff_start < pkt_len && diff_end > meta->header_start;
-    }
-    case CSUM_TYPE_UDP_IPV6:
-    case CSUM_TYPE_TCP_IPV6:
-    case CSUM_TYPE_ICMPV6: {
-        // IPv6 pseudo-header: src/dst addresses at ip_offset+8 to ip_offset+40
+    } else if (ip_version == 6) {
+        // IPv6: Pseudo-header includes src/dst addresses at ip_offset+8 to ip_offset+40
         __u16 src_ip = meta->ip_header_offset + 8;
         __u16 dst_ip_end = meta->ip_header_offset + 40;
         if (diff_start < dst_ip_end && diff_end > src_ip)
             return true;
-        // Transport layer
-        return diff_start < pkt_len && diff_end > meta->header_start;
     }
-    default:
-        return false;
-    }
+
+    // Transport layer data
+    return diff_start < pkt_len && diff_end > meta->header_start;
 }
 
 // Process a single diff for checksum update
 // Note: __noinline prevents verifier state explosion from size-based branching
-static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len, __wsum csum)
+static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len, __wsum csum)
 {
     // Skip if this diff doesn't affect the checksum
-    if (!diff_affects_checksum(dv, meta, pkt_len))
+    if (!diff_affects_checksum(ctx, dv, meta, pkt_len))
         return csum;
 
     // Get byte position within 16-bit word (0=high byte, 1=low byte)
@@ -472,14 +461,33 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
         return -1;
     __u16 old_csum = bpf_ntohs(old_csum_be);
 
-    // UDP checksum of 0 means "no checksum" but is stored as 0xFFFF
-    if (old_csum == 0 && (meta->csum_type == CSUM_TYPE_UDP_IPV4 || meta->csum_type == CSUM_TYPE_UDP_IPV6))
+    // Detect if this is a UDP checksum for special handling of 0 value
+    // UDP checksum of 0 means "no checksum" but is stored as 0xFFFF per RFC 768
+    bool is_udp = false;
+    if (meta->csum_offset != meta->ip_header_offset + 10) {
+        // Not IPv4 header checksum, check if UDP
+        __u8 version_byte;
+        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) == 0) {
+            __u8 ip_version = (version_byte >> 4) & 0x0F;
+            if (ip_version == 4) {
+                __u8 proto;
+                if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset + 9, &proto, 1) == 0)
+                    is_udp = (proto == IPPROTO_UDP);
+            } else if (ip_version == 6) {
+                __u8 nexthdr;
+                if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset + 6, &nexthdr, 1) == 0)
+                    is_udp = (nexthdr == IPPROTO_UDP);
+            }
+        }
+    }
+
+    if (old_csum == 0 && is_udp)
         old_csum = 0xFFFF;
 
     // Initialize seed with inverted checksum (katran-style)
     __wsum csum = ~old_csum & 0xFFFF;
 
-    DEBUG_PRINT("csum_diff: type=%d old_csum=0x%x seed=0x%x diff_count=%d\n", meta->csum_type, old_csum, csum, diff_count);
+    DEBUG_PRINT("csum_diff: old_csum=0x%x seed=0x%x diff_count=%d is_udp=%d\n", old_csum, csum, diff_count, is_udp);
 
     // Apply bpf_csum_diff for each diff using values from diff_value struct
     // No variable-offset map access needed
@@ -489,7 +497,7 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
     for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
         if (i >= diff_count)
             break;
-        csum = apply_single_csum_diff(&diffs[i], meta, pkt_len, csum);
+        csum = apply_single_csum_diff(ctx, &diffs[i], meta, pkt_len, csum);
     }
 
     // Fold and finalize the checksum
@@ -498,7 +506,7 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
     DEBUG_PRINT("csum_diff: folded new_csum=0x%x\n", new_csum);
 
     // UDP checksum of 0 means "no checksum", use 0xFFFF instead per RFC 768
-    if (new_csum == 0 && (meta->csum_type == CSUM_TYPE_UDP_IPV4 || meta->csum_type == CSUM_TYPE_UDP_IPV6))
+    if (new_csum == 0 && is_udp)
         new_csum = 0xFFFF;
 
     __be16 new_csum_be = bpf_htons(new_csum);
