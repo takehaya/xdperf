@@ -23,7 +23,6 @@
 // Must match maxBasePackets in pkg/xdperf/generator.go
 #define MAX_BASE_PACKETS 16
 
-
 // Base packet structure (stored once per variant)
 struct base_packet {
     __u16 len;                    // Base packet length
@@ -35,10 +34,10 @@ struct base_packet {
 // Single diff value
 struct diff_value {
     __u16 offset; // Byte offset in packet
-    __u8 size;    // 1, 2, 4, 6, 8, or 16 bytes
+    __u8 size;    // 1, 2, 4, 6, or 8 bytes
     __u8 _pad;
-    __u8 old_value[16]; // Original value from base packet (big-endian)
-    __u8 new_value[16]; // New value to write (big-endian)
+    __u8 old_value[8]; // Original value from base packet (big-endian)
+    __u8 new_value[8]; // New value to write (big-endian)
 };
 
 // Diff entry for one packet (contains all diffs for that packet)

@@ -13,10 +13,10 @@ import (
 const maxBasePackets = 16
 
 // readBytesAt reads bytes from the packet at the given offset.
-// Returns the bytes in a [16]byte array (network byte order).
+// Returns the bytes in a [8]byte array (network byte order).
 // Supported sizes: 1, 2, 4, 6, 8 bytes.
-func readBytesAt(data []byte, offset uint16, size uint8) ([16]byte, error) {
-	var result [16]byte
+func readBytesAt(data []byte, offset uint16, size uint8) ([8]byte, error) {
+	var result [8]byte
 	if int(offset)+int(size) > len(data) {
 		return result, fmt.Errorf("offset %d + size %d exceeds data length %d", offset, size, len(data))
 	}
@@ -47,11 +47,11 @@ func randomInRange(start, end uint64) (uint64, error) {
 	return start + uint64(rand.Int63n(int64(rangeSize))), nil
 }
 
-// valueToBytes converts a uint64 value to [16]byte in network byte order (big-endian).
+// valueToBytes converts a uint64 value to [8]byte in network byte order (big-endian).
 // The value is placed in the first 'size' bytes.
 // Supported sizes: 1, 2, 4, 8 (what fits in uint64).
-func valueToBytes(value uint64, size uint8) ([16]byte, error) {
-	var result [16]byte
+func valueToBytes(value uint64, size uint8) ([8]byte, error) {
+	var result [8]byte
 	switch size {
 	case 1:
 		result[0] = byte(value)
@@ -133,7 +133,7 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 			return entry, fmt.Errorf("failed to read bytes at offset %d: %w", p.ByteStart, err)
 		}
 
-		var newValue [16]byte
+		var newValue [8]byte
 		var value uint64
 		switch p.PatternType {
 		case guest.ValuePatternTypeSequential:

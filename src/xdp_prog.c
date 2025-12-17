@@ -339,7 +339,8 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
 
 // Process a single diff for checksum update
 // Note: __noinline prevents verifier state explosion from size-based branching
-static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len, __wsum csum)
+static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta,
+                                                __u16 pkt_len, __wsum csum)
 {
     // Skip if this diff doesn't affect the checksum
     if (!diff_affects_checksum(ctx, dv, meta, pkt_len))

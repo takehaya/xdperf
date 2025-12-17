@@ -28,9 +28,9 @@ type BasePacketInfo struct {
 type DiffValue struct {
 	Offset   uint16
 	Size     uint8
-	_        uint8      // padding
-	OldValue [16]byte   // Original value from base packet (network byte order)
-	NewValue [16]byte   // New value to write (network byte order)
+	_        uint8     // padding
+	OldValue [8]byte   // Original value from base packet (network byte order)
+	NewValue [8]byte   // New value to write (network byte order)
 }
 
 // minPacketSize is the minimum packet size required by the BPF program.

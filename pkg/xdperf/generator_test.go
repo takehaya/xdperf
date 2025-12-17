@@ -7,8 +7,8 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// bytesToUint64 extracts a uint64 from [16]byte in big-endian order
-func bytesToUint64(b [16]byte, size uint8) uint64 {
+// bytesToUint64 extracts a uint64 from [8]byte in big-endian order
+func bytesToUint64(b [8]byte, size uint8) uint64 {
 	switch size {
 	case 1:
 		return uint64(b[0])
