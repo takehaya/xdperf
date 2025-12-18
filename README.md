@@ -179,3 +179,7 @@ make bpf-gen
 # debug pattern
 # CEXTRA_FLAGS="-DXDPERF_DEBUG" make bpf-gen
 ```
+
+## Inspired by
+- We implemented the packet transmission mechanism with reference to [xdp-trafficgen](https://github.com/xdp-project/xdp-tools/tree/main/xdp-trafficgen). I think elements such as its probe implementation are excellent.
+- We adopted the name xdperf simply because we thought it was a good name. See also [https://github.com/higebu/xdperf](https://github.com/higebu/xdperf)
