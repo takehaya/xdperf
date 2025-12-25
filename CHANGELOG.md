@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.10.0](https://github.com/takehaya/xdperf/compare/v0.9.0...v0.10.0) (2025-12-18)
+
+
+### 🎉 Features
+
+* add imix pattern plugin ([736168a](https://github.com/takehaya/xdperf/commit/736168adff96b6c6d225e6d14753369a6fddac92))
+
+
+### 📝 Documentation
+
+* inspired by ref ([24d313b](https://github.com/takehaya/xdperf/commit/24d313b8178a5925585d8396c81bf954cc3d1bfe))
+* inspired by ref ([33c0ca4](https://github.com/takehaya/xdperf/commit/33c0ca493e4083e91d1556c6b06f6a6c5b25baea))
+
+
+### 🔧 Miscellaneous Chores
+
+* remove imix case ([ef3a1d9](https://github.com/takehaya/xdperf/commit/ef3a1d98e3433b09a802a41f8f42de02865c6d02))
+
 ## [0.9.0](https://github.com/takehaya/xdperf/compare/v0.8.0...v0.9.0) (2025-12-06)
 
 
