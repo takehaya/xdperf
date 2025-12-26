@@ -16,6 +16,9 @@ func bytesToUint64(b [8]byte, size uint8) uint64 {
 		return uint64(binary.BigEndian.Uint16(b[:2]))
 	case 4:
 		return uint64(binary.BigEndian.Uint32(b[:4]))
+	case 6:
+		return uint64(b[0])<<40 | uint64(b[1])<<32 | uint64(b[2])<<24 |
+			uint64(b[3])<<16 | uint64(b[4])<<8 | uint64(b[5])
 	case 8:
 		return binary.BigEndian.Uint64(b[:8])
 	default:

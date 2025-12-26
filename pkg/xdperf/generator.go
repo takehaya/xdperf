@@ -49,7 +49,7 @@ func randomInRange(start, end uint64) (uint64, error) {
 
 // valueToBytes converts a uint64 value to [8]byte in network byte order (big-endian).
 // The value is placed in the first 'size' bytes.
-// Supported sizes: 1, 2, 4, 8 (what fits in uint64).
+// Supported sizes: 1, 2, 4, 6, 8.
 func valueToBytes(value uint64, size uint8) ([8]byte, error) {
 	var result [8]byte
 	switch size {
@@ -59,10 +59,17 @@ func valueToBytes(value uint64, size uint8) ([8]byte, error) {
 		binary.BigEndian.PutUint16(result[:2], uint16(value))
 	case 4:
 		binary.BigEndian.PutUint32(result[:4], uint32(value))
+	case 6:
+		result[0] = byte(value >> 40)
+		result[1] = byte(value >> 32)
+		result[2] = byte(value >> 24)
+		result[3] = byte(value >> 16)
+		result[4] = byte(value >> 8)
+		result[5] = byte(value)
 	case 8:
 		binary.BigEndian.PutUint64(result[:8], value)
 	default:
-		return result, fmt.Errorf("unsupported size %d (only 1, 2, 4, 8 are supported for uint64 values)", size)
+		return result, fmt.Errorf("unsupported size %d (only 1, 2, 4, 6, 8 are supported)", size)
 	}
 	return result, nil
 }
