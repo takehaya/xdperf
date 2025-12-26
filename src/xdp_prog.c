@@ -14,6 +14,7 @@
 #include <linux/udp.h>
 #include <linux/tcp.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <string.h>
 
 char _license[] SEC("license") = "GPL";
@@ -144,7 +145,7 @@ static __noinline int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 // Used when packet length changes (incremental update not possible)
 // This is O(packet_length) - only use when necessary
 // Auto-detects checksum type from packet content:
-// - IPv4 header checksum: csum_offset == ip_header_offset + 10 (IP header checksum field)
+// - IPv4 header checksum: csum_offset == ip_header_offset + offsetof(struct iphdr, check)
 // - Transport checksum: determined by IP protocol field
 // Note: __noinline prevents verifier state explosion when called from loops
 static __noinline int recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
@@ -153,8 +154,8 @@ static __noinline int recalc_checksum(struct xdp_md *ctx, struct checksum_meta *
     __u16 transport_len;
 
     // Check if this is IPv4 header checksum by comparing offsets
-    // IPv4 header checksum is at ip_header_offset + 10
-    if (meta->csum_offset == meta->ip_header_offset + 10) {
+    // IPv4 header checksum is at ip_header_offset + offsetof(struct iphdr, check)
+    if (meta->csum_offset == meta->ip_header_offset + offsetof(struct iphdr, check)) {
         // IPv4 header checksum
         csum = calc_ipv4_header_csum(ctx, meta->ip_header_offset);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
@@ -300,8 +301,8 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
     __u16 diff_start = dv->offset;
     __u16 diff_end = dv->offset + dv->size; // Safe: offset < 2048, size <= 8
 
-    // Check if this is IPv4 header checksum (csum_offset == ip_header_offset + 10)
-    if (meta->csum_offset == meta->ip_header_offset + 10) {
+    // Check if this is IPv4 header checksum
+    if (meta->csum_offset == meta->ip_header_offset + offsetof(struct iphdr, check)) {
         // IPv4 header checksum covers [ip_offset, ip_offset + 20)
         __u16 ip_start = meta->ip_header_offset;
         __u16 ip_end = ip_start + 20;
@@ -422,7 +423,7 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
     // Detect if this is a UDP checksum for special handling of 0 value
     // UDP checksum of 0 means "no checksum" but is stored as 0xFFFF per RFC 768
     bool is_udp = false;
-    if (meta->csum_offset != meta->ip_header_offset + 10) {
+    if (meta->csum_offset != meta->ip_header_offset + offsetof(struct iphdr, check)) {
         // Not IPv4 header checksum, check if UDP
         __u8 version_byte;
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) == 0) {
