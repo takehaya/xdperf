@@ -16,10 +16,6 @@
 #include <stdbool.h>
 #include <string.h>
 
-// Incremental checksum calculation assumes little-endian architecture.
-// Big-endian systems (e.g., s390x) are not supported and will produce
-// incorrect checksums. The bpf_bpfeb.o is generated but should not be used.
-
 char _license[] SEC("license") = "GPL";
 
 SEC("xdp")
@@ -337,7 +333,8 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
     return diff_start < pkt_len && diff_end > meta->header_start;
 }
 
-// Process a single diff for checksum update
+// Process a single diff for checksum update (endian-independent, katran style)
+// Data is passed directly to bpf_csum_diff in network byte order.
 // Note: __noinline prevents verifier state explosion from size-based branching
 static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta,
                                                 __u16 pkt_len, __wsum csum)
@@ -346,105 +343,67 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
     if (!diff_affects_checksum(ctx, dv, meta, pkt_len))
         return csum;
 
-    // Get byte position within 16-bit word (0=high byte, 1=low byte)
-    __u8 word_pos = dv->offset & 1;
+    // For 4 and 8 byte values, pass directly to bpf_csum_diff
+    // Data is already in network byte order
+    if (dv->size == 4) {
+        csum = bpf_csum_diff((__be32 *)dv->old_value, 4, (__be32 *)dv->new_value, 4, csum);
+        DEBUG_PRINT("  csum_diff: size 4, direct pass\n");
+        return csum;
+    }
 
-    // Construct old and new 4-byte values with the diff at the correct position
-    // Padding bytes are identical in old and new, so they cancel out in bpf_csum_diff
-    union {
-        __be32 val;
-        __u8 bytes[4];
-    } old_u, new_u;
-
-    // Initialize with zeros (padding)
-    old_u.val = 0;
-    new_u.val = 0;
-
-    // old_value/new_value are stored in network byte order (big-endian)
-    // Little-endian checksum calculation (see compile-time check above).
-    // csum_partial loads 32-bit values as LE and folds: fold(0xAABBCCDD) = 0xCCDD + 0xAABB
-    // Use __builtin_memcpy + bpf_ntoh* to minimize verifier state explosion
-    // (individual byte accesses in unrolled loops cause state explosion)
-    if (dv->size == 1) {
-        if (word_pos == 0) {
-            // Even offset = high byte of 16-bit word
-            // On LE: bytes[3] maps to high16 bits, folds to 0xVV00
-            old_u.bytes[3] = dv->old_value[0];
-            new_u.bytes[3] = dv->new_value[0];
-        } else {
-            // Odd offset = low byte of 16-bit word
-            // On LE: bytes[0] maps to low16 bits, folds to 0x00VV
-            old_u.bytes[0] = dv->old_value[0];
-            new_u.bytes[0] = dv->new_value[0];
-        }
-    } else if (dv->size == 2) {
-        if (word_pos == 0) {
-            // Even offset: 2 bytes within the same 16-bit word
-            // BE [0x04, 0xD2] → bpf_ntohs → LE 0x04D2 → stored at bytes[0:1]
-            __be16 old_be16, new_be16;
-            __builtin_memcpy(&old_be16, dv->old_value, 2);
-            __builtin_memcpy(&new_be16, dv->new_value, 2);
-            *(__u16 *)&old_u.bytes[0] = bpf_ntohs(old_be16);
-            *(__u16 *)&new_u.bytes[0] = bpf_ntohs(new_be16);
-        } else {
-            // Odd offset: 2 bytes span across two 16-bit words
-            // byte[0] → low byte of previous word (bytes[0] on LE)
-            // byte[1] → high byte of next word (bytes[3] on LE)
-            old_u.bytes[0] = dv->old_value[0];
-            old_u.bytes[3] = dv->old_value[1];
-            new_u.bytes[0] = dv->new_value[0];
-            new_u.bytes[3] = dv->new_value[1];
-        }
-    } else if (dv->size == 4) {
-        // 4-byte value: stored as BE, convert to LE using bpf_ntohl
-        __be32 old_be32, new_be32;
-        __builtin_memcpy(&old_be32, dv->old_value, 4);
-        __builtin_memcpy(&new_be32, dv->new_value, 4);
-        old_u.val = bpf_ntohl(old_be32);
-        new_u.val = bpf_ntohl(new_be32);
-    } else if (dv->size == 6) {
-        // 6-byte value (MAC address): process as 4 bytes + 2 bytes
-        // First 4 bytes
-        __be32 old_be32, new_be32;
-        __builtin_memcpy(&old_be32, &dv->old_value[0], 4);
-        __builtin_memcpy(&new_be32, &dv->new_value[0], 4);
-        __u32 old_le = bpf_ntohl(old_be32);
-        __u32 new_le = bpf_ntohl(new_be32);
-        csum = bpf_csum_diff(&old_le, 4, &new_le, 4, csum);
-
-        // Remaining 2 bytes (with zero padding)
-        __be16 old_be16, new_be16;
-        __builtin_memcpy(&old_be16, &dv->old_value[4], 2);
-        __builtin_memcpy(&new_be16, &dv->new_value[4], 2);
-        old_u.val = 0;
-        new_u.val = 0;
-        *(__u16 *)&old_u.bytes[0] = bpf_ntohs(old_be16);
-        *(__u16 *)&new_u.bytes[0] = bpf_ntohs(new_be16);
-        DEBUG_PRINT("  csum_diff: size 6, processed 4+2 bytes\n");
-    } else if (dv->size == 8) {
-        // 8-byte value: process as two 4-byte chunks
-        __be32 old_be32_0, new_be32_0, old_be32_1, new_be32_1;
-        __builtin_memcpy(&old_be32_0, &dv->old_value[0], 4);
-        __builtin_memcpy(&new_be32_0, &dv->new_value[0], 4);
-        __builtin_memcpy(&old_be32_1, &dv->old_value[4], 4);
-        __builtin_memcpy(&new_be32_1, &dv->new_value[4], 4);
-
-        __u32 old_le_0 = bpf_ntohl(old_be32_0);
-        __u32 new_le_0 = bpf_ntohl(new_be32_0);
-        csum = bpf_csum_diff(&old_le_0, 4, &new_le_0, 4, csum);
-
-        __u32 old_le_1 = bpf_ntohl(old_be32_1);
-        __u32 new_le_1 = bpf_ntohl(new_be32_1);
-        csum = bpf_csum_diff(&old_le_1, 4, &new_le_1, 4, csum);
+    if (dv->size == 8) {
+        csum = bpf_csum_diff((__be32 *)dv->old_value, 4, (__be32 *)dv->new_value, 4, csum);
+        csum = bpf_csum_diff((__be32 *)&dv->old_value[4], 4, (__be32 *)&dv->new_value[4], 4, csum);
         DEBUG_PRINT("  csum_diff: size 8, processed 2x4 bytes\n");
         return csum;
     }
 
-    DEBUG_PRINT("  csum_diff: off=%u sz=%u old=0x%x new=0x%x\n", dv->offset, dv->size, bpf_ntohl(old_u.val), bpf_ntohl(new_u.val));
+    // For smaller sizes, pad to 4 bytes
+    // Position within 16-bit word matters for checksum calculation
+    __u8 old_padded[4] = {0, 0, 0, 0};
+    __u8 new_padded[4] = {0, 0, 0, 0};
 
-    // bpf_csum_diff: padding bytes cancel out, only the diff contributes
-    csum = bpf_csum_diff(&old_u.val, 4, &new_u.val, 4, csum);
-    DEBUG_PRINT("    after csum_diff: csum=0x%llx\n", (unsigned long long)csum);
+    if (dv->size == 1) {
+        // Position based on offset parity (network byte order: even=high, odd=low)
+        if (dv->offset & 1) {
+            // Odd offset: low byte of 16-bit word
+            old_padded[1] = dv->old_value[0];
+            new_padded[1] = dv->new_value[0];
+        } else {
+            // Even offset: high byte of 16-bit word
+            old_padded[0] = dv->old_value[0];
+            new_padded[0] = dv->new_value[0];
+        }
+    } else if (dv->size == 2) {
+        __u8 word_pos = dv->offset & 1;
+        if (word_pos == 0) {
+            // Aligned: copy directly
+            old_padded[0] = dv->old_value[0];
+            old_padded[1] = dv->old_value[1];
+            new_padded[0] = dv->new_value[0];
+            new_padded[1] = dv->new_value[1];
+        } else {
+            // Odd offset: bytes span two 16-bit words
+            // byte[0] → low byte of first word (pos 1)
+            // byte[1] → high byte of second word (pos 2)
+            old_padded[1] = dv->old_value[0];
+            old_padded[2] = dv->old_value[1];
+            new_padded[1] = dv->new_value[0];
+            new_padded[2] = dv->new_value[1];
+        }
+    } else if (dv->size == 6) {
+        // 6-byte value (e.g., MAC address): process first 4 bytes directly
+        csum = bpf_csum_diff((__be32 *)dv->old_value, 4, (__be32 *)dv->new_value, 4, csum);
+        // Remaining 2 bytes with padding
+        old_padded[0] = dv->old_value[4];
+        old_padded[1] = dv->old_value[5];
+        new_padded[0] = dv->new_value[4];
+        new_padded[1] = dv->new_value[5];
+        DEBUG_PRINT("  csum_diff: size 6, processed 4+2 bytes\n");
+    }
+
+    DEBUG_PRINT("  csum_diff: off=%u sz=%u\n", dv->offset, dv->size);
+    csum = bpf_csum_diff((__be32 *)old_padded, 4, (__be32 *)new_padded, 4, csum);
 
     return csum;
 }
@@ -457,10 +416,10 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
                                                __u8 diff_count, __u16 pkt_len)
 {
     // Load current checksum value from packet (base packet was copied, checksum not yet modified)
-    __be16 old_csum_be;
-    if (bpf_xdp_load_bytes(ctx, meta->csum_offset, &old_csum_be, 2) < 0)
+    // No byte order conversion - use host order throughout for consistency with bpf_csum_diff
+    __u16 old_csum;
+    if (bpf_xdp_load_bytes(ctx, meta->csum_offset, &old_csum, 2) < 0)
         return -1;
-    __u16 old_csum = bpf_ntohs(old_csum_be);
 
     // Detect if this is a UDP checksum for special handling of 0 value
     // UDP checksum of 0 means "no checksum" but is stored as 0xFFFF per RFC 768
@@ -510,8 +469,8 @@ static __noinline int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checks
     if (new_csum == 0 && is_udp)
         new_csum = 0xFFFF;
 
-    __be16 new_csum_be = bpf_htons(new_csum);
-    if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &new_csum_be, 2) < 0)
+    // No byte order conversion - store in host order (consistent with how we read it)
+    if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &new_csum, 2) < 0)
         return -1;
 
     return 0;
