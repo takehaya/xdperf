@@ -26,10 +26,7 @@ type XdpMd struct {
 	EgressIfindex  uint32
 }
 
-// Note: Targeting only little-endian architectures (bpfel) because
-// the BPF checksum calculation assumes little-endian byte order.
-// Big-endian systems (e.g., s390x, ppc64, mips) are not supported.
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target bpfel -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -I ./src -I /usr/include/x86_64-linux-gnu
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -I ./src -I /usr/include/x86_64-linux-gnu
 
 func ReadCollection(constants map[string]interface{}, mapSize uint32) (*BpfObjects, error) {
 	// Remove memory limit for BPF

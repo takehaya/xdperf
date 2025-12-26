@@ -333,9 +333,7 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
     return diff_start < pkt_len && diff_end > meta->header_start;
 }
 
-// Process a single diff for checksum update (endian-independent, katran style)
-// Data is passed directly to bpf_csum_diff in network byte order.
-// Note: __noinline prevents verifier state explosion from size-based branching
+// Process a single diff for checksum update
 static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta,
                                                 __u16 pkt_len, __wsum csum)
 {
@@ -344,7 +342,7 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
         return csum;
 
     // For 4 and 8 byte values, pass directly to bpf_csum_diff
-    // Data is already in network byte order
+    // No byte order conversion - bpf_csum_diff handles data consistently
     if (dv->size == 4) {
         csum = bpf_csum_diff((__be32 *)dv->old_value, 4, (__be32 *)dv->new_value, 4, csum);
         DEBUG_PRINT("  csum_diff: size 4, direct pass\n");
