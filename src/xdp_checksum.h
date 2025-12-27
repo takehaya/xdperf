@@ -35,6 +35,7 @@ static __always_inline __u16 calc_ipv4_header_csum(struct xdp_md *ctx, __u16 ip_
     __u32 sum = 0;
 
 // IPv4 header is 20 bytes = 10 x 16-bit words
+// TODO: This assumes IHL=5 (no IP options). If IP options support is needed,
 // Skip checksum field (index 5) in calculation
 #pragma unroll
     for (int i = 0; i < 10; i++) {
