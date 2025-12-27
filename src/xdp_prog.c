@@ -19,6 +19,86 @@
 
 char _license[] SEC("license") = "GPL";
 
+SEC("xdp")
+int xdp_pass_dummy(struct xdp_md *ctx)
+{
+    return XDP_PASS;
+};
+SEC("xdp")
+int xdp_rx(struct xdp_md *ctx)
+{
+    int key = 0;
+    struct datarec *rec = bpf_map_lookup_elem(&rx_stats_map, &key);
+    if (!rec)
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(long)ctx->data;
+    struct ethhdr *eth = data;
+    struct iphdr *iph;
+    struct ipv6hdr *ip6h;
+    struct vlan_hdr *vlan;
+    __u16 eth_proto;
+    void *l3_hdr;
+
+    if (data + sizeof(*eth) > data_end)
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+
+    eth_proto = eth->h_proto;
+    l3_hdr = data + sizeof(*eth);
+
+    // Handle VLAN (single or double tagging).
+    // Note: Triple-tagged packets (e.g., 802.1ad + 802.1Q + 802.1Q) are not supported.
+    if (eth_proto == bpf_htons(ETH_P_8021Q) || eth_proto == bpf_htons(ETH_P_8021AD)) {
+        vlan = l3_hdr;
+        if ((void *)vlan + sizeof(*vlan) > data_end)
+            RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+
+        eth_proto = vlan->h_vlan_encapsulated_proto;
+        l3_hdr = (void *)vlan + sizeof(*vlan);
+
+        // Check for double VLAN (QinQ)
+        if (eth_proto == bpf_htons(ETH_P_8021Q)) {
+            vlan = l3_hdr;
+            if ((void *)vlan + sizeof(*vlan) > data_end)
+                RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+
+            eth_proto = vlan->h_vlan_encapsulated_proto;
+            l3_hdr = (void *)vlan + sizeof(*vlan);
+        }
+    }
+
+    if (eth_proto == bpf_htons(ETH_P_IP)) {
+        iph = l3_hdr;
+        if ((void *)iph + sizeof(*iph) > data_end)
+            RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+
+        // Swap MAC and IP addresses
+        swap_mac(eth);
+        swap_ipv4(iph);
+
+        rec->packets++;
+        rec->bytes += (__u64)(data_end - data);
+    } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
+        ip6h = l3_hdr;
+        if ((void *)ip6h + sizeof(*ip6h) > data_end)
+            RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+
+        // Swap MAC and IPv6 addresses
+        swap_mac(eth);
+        swap_ipv6(ip6h);
+
+        rec->packets++;
+        rec->bytes += (__u64)(data_end - data);
+    } else {
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+    }
+    if (swap_resp == 0) {
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_DROP);
+    }
+    RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
+}
+
 // Check if size is a supported diff size for bpf_xdp_store_bytes
 // Supported sizes: 1, 2, 4, 6, 8 bytes
 static __always_inline bool is_supported_diff_size(__u8 size)
@@ -39,7 +119,7 @@ static __always_inline bool is_supported_diff_size(__u8 size)
 // Uses bpf_xdp_store_bytes() to avoid verifier issues with variable-offset writes
 // new_value is stored in big-endian (network byte order)
 // Note: __noinline prevents verifier state explosion when called from unrolled loop
-static __noinline __attribute__((unused)) bool apply_diff(struct xdp_md *ctx, struct diff_value *dv)
+static __noinline bool apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 {
     if (dv->size == 0 || dv->offset == 0xFFFF)
         return true; // Skip empty diff
@@ -57,7 +137,7 @@ static __noinline __attribute__((unused)) bool apply_diff(struct xdp_md *ctx, st
 // - IPv4 header checksum: csum_offset == ip_header_offset + offsetof(struct iphdr, check)
 // - Transport checksum: determined by IP protocol field
 // Note: __noinline prevents verifier state explosion when called from loops
-static __noinline __attribute__((unused)) bool recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
+static __noinline bool recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 csum;
     __u16 transport_len;
@@ -107,7 +187,7 @@ static __noinline __attribute__((unused)) bool recalc_checksum(struct xdp_md *ct
 // Update IP and transport layer length fields when packet length changed
 // Must be called after base packet copy, before checksum recalculation
 // Note: __noinline prevents verifier state explosion
-static __noinline __attribute__((unused)) bool update_packet_lengths(struct xdp_md *ctx, __u16 target_len)
+static __noinline bool update_packet_lengths(struct xdp_md *ctx, __u16 target_len)
 {
     // Load Ethernet header to check protocol
     struct ethhdr eth;
@@ -354,7 +434,7 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
 // Uses old_value and new_value from diff_value struct directly, avoiding map access
 // Constructs 4-byte aligned values with zero padding that doesn't affect the checksum result
 // Note: __noinline prevents verifier state explosion when called from unrolled loop
-static __noinline __attribute__((unused)) bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta,
+static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta,
                                                                         struct diff_value *diffs, __u8 diff_count, __u16 pkt_len)
 {
     // Load current checksum value from packet (base packet was copied, checksum not yet modified)
@@ -426,7 +506,7 @@ int xdp_tx(struct xdp_md *ctx)
     void *data_end = (void *)(long)ctx->data_end;
     __u32 zero = 0;
 
-    // Get per-CPU packet state
+    // 1. Get per-CPU packet state
     struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
     if (!state) {
         DEBUG_PRINT("pkt_state_map lookup failed\n");
@@ -438,34 +518,45 @@ int xdp_tx(struct xdp_md *ctx)
         DEBUG_PRINT("count=0, skipping\n");
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
-    if (count > MAX_PACKET_ENTRY)
-        count = MAX_PACKET_ENTRY;
+    if (count > MAX_DIFF_ENTRIES)
+        count = MAX_DIFF_ENTRIES;
 
     __u32 local_idx = state->idx;
     if (local_idx >= count)
         local_idx = 0;
 
-    __u32 idx = local_idx;
-
-    struct pkt_template *pt = bpf_map_lookup_elem(&tx_override_map, &idx);
-    if (!pt) {
-        DEBUG_PRINT("tx_override_map lookup failed\n");
+    // 2. Get diff entry for current index (need this first to get base_idx)
+    struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
+    if (!diff) {
+        DEBUG_PRINT("diff_map lookup failed\n");
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    __u32 tlen = pt->len;
-    if (tlen > MAX_TEMPLATE_SIZE)
-        tlen = MAX_TEMPLATE_SIZE;
-    // Minimum packet size check (Ethernet header = 14 bytes minimum)
-    // This also ensures tlen > 0 for bpf_xdp_store_bytes
-    if (tlen < sizeof(struct ethhdr)) {
-        DEBUG_PRINT("packet too small: %u\n", tlen);
+    // 3. Get base packet using base_idx from diff entry
+    __u32 base_idx = diff->base_idx;
+    if (base_idx >= MAX_BASE_PACKETS)
+        base_idx = 0;
+    struct base_packet *base = bpf_map_lookup_elem(&base_packet_map, &base_idx);
+    if (!base) {
+        DEBUG_PRINT("base_packet_map lookup failed\n");
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
+    // 4. Determine target packet length
+    __u16 target_len = diff->pkt_len;
+    if (target_len == 0)
+        target_len = base->len;
+    if (target_len > MAX_TEMPLATE_SIZE)
+        target_len = MAX_TEMPLATE_SIZE;
+    if (target_len < sizeof(struct ethhdr)) {
+        DEBUG_PRINT("packet too small: %u\n", target_len);
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    // 5. Adjust packet size
     __u32 cur_len = data_end - data;
-    if (cur_len != tlen) {
-        int delta = (int)tlen - (int)cur_len;
+    if (cur_len != target_len) {
+        int delta = (int)target_len - (int)cur_len;
         if (bpf_xdp_adjust_tail(ctx, delta) < 0) {
             DEBUG_PRINT("bpf_xdp_adjust_tail failed\n");
             RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
@@ -475,110 +566,247 @@ int xdp_tx(struct xdp_md *ctx)
     }
 
     // Bounds check for verifier
-    if (data + tlen > data_end) {
+    if (data + target_len > data_end) {
         DEBUG_PRINT("data out of bounds\n");
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    long ret = bpf_xdp_store_bytes(ctx, 0, pt->data, tlen);
-    if (ret < 0) {
-        DEBUG_PRINT("bpf_xdp_store_bytes failed: %ld\n", ret);
+// 6. Copy base packet
+// The verifier loses scalar bounds after helper calls.
+// Solution: Copy in fixed-size chunks with compile-time constants.
+// Require minimum 64 byte packets for chunk-based copy.
+#define COPY_CHUNK_SIZE 64
+
+    // Require minimum packet size of 64 bytes
+    if (target_len < COPY_CHUNK_SIZE) {
+        DEBUG_PRINT("packet too small (min 64 bytes): %u\n", target_len);
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // next local index
-    __u32 next = local_idx + 1;
-    if (next >= count)
-        next = 0;
-    state->idx = next;
-
-    // stats
-    struct datarec *rec = bpf_map_lookup_elem(&tx_stats_map, &zero);
-    if (!rec) {
-        DEBUG_PRINT("stats_map lookup failed\n");
+    // First chunk: always copy 64 bytes
+    long ret1 = bpf_xdp_store_bytes(ctx, 0, base->data, COPY_CHUNK_SIZE);
+    if (ret1 < 0) {
+        DEBUG_PRINT("bpf_xdp_store_bytes chunk1 failed: %ld\n", ret1);
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
-    rec->packets++;
-    rec->bytes += ctx->data_end - ctx->data;
-    DEBUG_PRINT("tx: cnt=%u idx=%u len=%u\n", count, idx, ctx->data_end - ctx->data);
-    RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
-};
 
-SEC("xdp")
-int xdp_pass_dummy(struct xdp_md *ctx)
-{
-    return XDP_PASS;
-};
-SEC("xdp")
-int xdp_rx(struct xdp_md *ctx)
-{
-    int key = 0;
-    struct datarec *rec = bpf_map_lookup_elem(&rx_stats_map, &key);
-    if (!rec)
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+// Second chunk: copy remaining bytes if packet > 64 bytes
+// Use fixed-size chunks with compile-time constant for verifier
+// Support up to 2048 bytes (32 chunks of 64 bytes) to match MAX_TEMPLATE_SIZE
+#define MAX_COPY_CHUNKS 32
 
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data = (void *)(long)ctx->data;
-    struct ethhdr *eth = data;
-    struct iphdr *iph;
-    struct ipv6hdr *ip6h;
-    struct vlan_hdr *vlan;
-    __u16 eth_proto;
-    void *l3_hdr;
+#pragma unroll
+    for (int chunk = 1; chunk <= MAX_COPY_CHUNKS; chunk++) {
+        __u32 offset = chunk * COPY_CHUNK_SIZE;
 
-    if (data + sizeof(*eth) > data_end)
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+        // Check if we need this chunk
+        if (target_len <= offset)
+            break;
 
-    eth_proto = eth->h_proto;
-    l3_hdr = data + sizeof(*eth);
+        // Check if this is a full chunk or partial chunk
+        if (target_len >= offset + COPY_CHUNK_SIZE) {
+            // Full chunk - use constant size
+            long ret = bpf_xdp_store_bytes(ctx, offset, base->data + offset, COPY_CHUNK_SIZE);
+            if (ret < 0) {
+                DEBUG_PRINT("bpf_xdp_store_bytes chunk %d failed\n", chunk);
+                break;
+            }
+        } else {
+            // Last partial chunk - compute remaining bytes
+            // Use signed arithmetic so compiler doesn't optimize away the < 1 check
+            __s32 remaining_signed = (__s32)target_len - (__s32)offset;
 
-    // Handle VLAN (single or double tagging)
-    if (eth_proto == bpf_htons(ETH_P_8021Q) || eth_proto == bpf_htons(ETH_P_8021AD)) {
-        vlan = l3_hdr;
-        if ((void *)vlan + sizeof(*vlan) > data_end)
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+            // Bounds check with signed comparison - compiler can't optimize this away
+            if (remaining_signed < 1 || remaining_signed >= COPY_CHUNK_SIZE)
+                break;
 
-        eth_proto = vlan->h_vlan_encapsulated_proto;
-        l3_hdr = (void *)vlan + sizeof(*vlan);
+            // Convert to unsigned after bounds are established
+            __u32 remaining = (__u32)remaining_signed;
 
-        // Check for double VLAN (QinQ)
-        if (eth_proto == bpf_htons(ETH_P_8021Q)) {
-            vlan = l3_hdr;
-            if ((void *)vlan + sizeof(*vlan) > data_end)
-                RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+            // Barrier to ensure verifier sees the bounded value
+            asm volatile("" : "+r"(remaining));
 
-            eth_proto = vlan->h_vlan_encapsulated_proto;
-            l3_hdr = (void *)vlan + sizeof(*vlan);
+            long ret = bpf_xdp_store_bytes(ctx, offset, base->data + offset, remaining);
+            if (ret < 0) {
+                DEBUG_PRINT("bpf_xdp_store_bytes last chunk failed\n");
+            }
+            break; // This was the last chunk
         }
     }
 
-    if (eth_proto == bpf_htons(ETH_P_IP)) {
-        iph = l3_hdr;
-        if ((void *)iph + sizeof(*iph) > data_end)
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+    // Refresh pointers after store
+    data = (void *)(long)ctx->data;
+    data_end = (void *)(long)ctx->data_end;
 
-        // Swap MAC and IP addresses
-        swap_mac(eth);
-        swap_ipv4(iph);
+    // Re-validate packet bounds for verifier after bpf_xdp_store_bytes
+    // The verifier loses bounds tracking after helper calls
+    if (data + target_len > data_end) {
+        DEBUG_PRINT("packet size mismatch after store\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
 
-        rec->packets++;
-        rec->bytes += (__u64)(data_end - data);
-    } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
-        ip6h = l3_hdr;
-        if ((void *)ip6h + sizeof(*ip6h) > data_end)
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+    // 7. Apply diffs (unrolled loop for max 8 diffs)
+    __u8 diff_count = diff->diff_count;
+    if (diff_count > MAX_DIFFS_PER_PACKET)
+        diff_count = MAX_DIFFS_PER_PACKET;
 
-        // Swap MAC and IPv6 addresses
-        swap_mac(eth);
-        swap_ipv6(ip6h);
+    // Track diff errors for debugging (looked up later for stats)
+    __u8 diff_errors = 0;
 
-        rec->packets++;
-        rec->bytes += (__u64)(data_end - data);
+    // Intentionally continue on failures
+    // Individual diff failures should not abort entire packet transmission.
+    // NOTE: Do NOT use #pragma unroll - bounded loop is fine and reduces verifier states
+    for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
+        if (i >= diff_count)
+            break;
+        if (apply_diff(ctx, &diff->diffs[i]) < 0) {
+            DEBUG_PRINT("apply_diff failed at %d\n", i);
+            diff_errors++;
+        }
+    }
+
+    // Refresh pointers after apply_diff calls (bpf_xdp_store_bytes may invalidate them)
+    data = (void *)(long)ctx->data;
+    data_end = (void *)(long)ctx->data_end;
+
+    // Re-establish packet bounds for verifier after pointer refresh
+    if (data + target_len > data_end) {
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    // 8. Store context for tail call and jump to checksum program
+    // This splits the verifier work between two programs
+    struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
+    if (!tc_ctx) {
+        DEBUG_PRINT("tail_call_ctx_map lookup failed\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    tc_ctx->base_idx = base_idx;
+    tc_ctx->local_idx = local_idx;
+    tc_ctx->target_len = target_len;
+    tc_ctx->diff_count = diff_count;
+    tc_ctx->checksum_count = base->checksum_count;
+    tc_ctx->len_changed = diff->len_changed;
+    tc_ctx->diff_errors = diff_errors;
+
+    // Tail call to checksum program
+    // If tail call fails, fall through to return XDP_ABORTED
+    bpf_tail_call(ctx, &xdp_progs, XDP_PROG_CHECKSUM);
+
+    // Tail call failed - this should not happen if prog_array is properly set up
+    DEBUG_PRINT("tail call to xdp_tx_checksum failed\n");
+    RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+}
+
+// Second part of xdp_tx: checksum processing and stats update
+// Called via tail call from xdp_tx to avoid verifier instruction limit
+SEC("xdp")
+int xdp_tx_checksum(struct xdp_md *ctx)
+{
+    __u32 zero = 0;
+
+    // 1. Retrieve context from tail call
+    struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
+    if (!tc_ctx) {
+        DEBUG_PRINT("tail_call_ctx_map lookup failed in checksum\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    __u32 base_idx = tc_ctx->base_idx;
+    __u32 local_idx = tc_ctx->local_idx;
+    __u16 target_len = tc_ctx->target_len;
+    __u8 diff_count = tc_ctx->diff_count;
+    __u8 checksum_count = tc_ctx->checksum_count;
+    __u8 len_changed = tc_ctx->len_changed;
+    __u8 diff_errors = tc_ctx->diff_errors;
+
+    // Bounds check
+    if (checksum_count > MAX_CHECKSUM_ENTRIES)
+        checksum_count = MAX_CHECKSUM_ENTRIES;
+    if (base_idx >= MAX_BASE_PACKETS)
+        base_idx = 0;
+
+    // 2. Get diff entry for incremental checksum (need diffs array)
+    struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
+    if (!diff) {
+        DEBUG_PRINT("diff_map lookup failed in checksum\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    // 3. Handle checksums - use incremental or full recalculation based on length change
+    __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
+    __u8 checksum_errors = 0;
+
+    if (len_changed) {
+        // Packet length changed - update IP/UDP length fields first
+        if (update_packet_lengths(ctx, target_len) < 0) {
+            DEBUG_PRINT("update_packet_lengths failed\n");
+            checksum_errors++;
+        }
+
+        // Then recalculate checksums from scratch
+        // Error handling strategy:
+        // - meta lookup fail: break (map issue, subsequent lookups likely fail too)
+        // - recalc fail: continue (only affects this checksum, others may succeed)
+        for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
+            if (i >= checksum_count)
+                break;
+            __u32 csum_idx = csum_base_offset + i;
+            struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
+            if (!meta) {
+                DEBUG_PRINT("checksum_meta_map lookup failed at %d\n", i);
+                checksum_errors++;
+                break;
+            }
+            if (recalc_checksum(ctx, meta, target_len) < 0) {
+                DEBUG_PRINT("recalc_checksum failed at %d\n", i);
+                checksum_errors++;
+            }
+        }
     } else {
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+        // Packet length unchanged - use bpf_csum_diff for incremental updates
+        // Same error handling strategy as above
+        for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
+            if (i >= checksum_count)
+                break;
+            __u32 csum_idx = csum_base_offset + i;
+            struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
+            if (!meta) {
+                DEBUG_PRINT("checksum_meta_map lookup failed at %d\n", i);
+                checksum_errors++;
+                break;
+            }
+            if (apply_csum_with_bpf_diff(ctx, meta, diff->diffs, diff_count, target_len) < 0) {
+                DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
+                checksum_errors++;
+            }
+        }
     }
-    if (swap_resp == 0) {
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_DROP);
+
+    // 4. Update index (round-robin)
+    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
+    if (state) {
+        __u32 count = state->count;
+        if (count > MAX_DIFF_ENTRIES)
+            count = MAX_DIFF_ENTRIES;
+        __u32 next = local_idx + 1;
+        if (next >= count)
+            next = 0;
+        state->idx = next;
     }
+
+    // 5. Update stats
+    struct datarec *rec = bpf_map_lookup_elem(&tx_stats_map, &zero);
+    if (rec) {
+        rec->packets++;
+        rec->bytes += target_len;
+        if (diff_errors)
+            rec->diff_errors += diff_errors;
+        if (checksum_errors)
+            rec->checksum_errors += checksum_errors;
+    }
+
+    DEBUG_PRINT("xdp_tx_checksum: idx=%u len=%u\n", local_idx, target_len);
     RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
 }
