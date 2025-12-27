@@ -148,51 +148,6 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 	return nil
 }
 
-// initPacketGeneration initializes packet generation from plugin response
-// Uses base packet + diff entries approach for memory efficiency
-func (x *Xdperf) initPacketGeneration(resp *guest.GeneratorProcessResponse) error {
-	var bases []BasePacketInfo
-	var diffEntries []DiffEntry
-	var err error
-
-	maxBasePackets := x.getBpfConstant("max_base_packets")
-
-	switch resp.TemplateType {
-	case guest.GeneratorTemplateTypeVariable:
-		bases, diffEntries, err = GenerateVariableEntries(*resp, int(x.cfg.Count), maxBasePackets)
-		if err != nil {
-			return fmt.Errorf("failed to generate variable entries: %w", err)
-		}
-	case guest.GeneratorTemplateTypeRaw:
-		bases, diffEntries, err = GenerateRawEntries(resp.RawPacketTemplate, int(x.cfg.Count), maxBasePackets)
-		if err != nil {
-			return fmt.Errorf("failed to generate raw entries: %w", err)
-		}
-	default:
-		return fmt.Errorf("unknown template type: %s", resp.TemplateType)
-	}
-
-	// Count total checksums across all bases
-	totalChecksums := 0
-	for _, b := range bases {
-		totalChecksums += len(b.Checksums)
-	}
-
-	x.Logger.Info("packet entries generated",
-		zap.String("template_type", string(resp.TemplateType)),
-		zap.Int("num_bases", len(bases)),
-		zap.Int("num_entries", len(diffEntries)),
-		zap.Int("total_checksums", totalChecksums),
-	)
-
-	// Initialize BPF maps
-	if err := x.initBpfMaps(bases, diffEntries); err != nil {
-		return fmt.Errorf("failed to init BPF maps: %w", err)
-	}
-
-	return nil
-}
-
 func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessResponse, error) {
 	wasmPlugin, err := x.PluginManager.GetPlugin(x.cfg.PluginName)
 	if err != nil {
