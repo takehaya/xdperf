@@ -26,11 +26,10 @@ type BasePacketInfo struct {
 // DiffValue represents a single diff value
 // Values are stored in network byte order (big-endian)
 type DiffValue struct {
+	OldValue [8]byte // Original value from base packet (network byte order)
+	NewValue [8]byte // New value to write (network byte order)
 	Offset   uint16
 	Size     uint8
-	_        uint8     // padding
-	OldValue [8]byte   // Original value from base packet (network byte order)
-	NewValue [8]byte   // New value to write (network byte order)
 }
 
 // minPacketSize is the minimum packet size required by the BPF program.

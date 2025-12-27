@@ -33,21 +33,19 @@ struct base_packet {
 
 // Single diff value
 struct diff_value {
-    __u16 offset; // Byte offset in packet
-    __u8 size;    // 1, 2, 4, 6, or 8 bytes
-    __u8 _pad;
     __u8 old_value[8]; // Original value from base packet (big-endian)
     __u8 new_value[8]; // New value to write (big-endian)
+    __u16 offset;      // Byte offset in packet
+    __u8 size;         // 1, 2, 4, 6, or 8 bytes
 };
 
 // Diff entry for one packet (contains all diffs for that packet)
 struct diff_entry {
+    struct diff_value diffs[MAX_DIFFS_PER_PACKET];
+    __u16 pkt_len;    // Packet length (for variable length)
     __u8 base_idx;    // Index into base_packet_map (which base to use)
     __u8 diff_count;  // Actual number of diffs in this entry
-    __u16 pkt_len;    // Packet length (for variable length)
     __u8 len_changed; // 1 if pkt_len differs from base, 0 otherwise (affects checksum handling)
-    __u8 _pad[3];     // Padding for alignment
-    struct diff_value diffs[MAX_DIFFS_PER_PACKET];
 };
 
 // Checksum metadata (how to recalculate checksums)
