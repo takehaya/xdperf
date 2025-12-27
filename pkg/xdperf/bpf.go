@@ -273,8 +273,8 @@ func (x *Xdperf) initBpfMaps(bases []BasePacketInfo, diffEntries []DiffEntry) er
 	)
 
 	// Initialize BPF maps in order of dependency.
-	// Note: Partial initialization may occur if an error happens mid-way.
-	// BPF maps are reset on next successful initialization or program reload.
+	// If initialization fails, this function returns an error and the BPF program
+	// will not be executed. Maps are not pinned, so each run starts fresh.
 	var initStage string
 
 	initStage = "base_packet_maps"
