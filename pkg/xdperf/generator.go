@@ -197,13 +197,17 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 		}
 	}
 
-	// Calculate total weight once (used by both Sequential and Mixed modes)
+	// Calculate total weight, defaulting to 1 for zero-weight variants
+	// This allows plugins to omit Weight when only one variant exists
+	weights := make([]uint32, len(variantSet.Variants))
 	var totalWeight uint32
-	for _, v := range variantSet.Variants {
-		totalWeight += v.Weight
-	}
-	if totalWeight == 0 {
-		return nil, nil, fmt.Errorf("total weight is zero: all variants have zero weight")
+	for i, v := range variantSet.Variants {
+		w := v.Weight
+		if w == 0 {
+			w = 1 // Default weight for unspecified
+		}
+		weights[i] = w
+		totalWeight += w
 	}
 
 	// Pre-allocate slice to avoid reallocations during append
@@ -218,7 +222,7 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 			if i == len(variantSet.Variants)-1 {
 				variantCount = remaining
 			} else {
-				variantCount = int(float64(totalCount) * float64(v.Weight) / float64(totalWeight))
+				variantCount = int(float64(totalCount) * float64(weights[i]) / float64(totalWeight))
 				remaining -= variantCount
 			}
 
@@ -247,8 +251,8 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 			r := uint32(rand.Int31n(int32(totalWeight)))
 			var cumulative uint32
 			selectedIdx := 0
-			for j, v := range variantSet.Variants {
-				cumulative += v.Weight
+			for j := range variantSet.Variants {
+				cumulative += weights[j]
 				if r < cumulative {
 					selectedIdx = j
 					break
