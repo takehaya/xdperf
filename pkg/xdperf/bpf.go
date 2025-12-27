@@ -5,12 +5,36 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
+	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
 )
 
 type TxOverrideEntry struct {
 	Data   []byte
 	Length uint16
+}
+
+// DiffEntry represents a single packet entry with optional modifications
+type DiffEntry struct {
+	BaseIdx    uint8  // Index into base_packet_map (which base to use)
+	PacketLen  uint16
+	LenChanged bool // True if packet length differs from base (requires full checksum recalculation)
+	Diffs      []DiffValue
+}
+
+// BasePacketInfo contains base packet and its checksums
+type BasePacketInfo struct {
+	Base      guest.BasePacket
+	Checksums []guest.ChecksumSpec
+}
+
+// DiffValue represents a single diff value
+// Values are stored in network byte order (big-endian)
+type DiffValue struct {
+	OldValue [8]byte // Original value from base packet (network byte order)
+	NewValue [8]byte // New value to write (network byte order)
+	Offset   uint16
+	Size     uint8
 }
 
 // initTxOverrideMap initializes the TX Override Map with packet entries.
