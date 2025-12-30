@@ -135,8 +135,10 @@ type PacketVariantSet struct {
 }
 
 // ChecksumSpec defines where and how to calculate a checksum.
-// The checksum type (IPv4 header, UDP, TCP, ICMPv6) is auto-detected
-// from the packet content at IPHeaderOffset.
+// Supported checksum types (auto-detected from packet content):
+//   - IPv4 header checksum
+//   - IPv4 transport: TCP, UDP
+//   - IPv6 transport: TCP, UDP, ICMPv6
 type ChecksumSpec struct {
 	// Offset of the checksum field in the packet
 	ChecksumOffset uint16 `json:"checksum_offset"`
