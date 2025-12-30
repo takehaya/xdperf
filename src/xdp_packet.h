@@ -80,10 +80,10 @@ struct {
     __type(value, struct diff_entry);
 } diff_map SEC(".maps");
 
-// Checksum metadata map (shared, read-only)
+// Checksum metadata map (per-CPU, read-only)
 // Key: base_idx * MAX_CHECKSUM_ENTRIES + checksum_idx
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, MAX_BASE_PACKETS *MAX_CHECKSUM_ENTRIES);
     __type(key, __u32);
     __type(value, struct checksum_meta);
