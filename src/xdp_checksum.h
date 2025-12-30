@@ -37,7 +37,6 @@ static __always_inline __u16 calc_ipv4_header_csum(struct xdp_md *ctx, __u16 ip_
 // IPv4 header is 20 bytes = 10 x 16-bit words
 // TODO: This assumes IHL=5 (no IP options). If IP options support is needed,
 // Skip checksum field (index 5) in calculation
-#pragma unroll
     for (int i = 0; i < 10; i++) {
         if (i != 5) // Skip checksum field
             sum += bpf_ntohs(ptr[i]);
@@ -151,7 +150,6 @@ static __always_inline __u16 calc_transport_csum_ipv6(struct xdp_md *ctx, __u16 
     __u16 *src = (__u16 *)&ip6h.saddr;
     __u16 *dst = (__u16 *)&ip6h.daddr;
 
-#pragma unroll
     for (int i = 0; i < 8; i++) {
         sum += bpf_ntohs(src[i]);
         sum += bpf_ntohs(dst[i]);
