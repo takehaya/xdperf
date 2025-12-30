@@ -106,6 +106,9 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 			var err error
 			switch p.PatternType {
 			case guest.ValuePatternTypeSequential:
+				if p.ByteRange.Start > p.ByteRange.End {
+					return entry, fmt.Errorf("packet length: invalid range: start %d > end %d", p.ByteRange.Start, p.ByteRange.End)
+				}
 				value = state.currentValues[j]
 				state.currentValues[j]++
 				if state.currentValues[j] > p.ByteRange.End {
@@ -144,6 +147,9 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 		var value uint64
 		switch p.PatternType {
 		case guest.ValuePatternTypeSequential:
+			if p.ByteRange.Start > p.ByteRange.End {
+				return entry, fmt.Errorf("param %d: invalid range: start %d > end %d", j, p.ByteRange.Start, p.ByteRange.End)
+			}
 			value = state.currentValues[j]
 			state.currentValues[j]++
 			if state.currentValues[j] > p.ByteRange.End {
@@ -248,7 +254,7 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 		// Generate entries with weighted random variant selection
 		for i := 0; i < totalCount; i++ {
 			// Select variant based on weight
-			r := uint32(rand.Int31n(int32(totalWeight)))
+			r := uint32(rand.Int63n(int64(totalWeight)))
 			var cumulative uint32
 			selectedIdx := 0
 			for j := range variantSet.Variants {
