@@ -12,6 +12,14 @@
 
 #include "xdp_prog.h" // For DEBUG_PRINT
 
+// Checksum field offset from transport header start
+// UDP header: src_port(2) + dst_port(2) + length(2) + checksum(2) = checksum at offset 6
+// TCP header: src_port(2) + dst_port(2) + seq(4) + ack(4) + data_off/flags(2) + checksum(2) = checksum at offset 16
+// ICMPv6 header: type(1) + code(1) + checksum(2) = checksum at offset 2
+#define UDP_CSUM_OFFSET 6
+#define TCP_CSUM_OFFSET 16
+#define ICMPV6_CSUM_OFFSET 2
+
 // Fold 32-bit checksum to 16-bit
 static __always_inline __u16 csum_fold(__u32 csum)
 {
@@ -34,9 +42,9 @@ static __always_inline __u16 calc_ipv4_header_csum(struct xdp_md *ctx, __u16 ip_
     __u16 *ptr = (__u16 *)&iph;
     __u32 sum = 0;
 
-// IPv4 header is 20 bytes = 10 x 16-bit words
-// TODO: This assumes IHL=5 (no IP options). If IP options support is needed,
-// Skip checksum field (index 5) in calculation
+    // IPv4 header is 20 bytes = 10 x 16-bit words
+    // TODO: This assumes IHL=5 (no IP options). If IP options support is needed,
+    // Skip checksum field (index 5) in calculation
     for (int i = 0; i < 10; i++) {
         if (i != 5) // Skip checksum field
             sum += bpf_ntohs(ptr[i]);
@@ -93,7 +101,7 @@ static __always_inline __u16 calc_transport_csum_ipv4(struct xdp_md *ctx, __u16 
 
     // Clear checksum field in packet using helper
     __be16 zero_csum = 0;
-    __u16 csum_field_offset = (protocol == IPPROTO_UDP) ? 6 : 16;
+    __u16 csum_field_offset = (protocol == IPPROTO_UDP) ? UDP_CSUM_OFFSET : TCP_CSUM_OFFSET;
     if (bpf_xdp_store_bytes(ctx, transport_offset + csum_field_offset, &zero_csum, 2) < 0) {
         DEBUG_PRINT("calc_transport_csum_ipv4: failed to clear checksum at offset %u\n", transport_offset + csum_field_offset);
         return 0;
@@ -164,13 +172,13 @@ static __always_inline __u16 calc_transport_csum_ipv6(struct xdp_md *ctx, __u16 
     __u16 csum_field_offset;
     switch (protocol) {
     case IPPROTO_UDP:
-        csum_field_offset = 6;
+        csum_field_offset = UDP_CSUM_OFFSET;
         break;
     case IPPROTO_TCP:
-        csum_field_offset = 16;
+        csum_field_offset = TCP_CSUM_OFFSET;
         break;
     case IPPROTO_ICMPV6:
-        csum_field_offset = 2;
+        csum_field_offset = ICMPV6_CSUM_OFFSET;
         break;
     default:
         DEBUG_PRINT("calc_transport_csum_ipv6: unsupported protocol %u\n", protocol);
