@@ -171,7 +171,7 @@ const maxChecksumEntriesPerBase = 4
 
 // initChecksumMetaMaps initializes the checksum metadata map for all bases
 // Key format: base_idx * MAX_CHECKSUM_ENTRIES + checksum_idx
-func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo) error {
+func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo, numCpus int) error {
 	totalChecksums := 0
 	for baseIdx, info := range bases {
 		// Warn if checksums exceed limit
@@ -195,7 +195,13 @@ func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo) error {
 				IpHeaderOffset: cs.IPHeaderOffset,
 			}
 
-			if err := x.bpfobjs.BpfMaps.ChecksumMetaMap.Put(&key, &meta); err != nil {
+			// Replicate to all CPUs (all CPUs get the same checksum metadata)
+			metas := make([]coreelf.BpfChecksumMeta, numCpus)
+			for i := range metas {
+				metas[i] = meta
+			}
+
+			if err := x.bpfobjs.BpfMaps.ChecksumMetaMap.Put(&key, metas); err != nil {
 				return fmt.Errorf("failed to put checksum meta map at key %d (base=%d, cs=%d): %w", key, baseIdx, csIdx, err)
 			}
 			totalChecksums++
@@ -284,7 +290,7 @@ func (x *Xdperf) initBpfMaps(bases []BasePacketInfo, diffEntries []DiffEntry) er
 	}
 
 	initStage = "checksum_meta_maps"
-	if err := x.initChecksumMetaMaps(bases); err != nil {
+	if err := x.initChecksumMetaMaps(bases, numCpus); err != nil {
 		x.Logger.Warn("BPF map initialization failed after partial setup",
 			zap.String("failed_at", initStage),
 			zap.String("completed", "base_packet_maps, diff_map"))
