@@ -169,6 +169,8 @@ static __noinline __attribute__((unused)) int update_packet_lengths(struct xdp_m
 
         if (proto == IPPROTO_UDP) {
             // UDP: update len field (offset 4 from UDP header)
+            if (target_len < l4_offset)
+                return -1;
             __u16 udp_len = target_len - l4_offset;
             __be16 udp_len_be = bpf_htons(udp_len);
             if (bpf_xdp_store_bytes(ctx, l4_offset + 4, &udp_len_be, 2) < 0)
@@ -177,6 +179,8 @@ static __noinline __attribute__((unused)) int update_packet_lengths(struct xdp_m
         // TCP doesn't have a length field in header
     } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
         // IPv6: update payload_len (offset 4 from IPv6 header)
+        if (target_len < l3_offset + sizeof(struct ipv6hdr))
+            return -1;
         __u16 payload_len = target_len - l3_offset - sizeof(struct ipv6hdr);
         __be16 payload_len_be = bpf_htons(payload_len);
         if (bpf_xdp_store_bytes(ctx, l3_offset + 4, &payload_len_be, 2) < 0)
@@ -191,6 +195,8 @@ static __noinline __attribute__((unused)) int update_packet_lengths(struct xdp_m
 
         if (proto == IPPROTO_UDP) {
             // UDP: update len field
+            if (target_len < l4_offset)
+                return -1;
             __u16 udp_len = target_len - l4_offset;
             __be16 udp_len_be = bpf_htons(udp_len);
             if (bpf_xdp_store_bytes(ctx, l4_offset + 4, &udp_len_be, 2) < 0)
