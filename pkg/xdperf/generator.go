@@ -192,9 +192,16 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 	return entry, nil
 }
 
-// generateDiffEntriesFromVariantSet generates diff entries from a variant set
-// Returns base packets (one per variant) and diff entries with proper baseIdx
+// generateDiffEntriesFromVariantSet generates diff entries from a variant set.
+// Returns base packets (one per variant) and diff entries with proper baseIdx.
 func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalCount int) ([]BasePacketInfo, []DiffEntry, error) {
+	return generateDiffEntriesFromVariantSetWith(nil, variantSet, totalCount)
+}
+
+// generateDiffEntriesFromVariantSetWith generates diff entries from a variant set.
+// If rng is nil, uses the global math/rand package for variant selection.
+// Returns base packets (one per variant) and diff entries with proper baseIdx.
+func generateDiffEntriesFromVariantSetWith(rng *rand.Rand, variantSet guest.PacketVariantSet, totalCount int) ([]BasePacketInfo, []DiffEntry, error) {
 	if len(variantSet.Variants) == 0 {
 		return nil, nil, nil
 	}
@@ -263,12 +270,17 @@ func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalC
 		// Generate entries with weighted random variant selection
 		for i := 0; i < totalCount; i++ {
 			// Select variant based on weight
-			r := uint32(rand.Int63n(int64(totalWeight)))
+			var r int64
+			if rng != nil {
+				r = rng.Int63n(int64(totalWeight))
+			} else {
+				r = rand.Int63n(int64(totalWeight))
+			}
 			var cumulative uint32
 			selectedIdx := 0
 			for j := range variantSet.Variants {
 				cumulative += weights[j]
-				if r < cumulative {
+				if uint32(r) < cumulative {
 					selectedIdx = j
 					break
 				}

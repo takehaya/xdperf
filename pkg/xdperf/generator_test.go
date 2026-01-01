@@ -1,6 +1,7 @@
 package xdperf
 
 import (
+	"math/rand"
 	"strings"
 	"testing"
 
@@ -409,7 +410,9 @@ func TestGenerateDiffEntriesFromVariantSet_Mixed(t *testing.T) {
 		},
 	}
 
-	bases, entries, err := generateDiffEntriesFromVariantSet(variantSet, 100)
+	// Use fixed seed for reproducible test
+	rng := rand.New(rand.NewSource(12345))
+	bases, entries, err := generateDiffEntriesFromVariantSetWith(rng, variantSet, 100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
