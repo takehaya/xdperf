@@ -148,6 +148,10 @@ static __noinline __attribute__((unused)) int update_packet_lengths(struct xdp_m
         }
     }
 
+    // Validate l3_offset after VLAN parsing
+    if (l3_offset >= target_len)
+        return -1;
+
     if (eth_proto == bpf_htons(ETH_P_IP)) {
         // IPv4: update tot_len (offset 2 from IP header)
         __u16 ip_len = target_len - l3_offset;
