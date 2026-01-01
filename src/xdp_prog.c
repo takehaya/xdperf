@@ -177,7 +177,7 @@ static __noinline __attribute__((unused)) int update_packet_lengths(struct xdp_m
         // TCP doesn't have a length field in header
     } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
         // IPv6: update payload_len (offset 4 from IPv6 header)
-        __u16 payload_len = target_len - l3_offset - 40; // 40 = IPv6 header size
+        __u16 payload_len = target_len - l3_offset - sizeof(struct ipv6hdr);
         __be16 payload_len_be = bpf_htons(payload_len);
         if (bpf_xdp_store_bytes(ctx, l3_offset + 4, &payload_len_be, 2) < 0)
             return -1;
@@ -187,7 +187,7 @@ static __noinline __attribute__((unused)) int update_packet_lengths(struct xdp_m
         if (bpf_xdp_load_bytes(ctx, l3_offset + 6, &proto, 1) < 0)
             return -1;
 
-        __u16 l4_offset = l3_offset + 40;
+        __u16 l4_offset = l3_offset + sizeof(struct ipv6hdr);
 
         if (proto == IPPROTO_UDP) {
             // UDP: update len field
@@ -223,9 +223,9 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
 
     // Check if this is IPv4 header checksum
     if (meta->csum_offset == meta->ip_header_offset + offsetof(struct iphdr, check)) {
-        // IPv4 header checksum covers [ip_offset, ip_offset + 20)
+        // IPv4 header checksum covers [ip_offset, ip_offset + sizeof(struct iphdr))
         __u16 ip_start = meta->ip_header_offset;
-        __u16 ip_end = ip_start + 20;
+        __u16 ip_end = ip_start + sizeof(struct iphdr);
         return diff_start < ip_end && diff_end > ip_start;
     }
 
@@ -238,14 +238,14 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
 
     if (ip_version == 4) {
         // IPv4: Pseudo-header includes src IP at ip_offset+12, dst IP at ip_offset+16
-        __u16 src_ip = meta->ip_header_offset + 12;
-        __u16 dst_ip_end = meta->ip_header_offset + 20;
+        __u16 src_ip = meta->ip_header_offset + offsetof(struct iphdr, saddr);
+        __u16 dst_ip_end = meta->ip_header_offset + sizeof(struct iphdr);
         if (diff_start < dst_ip_end && diff_end > src_ip)
             return true;
     } else if (ip_version == 6) {
         // IPv6: Pseudo-header includes src/dst addresses at ip_offset+8 to ip_offset+40
-        __u16 src_ip = meta->ip_header_offset + 8;
-        __u16 dst_ip_end = meta->ip_header_offset + 40;
+        __u16 src_ip = meta->ip_header_offset + offsetof(struct ipv6hdr, saddr);
+        __u16 dst_ip_end = meta->ip_header_offset + sizeof(struct ipv6hdr);
         if (diff_start < dst_ip_end && diff_end > src_ip)
             return true;
     }
@@ -331,8 +331,8 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
 // Uses old_value and new_value from diff_value struct directly, avoiding map access
 // Constructs 4-byte aligned values with padding that cancels out in bpf_csum_diff
 // Note: __noinline prevents verifier state explosion when called from unrolled loop
-static __noinline __attribute__((unused)) int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, struct diff_value *diffs,
-                                               __u8 diff_count, __u16 pkt_len)
+static __noinline __attribute__((unused)) int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta,
+                                                                       struct diff_value *diffs, __u8 diff_count, __u16 pkt_len)
 {
     // Load current checksum value from packet (base packet was copied, checksum not yet modified)
     // No byte order conversion - use host order throughout for consistency with bpf_csum_diff
