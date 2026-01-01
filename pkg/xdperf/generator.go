@@ -12,6 +12,15 @@ import (
 // maxBasePackets must match MAX_BASE_PACKETS in src/xdp_packet.h
 const maxBasePackets = 16
 
+// allowedByteSizes contains the valid byte sizes for variable parameters.
+// These sizes are supported by both readBytesAt and valueToBytes functions.
+var allowedByteSizes = map[int]bool{1: true, 2: true, 4: true, 6: true, 8: true}
+
+// isAllowedByteSize checks if the given size is a valid byte size for variable parameters.
+func isAllowedByteSize(size int) bool {
+	return allowedByteSizes[size]
+}
+
 // readBytesAt reads bytes from the packet at the given offset.
 // Returns the bytes in a [8]byte array (network byte order).
 // Supported sizes: 1, 2, 4, 6, 8 bytes.
@@ -133,8 +142,8 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 		if p.ByteStart > math.MaxUint16 {
 			return entry, fmt.Errorf("param %d: byte_start %d exceeds max uint16", j, p.ByteStart)
 		}
-		if p.ByteSize > 8 {
-			return entry, fmt.Errorf("param %d: byte_size %d exceeds max (8)", j, p.ByteSize)
+		if !isAllowedByteSize(int(p.ByteSize)) {
+			return entry, fmt.Errorf("param %d: byte_size %d is not allowed (only 1, 2, 4, 6, 8 are supported)", j, p.ByteSize)
 		}
 
 		// Read old value from base packet for bpf_csum_diff
