@@ -242,7 +242,9 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
     // Transport layer checksum - detect IPv4 vs IPv6
     __u8 version_byte;
     if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) < 0)
-        return true; // On error, assume it affects checksum to be safe
+        // Cannot read IP header version, so we cannot reliably exclude checksum impact.
+        // Conservatively return true to ensure checksum is recalculated.
+        return true;
 
     __u8 ip_version = (version_byte >> 4) & 0x0F;
 
@@ -265,6 +267,7 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
 }
 
 // Process a single diff for checksum update
+// Supported sizes: 1, 2, 4, 6, 8 bytes (validated in apply_diff)
 static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta,
                                                 __u16 pkt_len, __wsum csum)
 {
@@ -339,13 +342,13 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
 
 // Apply checksum updates using bpf_csum_diff for each diff value
 // Uses old_value and new_value from diff_value struct directly, avoiding map access
-// Constructs 4-byte aligned values with padding that cancels out in bpf_csum_diff
+// Constructs 4-byte aligned values with zero padding that doesn't affect the checksum result
 // Note: __noinline prevents verifier state explosion when called from unrolled loop
 static __noinline __attribute__((unused)) int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta,
                                                                        struct diff_value *diffs, __u8 diff_count, __u16 pkt_len)
 {
     // Load current checksum value from packet (base packet was copied, checksum not yet modified)
-    // No byte order conversion - use host order throughout for consistency with bpf_csum_diff
+    // No byte order conversion - values are in network byte order as read from packet
     __u16 old_csum;
     if (bpf_xdp_load_bytes(ctx, meta->csum_offset, &old_csum, 2) < 0)
         return -1;
@@ -398,7 +401,7 @@ static __noinline __attribute__((unused)) int apply_csum_with_bpf_diff(struct xd
     if (new_csum == 0 && is_udp)
         new_csum = 0xFFFF;
 
-    // No byte order conversion - store in host order (consistent with how we read it)
+    // No byte order conversion - checksum stored in network byte order as read from packet
     if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &new_csum, 2) < 0)
         return -1;
 
