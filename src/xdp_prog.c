@@ -34,8 +34,7 @@ static __noinline __attribute__((unused)) int apply_diff(struct xdp_md *ctx, str
     // Use bpf_xdp_store_bytes which handles bounds checking internally
     // This avoids verifier issues with variable-offset packet writes
     // new_value is already in network byte order, so write directly
-    // Reduce switch cases to minimize verifier state explosion
-    // Common cases (1, 2, 4) are explicit, others use variable size
+    // Supported sizes: 1, 2, 4, 6, 8 bytes (other sizes rejected in default case)
     switch (size) {
     case 1:
         if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 1) < 0)
@@ -49,13 +48,17 @@ static __noinline __attribute__((unused)) int apply_diff(struct xdp_md *ctx, str
         if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 4) < 0)
             return -1;
         break;
-    default:
-        // For sizes 6, 8: use size directly (verifier tracks size is bounded)
-        if (size > 8)
-            return -1;
-        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, size) < 0)
+    case 6:
+        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 6) < 0)
             return -1;
         break;
+    case 8:
+        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 8) < 0)
+            return -1;
+        break;
+    default:
+        // Unsupported size (3, 5, 7, or > 8)
+        return -1;
     }
 
     return 0;
