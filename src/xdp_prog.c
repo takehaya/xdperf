@@ -62,18 +62,7 @@ static __noinline __attribute__((unused)) int recalc_checksum(struct xdp_md *ctx
     __u16 csum;
     __u16 transport_len;
 
-    // Check if this is IPv4 header checksum by comparing offsets
-    // IPv4 header checksum is at ip_header_offset + offsetof(struct iphdr, check)
-    if (meta->csum_offset == meta->ip_header_offset + offsetof(struct iphdr, check)) {
-        // IPv4 header checksum
-        csum = calc_ipv4_header_csum(ctx, meta->ip_header_offset);
-        if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
-            return BPF_ERROR;
-        return BPF_OK;
-    }
-
-    // Transport layer checksum - need to detect IPv4 vs IPv6
-    // Load first byte at ip_header_offset to get IP version
+    // First load IP version to determine checksum type
     __u8 version_byte;
     if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) < 0)
         return BPF_ERROR;
@@ -81,6 +70,14 @@ static __noinline __attribute__((unused)) int recalc_checksum(struct xdp_md *ctx
     __u8 ip_version = (version_byte >> 4) & 0x0F;
 
     if (ip_version == 4) {
+        // Check if this is IPv4 header checksum
+        // IPv4 header checksum is at ip_header_offset + offsetof(struct iphdr, check)
+        if (meta->csum_offset == meta->ip_header_offset + offsetof(struct iphdr, check)) {
+            csum = calc_ipv4_header_csum(ctx, meta->ip_header_offset);
+            if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
+                return BPF_ERROR;
+            return BPF_OK;
+        }
         // IPv4 transport checksum
         struct iphdr iph;
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &iph, sizeof(iph)) < 0)
@@ -220,25 +217,24 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
     __u16 diff_start = dv->offset;
     __u16 diff_end = dv->offset + dv->size; // Safe: offset < 2048, size <= 8
 
-    // Check if this is IPv4 header checksum
-    if (meta->csum_offset == meta->ip_header_offset + offsetof(struct iphdr, check)) {
-        // IPv4 header checksum covers [ip_offset, ip_offset + sizeof(struct iphdr))
-        __u16 ip_start = meta->ip_header_offset;
-        __u16 ip_end = ip_start + sizeof(struct iphdr);
-        return diff_start < ip_end && diff_end > ip_start;
-    }
-
-    // Transport layer checksum - detect IPv4 vs IPv6
+    // First load IP version to determine checksum type
     __u8 version_byte;
     if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) < 0)
         // Cannot read IP header version, so we cannot reliably exclude checksum impact.
         // Conservatively return true to ensure checksum is recalculated.
         return true;
-
+        
     __u8 ip_version = (version_byte >> 4) & 0x0F;
 
     if (ip_version == 4) {
-        // IPv4: Pseudo-header includes src IP at ip_offset+12, dst IP at ip_offset+16
+        // Check if this is IPv4 header checksum
+        if (meta->csum_offset == meta->ip_header_offset + offsetof(struct iphdr, check)) {
+            // IPv4 header checksum covers [ip_offset, ip_offset + sizeof(struct iphdr))
+            __u16 ip_start = meta->ip_header_offset;
+            __u16 ip_end = ip_start + sizeof(struct iphdr);
+            return diff_start < ip_end && diff_end > ip_start;
+        }
+        // IPv4 transport: Pseudo-header includes src IP at ip_offset+12, dst IP at ip_offset+16
         __u16 src_ip = meta->ip_header_offset + offsetof(struct iphdr, saddr);
         __u16 dst_ip_end = meta->ip_header_offset + sizeof(struct iphdr);
         if (diff_start < dst_ip_end && diff_end > src_ip)
