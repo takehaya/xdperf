@@ -269,8 +269,10 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
     // Odd offset:  0ABCD000 (8 bytes, single call)
     if (dv->size == 4) {
         if (odd_offset) {
-            __u8 old_buf[8] = {0, dv->old_value[0], dv->old_value[1], dv->old_value[2], dv->old_value[3], 0, 0, 0};
-            __u8 new_buf[8] = {0, dv->new_value[0], dv->new_value[1], dv->new_value[2], dv->new_value[3], 0, 0, 0};
+            __u8 old_buf[8] = {0};
+            __u8 new_buf[8] = {0};
+            __builtin_memcpy(&old_buf[1], dv->old_value, 4);
+            __builtin_memcpy(&new_buf[1], dv->new_value, 4);
             csum = bpf_csum_diff((__be32 *)old_buf, 8, (__be32 *)new_buf, 8, csum);
         } else {
             csum = bpf_csum_diff((__be32 *)dv->old_value, 4, (__be32 *)dv->new_value, 4, csum);
@@ -283,19 +285,16 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
     // Even offset: ABCDEF00 (8 bytes)
     // Odd offset:  0ABCDEF0 (8 bytes)
     if (dv->size == 6) {
+        __u8 old_buf[8] = {0};
+        __u8 new_buf[8] = {0};
         if (odd_offset) {
-            __u8 old_buf[8] = {
-                0, dv->old_value[0], dv->old_value[1], dv->old_value[2], dv->old_value[3], dv->old_value[4], dv->old_value[5], 0};
-            __u8 new_buf[8] = {
-                0, dv->new_value[0], dv->new_value[1], dv->new_value[2], dv->new_value[3], dv->new_value[4], dv->new_value[5], 0};
-            csum = bpf_csum_diff((__be32 *)old_buf, 8, (__be32 *)new_buf, 8, csum);
+            __builtin_memcpy(&old_buf[1], dv->old_value, 6);
+            __builtin_memcpy(&new_buf[1], dv->new_value, 6);
         } else {
-            __u8 old_buf[8] = {
-                dv->old_value[0], dv->old_value[1], dv->old_value[2], dv->old_value[3], dv->old_value[4], dv->old_value[5], 0, 0};
-            __u8 new_buf[8] = {
-                dv->new_value[0], dv->new_value[1], dv->new_value[2], dv->new_value[3], dv->new_value[4], dv->new_value[5], 0, 0};
-            csum = bpf_csum_diff((__be32 *)old_buf, 8, (__be32 *)new_buf, 8, csum);
+            __builtin_memcpy(old_buf, dv->old_value, 6);
+            __builtin_memcpy(new_buf, dv->new_value, 6);
         }
+        csum = bpf_csum_diff((__be32 *)old_buf, 8, (__be32 *)new_buf, 8, csum);
         DEBUG_PRINT("  csum_diff: size 6, odd=%d\n", odd_offset);
         return csum;
     }
@@ -305,30 +304,10 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
     // Odd offset:  0ABCDEFGH000 (12 bytes, single call)
     if (dv->size == 8) {
         if (odd_offset) {
-            __u8 old_buf[12] = {0,
-                                dv->old_value[0],
-                                dv->old_value[1],
-                                dv->old_value[2],
-                                dv->old_value[3],
-                                dv->old_value[4],
-                                dv->old_value[5],
-                                dv->old_value[6],
-                                dv->old_value[7],
-                                0,
-                                0,
-                                0};
-            __u8 new_buf[12] = {0,
-                                dv->new_value[0],
-                                dv->new_value[1],
-                                dv->new_value[2],
-                                dv->new_value[3],
-                                dv->new_value[4],
-                                dv->new_value[5],
-                                dv->new_value[6],
-                                dv->new_value[7],
-                                0,
-                                0,
-                                0};
+            __u8 old_buf[12] = {0};
+            __u8 new_buf[12] = {0};
+            __builtin_memcpy(&old_buf[1], dv->old_value, 8);
+            __builtin_memcpy(&new_buf[1], dv->new_value, 8);
             csum = bpf_csum_diff((__be32 *)old_buf, 12, (__be32 *)new_buf, 12, csum);
         } else {
             csum = bpf_csum_diff((__be32 *)dv->old_value, 8, (__be32 *)dv->new_value, 8, csum);
@@ -339,8 +318,8 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
 
     // For sizes 1 and 2, pad to 4 bytes
     // Position within 16-bit word matters for checksum calculation
-    __u8 old_padded[4] = {0, 0, 0, 0};
-    __u8 new_padded[4] = {0, 0, 0, 0};
+    __u8 old_padded[4] = {0};
+    __u8 new_padded[4] = {0};
 
     if (dv->size == 1) {
         // Position based on offset parity (network byte order: even=high, odd=low)
@@ -354,20 +333,14 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
             new_padded[0] = dv->new_value[0];
         }
     } else if (dv->size == 2) {
-        if (!odd_offset) {
-            // Aligned: copy directly
-            old_padded[0] = dv->old_value[0];
-            old_padded[1] = dv->old_value[1];
-            new_padded[0] = dv->new_value[0];
-            new_padded[1] = dv->new_value[1];
+        if (odd_offset) {
+            // Odd offset: bytes span two 16-bit words (pos 1-2)
+            __builtin_memcpy(&old_padded[1], dv->old_value, 2);
+            __builtin_memcpy(&new_padded[1], dv->new_value, 2);
         } else {
-            // Odd offset: bytes span two 16-bit words
-            // byte[0] → low byte of first word (pos 1)
-            // byte[1] → high byte of second word (pos 2)
-            old_padded[1] = dv->old_value[0];
-            old_padded[2] = dv->old_value[1];
-            new_padded[1] = dv->new_value[0];
-            new_padded[2] = dv->new_value[1];
+            // Aligned: copy directly (pos 0-1)
+            __builtin_memcpy(old_padded, dv->old_value, 2);
+            __builtin_memcpy(new_padded, dv->new_value, 2);
         }
     }
 
