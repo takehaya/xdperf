@@ -12,6 +12,11 @@
 #define DEBUG_PRINT(fmt, ...) (void)0
 #endif
 
+// Return value macros for helper functions
+// Using macros instead of bool for clarity in BPF context
+#define BPF_OK 0
+#define BPF_ERROR (-1)
+
 struct datarec {
     __u64 packets;
     __u64 bytes;
