@@ -88,6 +88,7 @@ static __noinline __attribute__((unused)) int recalc_checksum(struct xdp_md *ctx
             return BPF_ERROR;
     } else if (ip_version == 6) {
         // IPv6 transport checksum
+        // TODO: Extension headers (Hop-by-Hop, Routing, Fragment, etc.) are not supported.
         struct ipv6hdr ip6h;
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
             return BPF_ERROR;
@@ -402,6 +403,7 @@ static __noinline __attribute__((unused)) int apply_csum_with_bpf_diff(struct xd
                 if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset + 9, &proto, 1) == 0)
                     is_udp = (proto == IPPROTO_UDP);
             } else if (ip_version == 6) {
+                // TODO: Extension headers not supported
                 __u8 nexthdr;
                 if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset + 6, &nexthdr, 1) == 0)
                     is_udp = (nexthdr == IPPROTO_UDP);
