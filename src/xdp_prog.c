@@ -223,7 +223,7 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
         // Cannot read IP header version, so we cannot reliably exclude checksum impact.
         // Conservatively return true to ensure checksum is recalculated.
         return true;
-        
+
     __u8 ip_version = (version_byte >> 4) & 0x0F;
 
     if (ip_version == 4) {
@@ -253,6 +253,7 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
 
 // Process a single diff for checksum update
 // Supported sizes: 1, 2, 4, 6, 8 bytes (validated in apply_diff)
+// Offset parity matters: checksum is computed over 16-bit words, so byte position affects calculation
 static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta,
                                                 __u16 pkt_len, __wsum csum)
 {
@@ -260,29 +261,89 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
     if (!diff_affects_checksum(ctx, dv, meta, pkt_len))
         return csum;
 
-    // For 4 and 8 byte values, pass directly to bpf_csum_diff
-    // No byte order conversion - bpf_csum_diff handles data consistently
+    bool odd_offset = dv->offset & 1;
+
+    // Size 4: ABCD
+    // Even offset: ABCD (4 bytes)
+    // Odd offset:  0ABCD000 (8 bytes, single call)
     if (dv->size == 4) {
-        csum = bpf_csum_diff((__be32 *)dv->old_value, 4, (__be32 *)dv->new_value, 4, csum);
-        DEBUG_PRINT("  csum_diff: size 4, direct pass\n");
+        if (odd_offset) {
+            __u8 old_buf[8] = {0, dv->old_value[0], dv->old_value[1], dv->old_value[2], dv->old_value[3], 0, 0, 0};
+            __u8 new_buf[8] = {0, dv->new_value[0], dv->new_value[1], dv->new_value[2], dv->new_value[3], 0, 0, 0};
+            csum = bpf_csum_diff((__be32 *)old_buf, 8, (__be32 *)new_buf, 8, csum);
+        } else {
+            csum = bpf_csum_diff((__be32 *)dv->old_value, 4, (__be32 *)dv->new_value, 4, csum);
+        }
+        DEBUG_PRINT("  csum_diff: size 4, odd=%d\n", odd_offset);
         return csum;
     }
 
+    // Size 6: ABCDEF
+    // Even offset: ABCDEF00 (8 bytes)
+    // Odd offset:  0ABCDEF0 (8 bytes)
+    if (dv->size == 6) {
+        if (odd_offset) {
+            __u8 old_buf[8] = {
+                0, dv->old_value[0], dv->old_value[1], dv->old_value[2], dv->old_value[3], dv->old_value[4], dv->old_value[5], 0};
+            __u8 new_buf[8] = {
+                0, dv->new_value[0], dv->new_value[1], dv->new_value[2], dv->new_value[3], dv->new_value[4], dv->new_value[5], 0};
+            csum = bpf_csum_diff((__be32 *)old_buf, 8, (__be32 *)new_buf, 8, csum);
+        } else {
+            __u8 old_buf[8] = {
+                dv->old_value[0], dv->old_value[1], dv->old_value[2], dv->old_value[3], dv->old_value[4], dv->old_value[5], 0, 0};
+            __u8 new_buf[8] = {
+                dv->new_value[0], dv->new_value[1], dv->new_value[2], dv->new_value[3], dv->new_value[4], dv->new_value[5], 0, 0};
+            csum = bpf_csum_diff((__be32 *)old_buf, 8, (__be32 *)new_buf, 8, csum);
+        }
+        DEBUG_PRINT("  csum_diff: size 6, odd=%d\n", odd_offset);
+        return csum;
+    }
+
+    // Size 8: ABCDEFGH
+    // Even offset: ABCDEFGH (8 bytes)
+    // Odd offset:  0ABCDEFGH000 (12 bytes, single call)
     if (dv->size == 8) {
-        csum = bpf_csum_diff((__be32 *)dv->old_value, 4, (__be32 *)dv->new_value, 4, csum);
-        csum = bpf_csum_diff((__be32 *)&dv->old_value[4], 4, (__be32 *)&dv->new_value[4], 4, csum);
-        DEBUG_PRINT("  csum_diff: size 8, processed 2x4 bytes\n");
+        if (odd_offset) {
+            __u8 old_buf[12] = {0,
+                                dv->old_value[0],
+                                dv->old_value[1],
+                                dv->old_value[2],
+                                dv->old_value[3],
+                                dv->old_value[4],
+                                dv->old_value[5],
+                                dv->old_value[6],
+                                dv->old_value[7],
+                                0,
+                                0,
+                                0};
+            __u8 new_buf[12] = {0,
+                                dv->new_value[0],
+                                dv->new_value[1],
+                                dv->new_value[2],
+                                dv->new_value[3],
+                                dv->new_value[4],
+                                dv->new_value[5],
+                                dv->new_value[6],
+                                dv->new_value[7],
+                                0,
+                                0,
+                                0};
+            csum = bpf_csum_diff((__be32 *)old_buf, 12, (__be32 *)new_buf, 12, csum);
+        } else {
+            csum = bpf_csum_diff((__be32 *)dv->old_value, 8, (__be32 *)dv->new_value, 8, csum);
+        }
+        DEBUG_PRINT("  csum_diff: size 8, odd=%d\n", odd_offset);
         return csum;
     }
 
-    // For smaller sizes, pad to 4 bytes
+    // For sizes 1 and 2, pad to 4 bytes
     // Position within 16-bit word matters for checksum calculation
     __u8 old_padded[4] = {0, 0, 0, 0};
     __u8 new_padded[4] = {0, 0, 0, 0};
 
     if (dv->size == 1) {
         // Position based on offset parity (network byte order: even=high, odd=low)
-        if (dv->offset & 1) {
+        if (odd_offset) {
             // Odd offset: low byte of 16-bit word
             old_padded[1] = dv->old_value[0];
             new_padded[1] = dv->new_value[0];
@@ -292,8 +353,7 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
             new_padded[0] = dv->new_value[0];
         }
     } else if (dv->size == 2) {
-        __u8 word_pos = dv->offset & 1;
-        if (word_pos == 0) {
+        if (!odd_offset) {
             // Aligned: copy directly
             old_padded[0] = dv->old_value[0];
             old_padded[1] = dv->old_value[1];
@@ -308,18 +368,9 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
             new_padded[1] = dv->new_value[0];
             new_padded[2] = dv->new_value[1];
         }
-    } else if (dv->size == 6) {
-        // 6-byte value (e.g., MAC address): process first 4 bytes directly
-        csum = bpf_csum_diff((__be32 *)dv->old_value, 4, (__be32 *)dv->new_value, 4, csum);
-        // Remaining 2 bytes with padding
-        old_padded[0] = dv->old_value[4];
-        old_padded[1] = dv->old_value[5];
-        new_padded[0] = dv->new_value[4];
-        new_padded[1] = dv->new_value[5];
-        DEBUG_PRINT("  csum_diff: size 6, processed 4+2 bytes\n");
     }
 
-    DEBUG_PRINT("  csum_diff: off=%u sz=%u\n", dv->offset, dv->size);
+    DEBUG_PRINT("  csum_diff: off=%u sz=%u odd=%d\n", dv->offset, dv->size, odd_offset);
     csum = bpf_csum_diff((__be32 *)old_padded, 4, (__be32 *)new_padded, 4, csum);
 
     return csum;
