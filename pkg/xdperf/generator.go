@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 
 	"github.com/takehaya/xdperf/pkg/guest"
 )
@@ -14,11 +15,11 @@ const maxBasePackets = 16
 
 // allowedByteSizes contains the valid byte sizes for variable parameters.
 // These sizes are supported by both readBytesAt and valueToBytes functions.
-var allowedByteSizes = map[int]bool{1: true, 2: true, 4: true, 6: true, 8: true}
+var allowedByteSizes = []int{1, 2, 4, 6, 8}
 
 // isAllowedByteSize checks if the given size is a valid byte size for variable parameters.
 func isAllowedByteSize(size int) bool {
-	return allowedByteSizes[size]
+	return slices.Contains(allowedByteSizes, size)
 }
 
 // readBytesAt reads bytes from the packet at the given offset.
