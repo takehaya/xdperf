@@ -19,49 +19,35 @@
 
 char _license[] SEC("license") = "GPL";
 
+// Check if size is a supported diff size for bpf_xdp_store_bytes
+// Supported sizes: 1, 2, 4, 6, 8 bytes
+static __always_inline bool is_supported_diff_size(__u8 size)
+{
+    switch (size) {
+    case 1:
+    case 2:
+    case 4:
+    case 6:
+    case 8:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // Apply a single diff value to the packet
 // Uses bpf_xdp_store_bytes() to avoid verifier issues with variable-offset writes
 // new_value is stored in big-endian (network byte order)
 // Note: __noinline prevents verifier state explosion when called from unrolled loop
 static __noinline __attribute__((unused)) int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 {
-    __u16 offset = dv->offset;
-    __u8 size = dv->size;
-
-    if (size == 0 || offset == 0xFFFF)
+    if (dv->size == 0 || dv->offset == 0xFFFF)
         return 0; // Skip empty diff
 
-    // Use bpf_xdp_store_bytes which handles bounds checking internally
-    // This avoids verifier issues with variable-offset packet writes
-    // new_value is already in network byte order, so write directly
-    // Supported sizes: 1, 2, 4, 6, 8 bytes (other sizes rejected in default case)
-    switch (size) {
-    case 1:
-        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 1) < 0)
-            return -1;
-        break;
-    case 2:
-        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 2) < 0)
-            return -1;
-        break;
-    case 4:
-        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 4) < 0)
-            return -1;
-        break;
-    case 6:
-        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 6) < 0)
-            return -1;
-        break;
-    case 8:
-        if (bpf_xdp_store_bytes(ctx, offset, dv->new_value, 8) < 0)
-            return -1;
-        break;
-    default:
-        // Unsupported size (3, 5, 7, or > 8)
+    if (!is_supported_diff_size(dv->size))
         return -1;
-    }
 
-    return 0;
+    return bpf_xdp_store_bytes(ctx, dv->offset, dv->new_value, dv->size) < 0 ? -1 : 0;
 }
 
 // Recalculate checksum from scratch using bpf_xdp_load_bytes/bpf_xdp_store_bytes
