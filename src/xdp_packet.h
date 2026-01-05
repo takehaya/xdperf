@@ -5,8 +5,8 @@
 #include <bpf/bpf_helpers.h>
 #include <linux/bpf.h>
 
-// Maximum template size (same as existing)
-#define MAX_TEMPLATE_SIZE 2048
+// Maximum packet size
+#define MAX_PACKET_SIZE 2048
 
 // Maximum number of diffs per packet
 // Must match maxDiffsPerPacket in pkg/xdperf/bpf.go
@@ -25,10 +25,10 @@
 
 // Base packet structure (stored once per variant)
 struct base_packet {
-    __u16 len;                    // Base packet length
-    __u8 checksum_count;          // Number of checksums to recalculate
-    __u8 _pad;                    // Padding for alignment
-    __u8 data[MAX_TEMPLATE_SIZE]; // Base packet data
+    __u16 len;                  // Base packet length
+    __u8 checksum_count;        // Number of checksums to recalculate
+    __u8 _pad;                  // Padding for alignment
+    __u8 data[MAX_PACKET_SIZE]; // Base packet data
 };
 
 // Single diff value

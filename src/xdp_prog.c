@@ -289,7 +289,7 @@ static __always_inline __u16 csum_fold_helper(__u64 csum)
 
 // Check if a diff affects a particular checksum.
 // Assumption: dv->offset + dv->size does not overflow __u16.
-// This is guaranteed because valid packet offsets are < 2048 (MAX_TEMPLATE_SIZE)
+// This is guaranteed because valid packet offsets are < 2048 (MAX_PACKET_SIZE)
 // and size is at most 8 bytes.
 // Auto-detects checksum type (IPv4 header vs transport) from packet content.
 // Note: __noinline prevents verifier state explosion when called from loops
@@ -546,8 +546,8 @@ int xdp_tx(struct xdp_md *ctx)
     __u16 target_len = diff->pkt_len;
     if (target_len == 0)
         target_len = base->len;
-    if (target_len > MAX_TEMPLATE_SIZE)
-        target_len = MAX_TEMPLATE_SIZE;
+    if (target_len > MAX_PACKET_SIZE)
+        target_len = MAX_PACKET_SIZE;
     if (target_len < sizeof(struct ethhdr)) {
         DEBUG_PRINT("packet too small: %u\n", target_len);
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
@@ -592,7 +592,7 @@ int xdp_tx(struct xdp_md *ctx)
 
 // Second chunk: copy remaining bytes if packet > 64 bytes
 // Use fixed-size chunks with compile-time constant for verifier
-// Support up to 2048 bytes (32 chunks of 64 bytes) to match MAX_TEMPLATE_SIZE
+// Support up to 2048 bytes (32 chunks of 64 bytes) to match MAX_PACKET_SIZE
 #define MAX_COPY_CHUNKS 32
 
 #pragma unroll
