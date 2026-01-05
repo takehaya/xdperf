@@ -645,7 +645,7 @@ int xdp_tx(struct xdp_md *ctx)
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // 7. Apply diffs (unrolled loop for max 8 diffs)
+    // 7. Apply diffs (bounded loop for max 8 diffs)
     __u8 diff_count = diff->diff_count;
     if (diff_count > MAX_DIFFS_PER_PACKET)
         diff_count = MAX_DIFFS_PER_PACKET;
