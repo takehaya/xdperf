@@ -434,8 +434,8 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
 // Uses old_value and new_value from diff_value struct directly, avoiding map access
 // Constructs 4-byte aligned values with zero padding that doesn't affect the checksum result
 // Note: __noinline prevents verifier state explosion when called from unrolled loop
-static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta,
-                                                                        struct diff_value *diffs, __u8 diff_count, __u16 pkt_len)
+static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, struct diff_value *diffs,
+                                                __u8 diff_count, __u16 pkt_len)
 {
     // Load current checksum value from packet (base packet was copied, checksum not yet modified)
     // No byte order conversion - values are in network byte order as read from packet
@@ -659,7 +659,7 @@ int xdp_tx(struct xdp_md *ctx)
     for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
         if (i >= diff_count)
             break;
-        if (apply_diff(ctx, &diff->diffs[i]) < 0) {
+        if (!apply_diff(ctx, &diff->diffs[i])) {
             DEBUG_PRINT("apply_diff failed at %d\n", i);
             diff_errors++;
         }
@@ -740,7 +740,7 @@ int xdp_tx_checksum(struct xdp_md *ctx)
 
     if (len_changed) {
         // Packet length changed - update IP/UDP length fields first
-        if (update_packet_lengths(ctx, target_len) < 0) {
+        if (!update_packet_lengths(ctx, target_len)) {
             DEBUG_PRINT("update_packet_lengths failed\n");
             checksum_errors++;
         }
@@ -759,7 +759,7 @@ int xdp_tx_checksum(struct xdp_md *ctx)
                 checksum_errors++;
                 break;
             }
-            if (recalc_checksum(ctx, meta, target_len) < 0) {
+            if (!recalc_checksum(ctx, meta, target_len)) {
                 DEBUG_PRINT("recalc_checksum failed at %d\n", i);
                 checksum_errors++;
             }
@@ -777,7 +777,7 @@ int xdp_tx_checksum(struct xdp_md *ctx)
                 checksum_errors++;
                 break;
             }
-            if (apply_csum_with_bpf_diff(ctx, meta, diff->diffs, diff_count, target_len) < 0) {
+            if (!apply_csum_with_bpf_diff(ctx, meta, diff->diffs, diff_count, target_len)) {
                 DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
                 checksum_errors++;
             }
