@@ -39,15 +39,15 @@ static __always_inline bool is_supported_diff_size(__u8 size)
 // Uses bpf_xdp_store_bytes() to avoid verifier issues with variable-offset writes
 // new_value is stored in big-endian (network byte order)
 // Note: __noinline prevents verifier state explosion when called from unrolled loop
-static __noinline __attribute__((unused)) int apply_diff(struct xdp_md *ctx, struct diff_value *dv)
+static __noinline __attribute__((unused)) bool apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 {
     if (dv->size == 0 || dv->offset == 0xFFFF)
-        return BPF_OK; // Skip empty diff
+        return true; // Skip empty diff
 
     if (!is_supported_diff_size(dv->size))
-        return BPF_ERROR;
+        return false;
 
-    return bpf_xdp_store_bytes(ctx, dv->offset, dv->new_value, dv->size) < 0 ? BPF_ERROR : BPF_OK;
+    return bpf_xdp_store_bytes(ctx, dv->offset, dv->new_value, dv->size) >= 0;
 }
 
 // Recalculate checksum from scratch using bpf_xdp_load_bytes/bpf_xdp_store_bytes
@@ -57,7 +57,7 @@ static __noinline __attribute__((unused)) int apply_diff(struct xdp_md *ctx, str
 // - IPv4 header checksum: csum_offset == ip_header_offset + offsetof(struct iphdr, check)
 // - Transport checksum: determined by IP protocol field
 // Note: __noinline prevents verifier state explosion when called from loops
-static __noinline __attribute__((unused)) int recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
+static __noinline __attribute__((unused)) bool recalc_checksum(struct xdp_md *ctx, struct checksum_meta *meta, __u16 pkt_len)
 {
     __u16 csum;
     __u16 transport_len;
@@ -65,7 +65,7 @@ static __noinline __attribute__((unused)) int recalc_checksum(struct xdp_md *ctx
     // First load IP version to determine checksum type
     __u8 version_byte;
     if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) < 0)
-        return BPF_ERROR;
+        return false;
 
     __u8 ip_version = (version_byte >> 4) & 0x0F;
 
@@ -75,44 +75,44 @@ static __noinline __attribute__((unused)) int recalc_checksum(struct xdp_md *ctx
         if (meta->csum_offset == meta->ip_header_offset + offsetof(struct iphdr, check)) {
             csum = calc_ipv4_header_csum(ctx, meta->ip_header_offset);
             if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
-                return BPF_ERROR;
-            return BPF_OK;
+                return false;
+            return true;
         }
         // IPv4 transport checksum
         struct iphdr iph;
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &iph, sizeof(iph)) < 0)
-            return BPF_ERROR;
+            return false;
         transport_len = bpf_ntohs(iph.tot_len) - (iph.ihl * 4);
         csum = calc_transport_csum_ipv4(ctx, meta->ip_header_offset, meta->header_start, transport_len, iph.protocol);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
-            return BPF_ERROR;
+            return false;
     } else if (ip_version == 6) {
         // IPv6 transport checksum
         // TODO: Extension headers (Hop-by-Hop, Routing, Fragment, etc.) are not supported.
         struct ipv6hdr ip6h;
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
-            return BPF_ERROR;
+            return false;
         transport_len = bpf_ntohs(ip6h.payload_len);
         csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, ip6h.nexthdr);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
-            return BPF_ERROR;
+            return false;
     } else {
         // Unknown IP version
-        return BPF_ERROR;
+        return false;
     }
 
-    return BPF_OK;
+    return true;
 }
 
 // Update IP and transport layer length fields when packet length changed
 // Must be called after base packet copy, before checksum recalculation
 // Note: __noinline prevents verifier state explosion
-static __noinline __attribute__((unused)) int update_packet_lengths(struct xdp_md *ctx, __u16 target_len)
+static __noinline __attribute__((unused)) bool update_packet_lengths(struct xdp_md *ctx, __u16 target_len)
 {
     // Load Ethernet header to check protocol
     struct ethhdr eth;
     if (bpf_xdp_load_bytes(ctx, 0, &eth, sizeof(eth)) < 0)
-        return BPF_ERROR;
+        return false;
 
     __u16 eth_proto = eth.h_proto;
     __u16 l3_offset = sizeof(struct ethhdr);
@@ -122,14 +122,14 @@ static __noinline __attribute__((unused)) int update_packet_lengths(struct xdp_m
     if (eth_proto == bpf_htons(ETH_P_8021Q) || eth_proto == bpf_htons(ETH_P_8021AD)) {
         __be16 vlan_proto;
         if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &vlan_proto, 2) < 0)
-            return BPF_ERROR;
+            return false;
         eth_proto = vlan_proto;
         l3_offset += 4;
 
         // Double VLAN (QinQ)
         if (eth_proto == bpf_htons(ETH_P_8021Q)) {
             if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &vlan_proto, 2) < 0)
-                return BPF_ERROR;
+                return false;
             eth_proto = vlan_proto;
             l3_offset += 4;
         }
@@ -137,65 +137,65 @@ static __noinline __attribute__((unused)) int update_packet_lengths(struct xdp_m
 
     // Validate l3_offset after VLAN parsing
     if (l3_offset >= target_len)
-        return BPF_ERROR;
+        return false;
 
     if (eth_proto == bpf_htons(ETH_P_IP)) {
         // IPv4: update tot_len (offset 2 from IP header)
         __u16 ip_len = target_len - l3_offset;
         __be16 ip_len_be = bpf_htons(ip_len);
         if (bpf_xdp_store_bytes(ctx, l3_offset + 2, &ip_len_be, 2) < 0)
-            return BPF_ERROR;
+            return false;
 
         // Get protocol from IP header (offset 9)
         __u8 proto;
         if (bpf_xdp_load_bytes(ctx, l3_offset + 9, &proto, 1) < 0)
-            return BPF_ERROR;
+            return false;
 
         // Get IHL (IP Header Length) from first byte
         __u8 version_ihl;
         if (bpf_xdp_load_bytes(ctx, l3_offset, &version_ihl, 1) < 0)
-            return BPF_ERROR;
+            return false;
         __u16 ihl = (version_ihl & 0x0F) * 4;
         __u16 l4_offset = l3_offset + ihl;
 
         if (proto == IPPROTO_UDP) {
             // UDP: update len field (offset 4 from UDP header)
             if (target_len < l4_offset)
-                return BPF_ERROR;
+                return false;
             __u16 udp_len = target_len - l4_offset;
             __be16 udp_len_be = bpf_htons(udp_len);
             if (bpf_xdp_store_bytes(ctx, l4_offset + 4, &udp_len_be, 2) < 0)
-                return BPF_ERROR;
+                return false;
         }
         // TCP doesn't have a length field in header
     } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
         // IPv6: update payload_len (offset 4 from IPv6 header)
         if (target_len < l3_offset + sizeof(struct ipv6hdr))
-            return BPF_ERROR;
+            return false;
         __u16 payload_len = target_len - l3_offset - sizeof(struct ipv6hdr);
         __be16 payload_len_be = bpf_htons(payload_len);
         if (bpf_xdp_store_bytes(ctx, l3_offset + 4, &payload_len_be, 2) < 0)
-            return BPF_ERROR;
+            return false;
 
         // Get next header (protocol) from IPv6 header (offset 6)
         __u8 proto;
         if (bpf_xdp_load_bytes(ctx, l3_offset + 6, &proto, 1) < 0)
-            return BPF_ERROR;
+            return false;
 
         __u16 l4_offset = l3_offset + sizeof(struct ipv6hdr);
 
         if (proto == IPPROTO_UDP) {
             // UDP: update len field
             if (target_len < l4_offset)
-                return BPF_ERROR;
+                return false;
             __u16 udp_len = target_len - l4_offset;
             __be16 udp_len_be = bpf_htons(udp_len);
             if (bpf_xdp_store_bytes(ctx, l4_offset + 4, &udp_len_be, 2) < 0)
-                return BPF_ERROR;
+                return false;
         }
     }
 
-    return BPF_OK;
+    return true;
 }
 
 // Fold bpf_csum_diff result to 16-bit checksum
@@ -354,14 +354,14 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
 // Uses old_value and new_value from diff_value struct directly, avoiding map access
 // Constructs 4-byte aligned values with zero padding that doesn't affect the checksum result
 // Note: __noinline prevents verifier state explosion when called from unrolled loop
-static __noinline __attribute__((unused)) int apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta,
-                                                                       struct diff_value *diffs, __u8 diff_count, __u16 pkt_len)
+static __noinline __attribute__((unused)) bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta,
+                                                                        struct diff_value *diffs, __u8 diff_count, __u16 pkt_len)
 {
     // Load current checksum value from packet (base packet was copied, checksum not yet modified)
     // No byte order conversion - values are in network byte order as read from packet
     __u16 old_csum;
     if (bpf_xdp_load_bytes(ctx, meta->csum_offset, &old_csum, 2) < 0)
-        return BPF_ERROR;
+        return false;
 
     // Detect if this is a UDP checksum for special handling of 0 value
     // UDP checksum of 0 means "no checksum" but is stored as 0xFFFF per RFC 768
@@ -414,9 +414,9 @@ static __noinline __attribute__((unused)) int apply_csum_with_bpf_diff(struct xd
 
     // No byte order conversion - checksum stored in network byte order as read from packet
     if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &new_csum, 2) < 0)
-        return BPF_ERROR;
+        return false;
 
-    return BPF_OK;
+    return true;
 }
 
 SEC("xdp")
