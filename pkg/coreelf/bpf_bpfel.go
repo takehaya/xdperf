@@ -13,10 +13,45 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type BpfBasePacket struct {
+	_             structs.HostLayout
+	Len           uint16
+	ChecksumCount uint8
+	Pad           uint8
+	Data          [2048]uint8
+}
+
+type BpfChecksumMeta struct {
+	_              structs.HostLayout
+	CsumOffset     uint16
+	HeaderStart    uint16
+	HeaderLen      uint16
+	IpHeaderOffset uint16
+}
+
 type BpfDatarec struct {
-	_       structs.HostLayout
-	Packets uint64
-	Bytes   uint64
+	_              structs.HostLayout
+	Packets        uint64
+	Bytes          uint64
+	DiffErrors     uint64
+	ChecksumErrors uint64
+}
+
+type BpfDiffEntry struct {
+	_     structs.HostLayout
+	Diffs [8]struct {
+		_        structs.HostLayout
+		OldValue [8]uint8
+		NewValue [8]uint8
+		Offset   uint16
+		Size     uint8
+		_        [1]byte
+	}
+	PktLen     uint16
+	BaseIdx    uint8
+	DiffCount  uint8
+	LenChanged uint8
+	_          [1]byte
 }
 
 type BpfPktState struct {
@@ -29,6 +64,18 @@ type BpfPktTemplate struct {
 	_    structs.HostLayout
 	Len  uint32
 	Data [2048]uint8
+}
+
+type BpfTailCallCtx struct {
+	_             structs.HostLayout
+	BaseIdx       uint32
+	LocalIdx      uint32
+	TargetLen     uint16
+	DiffCount     uint8
+	ChecksumCount uint8
+	LenChanged    uint8
+	DiffErrors    uint8
+	Pad           [2]uint8
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.
@@ -82,11 +129,16 @@ type BpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
-	PktStateMap   *ebpf.MapSpec `ebpf:"pkt_state_map"`
-	RxStatsMap    *ebpf.MapSpec `ebpf:"rx_stats_map"`
-	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
-	TxStatsMap    *ebpf.MapSpec `ebpf:"tx_stats_map"`
-	XdpcapHook    *ebpf.MapSpec `ebpf:"xdpcap_hook"`
+	BasePacketMap   *ebpf.MapSpec `ebpf:"base_packet_map"`
+	ChecksumMetaMap *ebpf.MapSpec `ebpf:"checksum_meta_map"`
+	DiffMap         *ebpf.MapSpec `ebpf:"diff_map"`
+	PktStateMap     *ebpf.MapSpec `ebpf:"pkt_state_map"`
+	RxStatsMap      *ebpf.MapSpec `ebpf:"rx_stats_map"`
+	TailCallCtxMap  *ebpf.MapSpec `ebpf:"tail_call_ctx_map"`
+	TxOverrideMap   *ebpf.MapSpec `ebpf:"tx_override_map"`
+	TxStatsMap      *ebpf.MapSpec `ebpf:"tx_stats_map"`
+	XdpProgs        *ebpf.MapSpec `ebpf:"xdp_progs"`
+	XdpcapHook      *ebpf.MapSpec `ebpf:"xdpcap_hook"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -117,19 +169,29 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
-	PktStateMap   *ebpf.Map `ebpf:"pkt_state_map"`
-	RxStatsMap    *ebpf.Map `ebpf:"rx_stats_map"`
-	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
-	TxStatsMap    *ebpf.Map `ebpf:"tx_stats_map"`
-	XdpcapHook    *ebpf.Map `ebpf:"xdpcap_hook"`
+	BasePacketMap   *ebpf.Map `ebpf:"base_packet_map"`
+	ChecksumMetaMap *ebpf.Map `ebpf:"checksum_meta_map"`
+	DiffMap         *ebpf.Map `ebpf:"diff_map"`
+	PktStateMap     *ebpf.Map `ebpf:"pkt_state_map"`
+	RxStatsMap      *ebpf.Map `ebpf:"rx_stats_map"`
+	TailCallCtxMap  *ebpf.Map `ebpf:"tail_call_ctx_map"`
+	TxOverrideMap   *ebpf.Map `ebpf:"tx_override_map"`
+	TxStatsMap      *ebpf.Map `ebpf:"tx_stats_map"`
+	XdpProgs        *ebpf.Map `ebpf:"xdp_progs"`
+	XdpcapHook      *ebpf.Map `ebpf:"xdpcap_hook"`
 }
 
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
+		m.BasePacketMap,
+		m.ChecksumMetaMap,
+		m.DiffMap,
 		m.PktStateMap,
 		m.RxStatsMap,
+		m.TailCallCtxMap,
 		m.TxOverrideMap,
 		m.TxStatsMap,
+		m.XdpProgs,
 		m.XdpcapHook,
 	)
 }
