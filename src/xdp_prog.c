@@ -24,6 +24,7 @@ int xdp_pass_dummy(struct xdp_md *ctx)
 {
     return XDP_PASS;
 };
+
 SEC("xdp")
 int xdp_rx(struct xdp_md *ctx)
 {
