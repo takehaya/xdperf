@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
@@ -274,35 +275,27 @@ func (x *Xdperf) initBpfMaps(bases []BasePacketInfo, diffEntries []DiffEntry) er
 	// Initialize BPF maps in order of dependency.
 	// If initialization fails, this function returns an error and the BPF program
 	// will not be executed. Maps are not pinned, so each run starts fresh.
-	var initStage string
-
-	initStage = "base_packet_maps"
-	if err := x.initBasePacketMaps(bases, numCpus); err != nil {
-		return fmt.Errorf("failed to init %s: %w", initStage, err)
+	steps := []struct {
+		name string
+		fn   func() error
+	}{
+		{"base_packet_maps", func() error { return x.initBasePacketMaps(bases, numCpus) }},
+		{"diff_map", func() error { return x.initDiffMap(diffEntries, countsPerCPU, numCpus) }},
+		{"checksum_meta_maps", func() error { return x.initChecksumMetaMaps(bases, numCpus) }},
+		{"pkt_state_map", func() error { return x.initPktStateMap(countsPerCPU) }},
 	}
 
-	initStage = "diff_map"
-	if err := x.initDiffMap(diffEntries, countsPerCPU, numCpus); err != nil {
-		x.Logger.Warn("BPF map initialization failed after partial setup",
-			zap.String("failed_at", initStage),
-			zap.String("completed", "base_packet_maps"))
-		return fmt.Errorf("failed to init %s: %w", initStage, err)
-	}
-
-	initStage = "checksum_meta_maps"
-	if err := x.initChecksumMetaMaps(bases, numCpus); err != nil {
-		x.Logger.Warn("BPF map initialization failed after partial setup",
-			zap.String("failed_at", initStage),
-			zap.String("completed", "base_packet_maps, diff_map"))
-		return fmt.Errorf("failed to init %s: %w", initStage, err)
-	}
-
-	initStage = "pkt_state_map"
-	if err := x.initPktStateMap(countsPerCPU); err != nil {
-		x.Logger.Warn("BPF map initialization failed after partial setup",
-			zap.String("failed_at", initStage),
-			zap.String("completed", "base_packet_maps, diff_map, checksum_meta_maps"))
-		return fmt.Errorf("failed to init %s: %w", initStage, err)
+	var completed []string
+	for _, step := range steps {
+		if err := step.fn(); err != nil {
+			if len(completed) > 0 {
+				x.Logger.Warn("BPF map initialization failed after partial setup",
+					zap.String("failed_at", step.name),
+					zap.String("completed", strings.Join(completed, ", ")))
+			}
+			return fmt.Errorf("failed to init %s: %w", step.name, err)
+		}
+		completed = append(completed, step.name)
 	}
 
 	x.Logger.Info("BPF maps initialized")
