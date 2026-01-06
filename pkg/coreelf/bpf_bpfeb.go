@@ -139,8 +139,13 @@ type BpfMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfVariableSpecs struct {
-	EnableXdpcap *ebpf.VariableSpec `ebpf:"enable_xdpcap"`
-	SwapResp     *ebpf.VariableSpec `ebpf:"swap_resp"`
+	EnableXdpcap       *ebpf.VariableSpec `ebpf:"enable_xdpcap"`
+	MaxBasePackets     *ebpf.VariableSpec `ebpf:"max_base_packets"`
+	MaxChecksumEntries *ebpf.VariableSpec `ebpf:"max_checksum_entries"`
+	MaxDiffsPerPacket  *ebpf.VariableSpec `ebpf:"max_diffs_per_packet"`
+	MaxPacketSize      *ebpf.VariableSpec `ebpf:"max_packet_size"`
+	MinPacketSize      *ebpf.VariableSpec `ebpf:"min_packet_size"`
+	SwapResp           *ebpf.VariableSpec `ebpf:"swap_resp"`
 }
 
 // BpfObjects contains all objects after they have been loaded into the kernel.
@@ -192,8 +197,13 @@ func (m *BpfMaps) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfVariables struct {
-	EnableXdpcap *ebpf.Variable `ebpf:"enable_xdpcap"`
-	SwapResp     *ebpf.Variable `ebpf:"swap_resp"`
+	EnableXdpcap       *ebpf.Variable `ebpf:"enable_xdpcap"`
+	MaxBasePackets     *ebpf.Variable `ebpf:"max_base_packets"`
+	MaxChecksumEntries *ebpf.Variable `ebpf:"max_checksum_entries"`
+	MaxDiffsPerPacket  *ebpf.Variable `ebpf:"max_diffs_per_packet"`
+	MaxPacketSize      *ebpf.Variable `ebpf:"max_packet_size"`
+	MinPacketSize      *ebpf.Variable `ebpf:"min_packet_size"`
+	SwapResp           *ebpf.Variable `ebpf:"swap_resp"`
 }
 
 // BpfPrograms contains all programs after they have been loaded into the kernel.

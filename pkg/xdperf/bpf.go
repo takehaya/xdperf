@@ -10,6 +10,17 @@ import (
 	"go.uber.org/zap"
 )
 
+// getBpfConstant reads a BPF constant value from spec.Variables
+func (x *Xdperf) getBpfConstant(name string) int {
+	if varSpec, ok := x.bpfSpec.Variables[name]; ok {
+		var val uint32
+		if err := varSpec.Get(&val); err == nil {
+			return int(val)
+		}
+	}
+	return 0
+}
+
 // DiffEntry represents a single packet entry with optional modifications
 type DiffEntry struct {
 	BaseIdx    uint8  // Index into base_packet_map (which base to use)
@@ -33,19 +44,13 @@ type DiffValue struct {
 	Size     uint8
 }
 
-// minPacketSize is the minimum packet size required by the BPF program.
-// Must match COPY_CHUNK_SIZE in src/xdp_prog.c
-const minPacketSize = 64
-
-// maxPacketSize is the maximum packet size supported by the BPF template.
-// Must match MAX_PACKET_SIZE in src/xdp_packet.h
-const maxPacketSize = 2048
-
 // initBasePacketMaps initializes the base packet map with multiple base packets
 func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
+	maxPacketSize := x.getBpfConstant("max_packet_size")
+	minPacketSize := x.getBpfConstant("min_packet_size")
 	for baseIdx, info := range bases {
 		// Validate packet size bounds
-		if info.Base.Length < minPacketSize {
+		if int(info.Base.Length) < minPacketSize {
 			return fmt.Errorf("base packet %d too small: %d bytes (minimum %d)",
 				baseIdx, info.Base.Length, minPacketSize)
 		}
@@ -53,7 +58,7 @@ func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 			return fmt.Errorf("base packet %d: length %d exceeds data size %d",
 				baseIdx, info.Base.Length, len(info.Base.Data))
 		}
-		if info.Base.Length > maxPacketSize {
+		if int(info.Base.Length) > maxPacketSize {
 			return fmt.Errorf("base packet %d: length %d exceeds max template size %d",
 				baseIdx, info.Base.Length, maxPacketSize)
 		}
@@ -85,14 +90,13 @@ func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 	return nil
 }
 
-// maxDiffsPerPacket must match MAX_DIFFS_PER_PACKET in src/xdp_packet.h
-const maxDiffsPerPacket = 8
-
 // initDiffMap initializes the diff map with pre-computed diff entries
 func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus int) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("no diff entries")
 	}
+
+	maxDiffsPerPacket := x.getBpfConstant("max_diffs_per_packet")
 
 	// Check if any entry exceeds max diffs
 	for i, e := range entries {
@@ -167,12 +171,11 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 	return nil
 }
 
-// maxChecksumEntriesPerBase must match MAX_CHECKSUM_ENTRIES in src/xdp_packet.h
-const maxChecksumEntriesPerBase = 4
-
 // initChecksumMetaMaps initializes the checksum metadata map for all bases
 // Key format: base_idx * MAX_CHECKSUM_ENTRIES + checksum_idx
 func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo, numCpus int) error {
+	maxChecksumEntriesPerBase := x.getBpfConstant("max_checksum_entries")
+
 	totalChecksums := 0
 	for baseIdx, info := range bases {
 		// Warn if checksums exceed limit

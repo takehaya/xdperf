@@ -19,6 +19,12 @@
 
 char _license[] SEC("license") = "GPL";
 
+// Minimum packet size for chunk-based copy (must be >= 64 for verifier bounds)
+#define COPY_CHUNK_SIZE 64
+
+// Expose COPY_CHUNK_SIZE to Go via spec.Variables
+volatile __u32 min_packet_size = COPY_CHUNK_SIZE;
+
 SEC("xdp")
 int xdp_pass_dummy(struct xdp_md *ctx)
 {
@@ -572,13 +578,12 @@ int xdp_tx(struct xdp_md *ctx)
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-// 6. Copy base packet
-// The verifier loses scalar bounds after helper calls.
-// Solution: Copy in fixed-size chunks with compile-time constants.
-// Require minimum 64 byte packets for chunk-based copy.
-#define COPY_CHUNK_SIZE 64
+    // 6. Copy base packet
+    // The verifier loses scalar bounds after helper calls.
+    // Solution: Copy in fixed-size chunks with compile-time constants.
+    // Require minimum COPY_CHUNK_SIZE byte packets for chunk-based copy.
 
-    // Require minimum packet size of 64 bytes
+    // Require minimum packet size
     if (target_len < COPY_CHUNK_SIZE) {
         DEBUG_PRINT("packet too small (min 64 bytes): %u\n", target_len);
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);

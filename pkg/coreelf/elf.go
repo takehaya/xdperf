@@ -28,17 +28,17 @@ type XdpMd struct {
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -I ./src -I /usr/include/x86_64-linux-gnu
 
-func ReadCollection(constants map[string]interface{}, mapSize uint32) (*BpfObjects, error) {
+func ReadCollection(constants map[string]interface{}, mapSize uint32, diffMapSize uint32) (*BpfObjects, *ebpf.CollectionSpec, error) {
 	// Remove memory limit for BPF
 	if err := rlimit.RemoveMemlock(); err != nil {
-		return nil, fmt.Errorf("failed to remove memory limit: %w", err)
+		return nil, nil, fmt.Errorf("failed to remove memory limit: %w", err)
 	}
 
 	objs := &BpfObjects{}
 	// TODO: BPF log level remove hardcoding. yaml in config?
 	spec, err := LoadBpf()
 	if err != nil {
-		return nil, fmt.Errorf("fail to load bpf spec: %w", err)
+		return nil, nil, fmt.Errorf("fail to load bpf spec: %w", err)
 	}
 
 	// Dynamically set tx_override_map size before loading
@@ -48,13 +48,20 @@ func ReadCollection(constants map[string]interface{}, mapSize uint32) (*BpfObjec
 		}
 	}
 
+	// Dynamically set diff_map size before loading
+	if mapSpec, ok := spec.Maps["diff_map"]; ok {
+		if diffMapSize > 0 {
+			mapSpec.MaxEntries = diffMapSize
+		}
+	}
+
 	for name, value := range constants {
 		varSpec, ok := spec.Variables[name]
 		if !ok {
-			return nil, fmt.Errorf("constant %s not found in spec", name)
+			return nil, nil, fmt.Errorf("constant %s not found in spec", name)
 		}
 		if err := varSpec.Set(value); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	err = spec.LoadAndAssign(objs, &ebpf.CollectionOptions{
@@ -65,7 +72,7 @@ func ReadCollection(constants map[string]interface{}, mapSize uint32) (*BpfObjec
 		if errors.As(err, &verr) {
 			fmt.Printf("%+v\n", verr)
 		}
-		return nil, fmt.Errorf("fail to load and assign bpf objects: %w", err)
+		return nil, nil, fmt.Errorf("fail to load and assign bpf objects: %w", err)
 	}
 
 	// Populate the prog_array for tail calls
@@ -74,11 +81,11 @@ func ReadCollection(constants map[string]interface{}, mapSize uint32) (*BpfObjec
 		checksumProgFD := uint32(objs.XdpTxChecksum.FD())
 		if err := objs.XdpProgs.Put(uint32(0), checksumProgFD); err != nil {
 			objs.Close()
-			return nil, fmt.Errorf("fail to populate xdp_progs map: %w", err)
+			return nil, nil, fmt.Errorf("fail to populate xdp_progs map: %w", err)
 		}
 	}
 
-	return objs, nil
+	return objs, spec, nil
 }
 
 // LoadDummyProgram loads only the xdp_pass_dummy program for lightweight probing.

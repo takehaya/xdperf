@@ -30,6 +30,7 @@ type Xdperf struct {
 	bpfobjs       *coreelf.BpfObjects
 	Device        *net.Interface
 	cfg           Config
+	bpfSpec       *ebpf.CollectionSpec
 }
 
 func NewXdperf(cfg Config) (*Xdperf, error) {
@@ -68,11 +69,14 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		}(),
 	}
 
-	// Calculate tx_override_map size based on mode
+	// Calculate map sizes based on mode
 	var mapSize uint32
+	var diffMapSize uint32
 	if cfg.Sender {
 		// Sender mode: size based on Count / Parallelism
-		mapSize = uint32(cfg.Count/uint64(cfg.Parallelism)) + 1
+		sizePerCPU := uint32(cfg.Count/uint64(cfg.Parallelism)) + 1
+		mapSize = sizePerCPU
+		diffMapSize = sizePerCPU
 		// Clamp to valid range [MinPacketEntry, MaxPacketEntry]
 		if mapSize < coreelf.MinPacketEntry {
 			mapSize = coreelf.MinPacketEntry
@@ -81,12 +85,16 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 			mapSize = coreelf.MaxPacketEntry
 		}
 	} else {
-		// Receiver-only mode: minimal size since tx_override_map is not used
+		// Receiver-only mode: minimal size since tx_override_map and diff_map are not used
 		mapSize = 1
+		diffMapSize = 1
 	}
-	logger.Info("calculated tx_override_map size", zap.Uint32("map_size", mapSize))
+	logger.Info("calculated map sizes",
+		zap.Uint32("tx_override_map_size", mapSize),
+		zap.Uint32("diff_map_size", diffMapSize),
+	)
 
-	obj, err := coreelf.ReadCollection(consts, mapSize)
+	obj, bpfSpec, err := coreelf.ReadCollection(consts, mapSize, diffMapSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load eBPF objects: %w", err)
 	}
@@ -110,6 +118,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		bpfobjs:       obj,
 		cfg:           cfg,
 		Device:        dev,
+		bpfSpec:       bpfSpec,
 	}, nil
 }
 
@@ -146,14 +155,16 @@ func (x *Xdperf) initPacketGeneration(resp *guest.GeneratorProcessResponse) erro
 	var diffEntries []DiffEntry
 	var err error
 
+	maxBasePackets := x.getBpfConstant("max_base_packets")
+
 	switch resp.TemplateType {
 	case guest.GeneratorTemplateTypeVariable:
-		bases, diffEntries, err = GenerateVariableEntries(*resp, int(x.cfg.Count))
+		bases, diffEntries, err = GenerateVariableEntries(*resp, int(x.cfg.Count), maxBasePackets)
 		if err != nil {
 			return fmt.Errorf("failed to generate variable entries: %w", err)
 		}
 	case guest.GeneratorTemplateTypeRaw:
-		bases, diffEntries, err = GenerateRawEntries(resp.RawPacketTemplate, int(x.cfg.Count))
+		bases, diffEntries, err = GenerateRawEntries(resp.RawPacketTemplate, int(x.cfg.Count), maxBasePackets)
 		if err != nil {
 			return fmt.Errorf("failed to generate raw entries: %w", err)
 		}
