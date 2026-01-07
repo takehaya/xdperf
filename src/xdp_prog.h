@@ -26,19 +26,6 @@ struct {
     __uint(max_entries, 1);
 } rx_stats_map SEC(".maps");
 
-#define MAX_PACKET_ENTRY 1024 * 128
-#define MAX_TEMPLATE_SIZE 2048
-struct pkt_template {
-    __u32 len;                    // actual length of data
-    __u8 data[MAX_TEMPLATE_SIZE]; // raw frame
-};
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, MAX_PACKET_ENTRY);
-    __type(key, __u32); // per-cpu id
-    __type(value, struct pkt_template);
-} tx_override_map SEC(".maps");
-
 // https://github.com/cloudflare/xdpcap
 // struct bpf_map_def SEC("maps") xdpcap_hook = XDPCAP_HOOK();
 struct xdpcap_hook {

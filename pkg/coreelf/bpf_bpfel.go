@@ -60,12 +60,6 @@ type BpfPktState struct {
 	Idx   uint32
 }
 
-type BpfPktTemplate struct {
-	_    structs.HostLayout
-	Len  uint32
-	Data [2048]uint8
-}
-
 type BpfTailCallCtx struct {
 	_             structs.HostLayout
 	BaseIdx       uint32
@@ -120,9 +114,10 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	XdpPassDummy *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
-	XdpRx        *ebpf.ProgramSpec `ebpf:"xdp_rx"`
-	XdpTx        *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpPassDummy  *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
+	XdpRx         *ebpf.ProgramSpec `ebpf:"xdp_rx"`
+	XdpTx         *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpTxChecksum *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -135,7 +130,6 @@ type BpfMapSpecs struct {
 	PktStateMap     *ebpf.MapSpec `ebpf:"pkt_state_map"`
 	RxStatsMap      *ebpf.MapSpec `ebpf:"rx_stats_map"`
 	TailCallCtxMap  *ebpf.MapSpec `ebpf:"tail_call_ctx_map"`
-	TxOverrideMap   *ebpf.MapSpec `ebpf:"tx_override_map"`
 	TxStatsMap      *ebpf.MapSpec `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.MapSpec `ebpf:"xdp_progs"`
 	XdpcapHook      *ebpf.MapSpec `ebpf:"xdpcap_hook"`
@@ -145,8 +139,13 @@ type BpfMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfVariableSpecs struct {
-	EnableXdpcap *ebpf.VariableSpec `ebpf:"enable_xdpcap"`
-	SwapResp     *ebpf.VariableSpec `ebpf:"swap_resp"`
+	EnableXdpcap       *ebpf.VariableSpec `ebpf:"enable_xdpcap"`
+	MaxBasePackets     *ebpf.VariableSpec `ebpf:"max_base_packets"`
+	MaxChecksumEntries *ebpf.VariableSpec `ebpf:"max_checksum_entries"`
+	MaxDiffsPerPacket  *ebpf.VariableSpec `ebpf:"max_diffs_per_packet"`
+	MaxPacketSize      *ebpf.VariableSpec `ebpf:"max_packet_size"`
+	MinPacketSize      *ebpf.VariableSpec `ebpf:"min_packet_size"`
+	SwapResp           *ebpf.VariableSpec `ebpf:"swap_resp"`
 }
 
 // BpfObjects contains all objects after they have been loaded into the kernel.
@@ -175,7 +174,6 @@ type BpfMaps struct {
 	PktStateMap     *ebpf.Map `ebpf:"pkt_state_map"`
 	RxStatsMap      *ebpf.Map `ebpf:"rx_stats_map"`
 	TailCallCtxMap  *ebpf.Map `ebpf:"tail_call_ctx_map"`
-	TxOverrideMap   *ebpf.Map `ebpf:"tx_override_map"`
 	TxStatsMap      *ebpf.Map `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.Map `ebpf:"xdp_progs"`
 	XdpcapHook      *ebpf.Map `ebpf:"xdpcap_hook"`
@@ -189,7 +187,6 @@ func (m *BpfMaps) Close() error {
 		m.PktStateMap,
 		m.RxStatsMap,
 		m.TailCallCtxMap,
-		m.TxOverrideMap,
 		m.TxStatsMap,
 		m.XdpProgs,
 		m.XdpcapHook,
@@ -200,17 +197,23 @@ func (m *BpfMaps) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfVariables struct {
-	EnableXdpcap *ebpf.Variable `ebpf:"enable_xdpcap"`
-	SwapResp     *ebpf.Variable `ebpf:"swap_resp"`
+	EnableXdpcap       *ebpf.Variable `ebpf:"enable_xdpcap"`
+	MaxBasePackets     *ebpf.Variable `ebpf:"max_base_packets"`
+	MaxChecksumEntries *ebpf.Variable `ebpf:"max_checksum_entries"`
+	MaxDiffsPerPacket  *ebpf.Variable `ebpf:"max_diffs_per_packet"`
+	MaxPacketSize      *ebpf.Variable `ebpf:"max_packet_size"`
+	MinPacketSize      *ebpf.Variable `ebpf:"min_packet_size"`
+	SwapResp           *ebpf.Variable `ebpf:"swap_resp"`
 }
 
 // BpfPrograms contains all programs after they have been loaded into the kernel.
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	XdpPassDummy *ebpf.Program `ebpf:"xdp_pass_dummy"`
-	XdpRx        *ebpf.Program `ebpf:"xdp_rx"`
-	XdpTx        *ebpf.Program `ebpf:"xdp_tx"`
+	XdpPassDummy  *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpRx         *ebpf.Program `ebpf:"xdp_rx"`
+	XdpTx         *ebpf.Program `ebpf:"xdp_tx"`
+	XdpTxChecksum *ebpf.Program `ebpf:"xdp_tx_checksum"`
 }
 
 func (p *BpfPrograms) Close() error {
@@ -218,6 +221,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpPassDummy,
 		p.XdpRx,
 		p.XdpTx,
+		p.XdpTxChecksum,
 	)
 }
 

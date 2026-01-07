@@ -5,30 +5,33 @@
 #include <bpf/bpf_helpers.h>
 #include <linux/bpf.h>
 
-// Maximum template size (same as existing)
-#define MAX_TEMPLATE_SIZE 2048
+// Maximum packet size
+#define MAX_PACKET_SIZE 2048
 
 // Maximum number of diffs per packet
-// Must match maxDiffsPerPacket in pkg/xdperf/bpf.go
 #define MAX_DIFFS_PER_PACKET 8
 
 // Maximum number of diff entries (per CPU)
 #define MAX_DIFF_ENTRIES 131072
 
 // Maximum number of checksum metadata entries per base packet
-// Must match maxChecksumEntriesPerBase in pkg/xdperf/bpf.go
 #define MAX_CHECKSUM_ENTRIES 4
 
 // Maximum number of base packets (variants)
-// Must match maxBasePackets in pkg/xdperf/generator.go
 #define MAX_BASE_PACKETS 16
+
+// Expose constants to Go via spec.Variables
+volatile __u32 max_packet_size = MAX_PACKET_SIZE;
+volatile __u32 max_diffs_per_packet = MAX_DIFFS_PER_PACKET;
+volatile __u32 max_base_packets = MAX_BASE_PACKETS;
+volatile __u32 max_checksum_entries = MAX_CHECKSUM_ENTRIES;
 
 // Base packet structure (stored once per variant)
 struct base_packet {
-    __u16 len;                    // Base packet length
-    __u8 checksum_count;          // Number of checksums to recalculate
-    __u8 _pad;                    // Padding for alignment
-    __u8 data[MAX_TEMPLATE_SIZE]; // Base packet data
+    __u16 len;                  // Base packet length
+    __u8 checksum_count;        // Number of checksums to recalculate
+    __u8 _pad;                  // Padding for alignment
+    __u8 data[MAX_PACKET_SIZE]; // Base packet data
 };
 
 // Single diff value

@@ -10,9 +10,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// maxBasePackets must match MAX_BASE_PACKETS in src/xdp_packet.h
-const maxBasePackets = 16
-
 // allowedByteSizes contains the valid byte sizes for variable parameters.
 // These sizes are supported by both readBytesAt and valueToBytes functions.
 var allowedByteSizes = []int{1, 2, 4, 6, 8}
@@ -195,14 +192,14 @@ func generateSingleEntry(variant guest.PacketVariant, state *variantState, baseI
 
 // generateDiffEntriesFromVariantSet generates diff entries from a variant set.
 // Returns base packets (one per variant) and diff entries with proper baseIdx.
-func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalCount int) ([]BasePacketInfo, []DiffEntry, error) {
-	return generateDiffEntriesFromVariantSetWith(nil, variantSet, totalCount)
+func generateDiffEntriesFromVariantSet(variantSet guest.PacketVariantSet, totalCount int, maxBasePackets int) ([]BasePacketInfo, []DiffEntry, error) {
+	return generateDiffEntriesFromVariantSetWith(nil, variantSet, totalCount, maxBasePackets)
 }
 
 // generateDiffEntriesFromVariantSetWith generates diff entries from a variant set.
 // If rng is nil, uses the global math/rand package for variant selection.
 // Returns base packets (one per variant) and diff entries with proper baseIdx.
-func generateDiffEntriesFromVariantSetWith(rng *rand.Rand, variantSet guest.PacketVariantSet, totalCount int) ([]BasePacketInfo, []DiffEntry, error) {
+func generateDiffEntriesFromVariantSetWith(rng *rand.Rand, variantSet guest.PacketVariantSet, totalCount int, maxBasePackets int) ([]BasePacketInfo, []DiffEntry, error) {
 	if len(variantSet.Variants) == 0 {
 		return nil, nil, nil
 	}
@@ -311,17 +308,17 @@ func generateDiffEntriesFromVariantSetWith(rng *rand.Rand, variantSet guest.Pack
 }
 
 // GenerateVariableEntries generates packet entries from a variable template response
-func GenerateVariableEntries(response guest.GeneratorProcessResponse, count int) ([]BasePacketInfo, []DiffEntry, error) {
+func GenerateVariableEntries(response guest.GeneratorProcessResponse, count int, maxBasePackets int) ([]BasePacketInfo, []DiffEntry, error) {
 	if response.TemplateType != guest.GeneratorTemplateTypeVariable {
 		return nil, nil, nil
 	}
 
-	return generateDiffEntriesFromVariantSet(response.VariablePacketTemplate, count)
+	return generateDiffEntriesFromVariantSet(response.VariablePacketTemplate, count, maxBasePackets)
 }
 
 // GenerateRawEntries generates packet entries from raw packets
 // Raw packets become base packets with diff_count=0
-func GenerateRawEntries(packets []guest.BasePacket, count int) ([]BasePacketInfo, []DiffEntry, error) {
+func GenerateRawEntries(packets []guest.BasePacket, count int, maxBasePackets int) ([]BasePacketInfo, []DiffEntry, error) {
 	if len(packets) == 0 {
 		return nil, nil, nil
 	}

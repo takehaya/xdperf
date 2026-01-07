@@ -260,7 +260,7 @@ func TestGenerateDiffEntriesFromVariantSet_Sequential(t *testing.T) {
 		},
 	}
 
-	bases, entries, err := generateDiffEntriesFromVariantSet(variantSet, 100)
+	bases, entries, err := generateDiffEntriesFromVariantSet(variantSet, 100, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestGenerateDiffEntriesFromVariantSet_Default(t *testing.T) {
 		},
 	}
 
-	bases, entries, err := generateDiffEntriesFromVariantSet(variantSet, 10)
+	bases, entries, err := generateDiffEntriesFromVariantSet(variantSet, 10, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestGenerateDiffEntriesFromVariantSet_Mixed(t *testing.T) {
 
 	// Use fixed seed for reproducible test
 	rng := rand.New(rand.NewSource(12345))
-	bases, entries, err := generateDiffEntriesFromVariantSetWith(rng, variantSet, 100)
+	bases, entries, err := generateDiffEntriesFromVariantSetWith(rng, variantSet, 100, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestGenerateRawEntries(t *testing.T) {
 		{Data: make([]byte, 256), Length: 256},
 	}
 
-	bases, entries, err := GenerateRawEntries(packets, 10)
+	bases, entries, err := GenerateRawEntries(packets, 10, 16)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestGenerateRawEntries(t *testing.T) {
 }
 
 func TestGenerateRawEntries_Empty(t *testing.T) {
-	bases, entries, err := GenerateRawEntries([]guest.BasePacket{}, 100)
+	bases, entries, err := GenerateRawEntries([]guest.BasePacket{}, 100, 16)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -531,7 +531,7 @@ func TestGenerateVariableEntries(t *testing.T) {
 		},
 	}
 
-	bases, entries, err := GenerateVariableEntries(response, 50)
+	bases, entries, err := GenerateVariableEntries(response, 50, 16)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -565,7 +565,7 @@ func TestGenerateDiffEntriesFromVariantSet_TooManyVariants(t *testing.T) {
 		Variants: variants,
 	}
 
-	_, _, err := generateDiffEntriesFromVariantSet(variantSet, 100)
+	_, _, err := generateDiffEntriesFromVariantSet(variantSet, 100, 16)
 	if err == nil {
 		t.Fatal("expected error for too many variants, got nil")
 	}
@@ -584,7 +584,7 @@ func TestGenerateRawEntries_TooManyPackets(t *testing.T) {
 		}
 	}
 
-	_, _, err := GenerateRawEntries(packets, 100)
+	_, _, err := GenerateRawEntries(packets, 100, 16)
 	if err == nil {
 		t.Fatal("expected error for too many raw packets, got nil")
 	}
@@ -598,7 +598,7 @@ func TestGenerateVariableEntries_WrongType(t *testing.T) {
 		TemplateType: guest.GeneratorTemplateTypeRaw,
 	}
 
-	bases, entries, err := GenerateVariableEntries(response, 50)
+	bases, entries, err := GenerateVariableEntries(response, 50, 16)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
