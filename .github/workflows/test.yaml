@@ -46,3 +46,7 @@ jobs:
           go-version-file: ./go.mod
       - name: go test
         run: go test -exec "sudo -E" -race -covermode=atomic -coverprofile=coverage.out -v ./...
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
