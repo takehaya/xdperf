@@ -54,41 +54,6 @@ static __always_inline __u16 calc_ipv4_header_csum(struct xdp_md *ctx, __u16 ip_
     return bpf_htons(csum_fold(sum));
 }
 
-// Calculate ICMPv4 checksum (simple checksum without pseudo-header)
-// ICMP uses the standard internet checksum (RFC 1071) over the entire ICMP message
-static __always_inline __u16 calc_icmpv4_csum(struct xdp_md *ctx, __u16 icmp_offset, __u16 icmp_len)
-{
-    // Clear checksum field first
-    __be16 zero_csum = 0;
-    if (bpf_xdp_store_bytes(ctx, icmp_offset + ICMPV4_CSUM_OFFSET, &zero_csum, 2) < 0) {
-        DEBUG_PRINT("calc_icmpv4_csum: failed to clear checksum at offset %u\n", icmp_offset + ICMPV4_CSUM_OFFSET);
-        return 0;
-    }
-
-    __u32 sum = 0;
-
-    // Sum ICMP header + data in 16-bit chunks
-    __u32 full_pairs = icmp_len / 2;
-    for (__u32 i = 0; i < full_pairs && i < 512; i++) { // Limit iterations for BPF verifier
-        __be16 val;
-        if (bpf_xdp_load_bytes(ctx, icmp_offset + i * 2, &val, 2) < 0) {
-            DEBUG_PRINT("calc_icmpv4_csum: failed to load bytes at offset %u\n", icmp_offset + i * 2);
-            break;
-        }
-        sum += bpf_ntohs(val);
-    }
-
-    // Handle odd byte
-    if (icmp_len & 1) {
-        __u8 odd_byte;
-        if (bpf_xdp_load_bytes(ctx, icmp_offset + icmp_len - 1, &odd_byte, 1) == 0) {
-            sum += odd_byte << 8;
-        }
-    }
-
-    return bpf_htons(csum_fold(sum));
-}
-
 // Safe transport checksum callback context using bpf_xdp_load_bytes
 struct csum_safe_ctx {
     struct xdp_md *ctx;
@@ -108,6 +73,40 @@ static long csum_safe_callback(__u32 idx, void *vctx)
 
     c->sum += bpf_ntohs(val);
     return 0;
+}
+
+// Calculate ICMPv4 checksum (simple checksum without pseudo-header)
+// ICMP uses the standard internet checksum (RFC 1071) over the entire ICMP message
+static __always_inline __u16 calc_icmpv4_csum(struct xdp_md *ctx, __u16 icmp_offset, __u16 icmp_len)
+{
+    // Clear checksum field first
+    __be16 zero_csum = 0;
+    if (bpf_xdp_store_bytes(ctx, icmp_offset + ICMPV4_CSUM_OFFSET, &zero_csum, 2) < 0) {
+        DEBUG_PRINT("calc_icmpv4_csum: failed to clear checksum at offset %u\n", icmp_offset + ICMPV4_CSUM_OFFSET);
+        return 0;
+    }
+
+    // Sum ICMP header + data using bpf_loop with safe callback
+    struct csum_safe_ctx sctx = {
+        .ctx = ctx,
+        .offset = icmp_offset,
+        .sum = 0,
+    };
+
+    __u32 full_pairs = icmp_len / 2;
+    bpf_loop(full_pairs, csum_safe_callback, &sctx, 0);
+
+    __u32 sum = sctx.sum;
+
+    // Handle odd byte
+    if (icmp_len & 1) {
+        __u8 odd_byte;
+        if (bpf_xdp_load_bytes(ctx, icmp_offset + icmp_len - 1, &odd_byte, 1) == 0) {
+            sum += odd_byte << 8;
+        }
+    }
+
+    return bpf_htons(csum_fold(sum));
 }
 
 // Calculate transport layer checksum (UDP/TCP) over IPv4
