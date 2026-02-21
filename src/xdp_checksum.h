@@ -19,6 +19,7 @@
 #define UDP_CSUM_OFFSET 6
 #define TCP_CSUM_OFFSET 16
 #define ICMPV6_CSUM_OFFSET 2
+#define ICMPV4_CSUM_OFFSET 2 // ICMP header: type(1) + code(1) + checksum(2)
 
 // Fold 32-bit checksum to 16-bit
 static __always_inline __u16 csum_fold(__u32 csum)
@@ -48,6 +49,41 @@ static __always_inline __u16 calc_ipv4_header_csum(struct xdp_md *ctx, __u16 ip_
     for (int i = 0; i < 10; i++) {
         if (i != 5) // Skip checksum field
             sum += bpf_ntohs(ptr[i]);
+    }
+
+    return bpf_htons(csum_fold(sum));
+}
+
+// Calculate ICMPv4 checksum (simple checksum without pseudo-header)
+// ICMP uses the standard internet checksum (RFC 1071) over the entire ICMP message
+static __always_inline __u16 calc_icmpv4_csum(struct xdp_md *ctx, __u16 icmp_offset, __u16 icmp_len)
+{
+    // Clear checksum field first
+    __be16 zero_csum = 0;
+    if (bpf_xdp_store_bytes(ctx, icmp_offset + ICMPV4_CSUM_OFFSET, &zero_csum, 2) < 0) {
+        DEBUG_PRINT("calc_icmpv4_csum: failed to clear checksum at offset %u\n", icmp_offset + ICMPV4_CSUM_OFFSET);
+        return 0;
+    }
+
+    __u32 sum = 0;
+
+    // Sum ICMP header + data in 16-bit chunks
+    __u32 full_pairs = icmp_len / 2;
+    for (__u32 i = 0; i < full_pairs && i < 512; i++) { // Limit iterations for BPF verifier
+        __be16 val;
+        if (bpf_xdp_load_bytes(ctx, icmp_offset + i * 2, &val, 2) < 0) {
+            DEBUG_PRINT("calc_icmpv4_csum: failed to load bytes at offset %u\n", icmp_offset + i * 2);
+            break;
+        }
+        sum += bpf_ntohs(val);
+    }
+
+    // Handle odd byte
+    if (icmp_len & 1) {
+        __u8 odd_byte;
+        if (bpf_xdp_load_bytes(ctx, icmp_offset + icmp_len - 1, &odd_byte, 1) == 0) {
+            sum += odd_byte << 8;
+        }
     }
 
     return bpf_htons(csum_fold(sum));

@@ -170,7 +170,13 @@ static __noinline bool recalc_checksum(struct xdp_md *ctx, struct checksum_meta 
         if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &iph, sizeof(iph)) < 0)
             return false;
         transport_len = bpf_ntohs(iph.tot_len) - (iph.ihl * 4);
-        csum = calc_transport_csum_ipv4(ctx, meta->ip_header_offset, meta->header_start, transport_len, iph.protocol);
+
+        // ICMP uses simple checksum (no pseudo-header), others use pseudo-header
+        if (iph.protocol == IPPROTO_ICMP) {
+            csum = calc_icmpv4_csum(ctx, meta->header_start, transport_len);
+        } else {
+            csum = calc_transport_csum_ipv4(ctx, meta->ip_header_offset, meta->header_start, transport_len, iph.protocol);
+        }
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return false;
     } else if (ip_version == 6) {
@@ -322,11 +328,20 @@ static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_val
             __u16 ip_end = ip_start + sizeof(struct iphdr);
             return diff_start < ip_end && diff_end > ip_start;
         }
-        // IPv4 transport: Pseudo-header includes src IP at ip_offset+12, dst IP at ip_offset+16
-        __u16 src_ip = meta->ip_header_offset + offsetof(struct iphdr, saddr);
-        __u16 dst_ip_end = meta->ip_header_offset + sizeof(struct iphdr);
-        if (diff_start < dst_ip_end && diff_end > src_ip)
-            return true;
+
+        // Get protocol to check if ICMP
+        __u8 proto;
+        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset + 9, &proto, 1) < 0)
+            return true; // Conservative: assume affects
+
+        // ICMP doesn't use pseudo-header, so IP address changes don't affect ICMP checksum
+        if (proto != IPPROTO_ICMP) {
+            // IPv4 transport (TCP/UDP): Pseudo-header includes src IP at ip_offset+12, dst IP at ip_offset+16
+            __u16 src_ip = meta->ip_header_offset + offsetof(struct iphdr, saddr);
+            __u16 dst_ip_end = meta->ip_header_offset + sizeof(struct iphdr);
+            if (diff_start < dst_ip_end && diff_end > src_ip)
+                return true;
+        }
     } else if (ip_version == 6) {
         // IPv6: Pseudo-header includes src/dst addresses at ip_offset+8 to ip_offset+40
         __u16 src_ip = meta->ip_header_offset + offsetof(struct ipv6hdr, saddr);
