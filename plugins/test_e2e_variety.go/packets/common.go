@@ -1,0 +1,31 @@
+package packets
+
+import "github.com/takehaya/xdperf/pkg/guest"
+
+// PacketInfo contains the built packet and offset information
+type PacketInfo struct {
+	Data    []byte
+	Offsets map[string]uint64 // Named offsets for variable fields
+}
+
+// VariantConfig holds common parameters for building packet variants
+type VariantConfig struct {
+	SrcMAC   [6]byte
+	DstMAC   [6]byte
+	SrcIP    string
+	DstIP    string
+	SrcIPv6  string
+	DstIPv6  string
+	SrcPort  uint16
+	DstPort  uint16
+	Payload  []byte
+}
+
+// VariantResult contains the built variant or an error
+type VariantResult struct {
+	Variant *guest.PacketVariant
+	Err     error
+}
+
+// VariantBuilder is a function that builds a packet variant
+type VariantBuilder func(cfg VariantConfig) VariantResult
