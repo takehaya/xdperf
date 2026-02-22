@@ -137,6 +137,70 @@ static __noinline bool apply_diff(struct xdp_md *ctx, struct diff_value *dv)
     return bpf_xdp_store_bytes(ctx, dv->offset, dv->new_value, dv->size) >= 0;
 }
 
+// Helper: Traverse IPv6 extension headers to find transport layer
+// Returns true if transport layer found, outputs protocol and L4 offset
+// If final_dst is non-NULL and SRH is found, copies the final destination (segment[LastEntry]) to it
+// Supports: Hop-by-Hop (0), Routing (43), Fragment (44), Destination Options (60)
+// Also recognizes IPPROTO_ETHERNET (143) as a terminal protocol for L2VPN over SRv6
+static __always_inline bool ipv6_find_transport(struct xdp_md *ctx, __u16 l3_offset, __u8 *out_proto, __u16 *out_l4_offset,
+                                                __u8 *final_dst)
+{
+    __u8 proto;
+    if (bpf_xdp_load_bytes(ctx, l3_offset + 6, &proto, 1) < 0)
+        return false;
+
+    __u16 l4_offset = l3_offset + sizeof(struct ipv6hdr); // 40 bytes
+
+#pragma unroll
+    for (int i = 0; i < 4; i++) { // Max 4 extension headers
+        if (proto == IPPROTO_UDP || proto == IPPROTO_TCP || proto == IPPROTO_ICMPV6 || proto == IPPROTO_ETHERNET ||
+            proto == IPPROTO_IPIP) {
+            *out_proto = proto;
+            *out_l4_offset = l4_offset;
+            return true;
+        }
+
+        if (proto == IPPROTO_HOPOPTS || proto == IPPROTO_DSTOPTS) {
+            // Extension header: byte 0 = next header, byte 1 = length in 8-octet units (excluding first 8)
+            __u8 ext_hdr[2];
+            if (bpf_xdp_load_bytes(ctx, l4_offset, ext_hdr, 2) < 0)
+                return false;
+            proto = ext_hdr[0];
+            l4_offset += (ext_hdr[1] + 1) * 8;
+        } else if (proto == IPPROTO_ROUTING) {
+            // Routing header (SRH): extract final destination for pseudo-header
+            // SRH structure: next_hdr(1) + hdr_ext_len(1) + routing_type(1) + segments_left(1) + ...
+            // Per RFC 8200, when Segments Left > 0, use final destination from SRH
+            // When Segments Left = 0, use IPv6 Dst (packet has reached final destination)
+            __u8 srh_hdr[4]; // next_hdr, hdr_ext_len, routing_type, segments_left
+            if (bpf_xdp_load_bytes(ctx, l4_offset, srh_hdr, 4) < 0)
+                return false;
+
+            __u8 segments_left = srh_hdr[3];
+
+            // Only use SRH final destination if Segments Left > 0
+            if (final_dst && segments_left > 0) {
+                // Read segment[LastEntry] (first 16 bytes of segment list at SRH + 8)
+                if (bpf_xdp_load_bytes(ctx, l4_offset + 8, final_dst, 16) < 0)
+                    return false;
+            }
+
+            proto = srh_hdr[0];
+            l4_offset += (srh_hdr[1] + 1) * 8;
+        } else if (proto == IPPROTO_FRAGMENT) {
+            // Fragment header is fixed 8 bytes
+            __u8 next_hdr;
+            if (bpf_xdp_load_bytes(ctx, l4_offset, &next_hdr, 1) < 0)
+                return false;
+            proto = next_hdr;
+            l4_offset += 8;
+        } else {
+            return false; // Unknown extension header or no transport found
+        }
+    }
+    return false; // Too many extension headers
+}
+
 // Recalculate checksum from scratch using bpf_xdp_load_bytes/bpf_xdp_store_bytes
 // Used when packet length changes (incremental update not possible)
 // This is O(packet_length) - only use when necessary
@@ -182,13 +246,25 @@ static __noinline bool recalc_checksum(struct xdp_md *ctx, struct checksum_meta 
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return false;
     } else if (ip_version == 6) {
-        // IPv6 transport checksum
-        // TODO: Extension headers (Hop-by-Hop, Routing, Fragment, etc.) are not supported.
-        struct ipv6hdr ip6h;
-        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &ip6h, sizeof(ip6h)) < 0)
-            return false;
-        transport_len = bpf_ntohs(ip6h.payload_len);
-        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, meta->header_start, transport_len, ip6h.nexthdr);
+        // IPv6 transport checksum (supports extension headers like SRH)
+        __u8 proto;
+        __u16 l4_offset;
+        __u8 final_dst[16] = {0}; // Final destination for SRv6 pseudo-header (only set if SL > 0)
+        if (!ipv6_find_transport(ctx, meta->ip_header_offset, &proto, &l4_offset, final_dst))
+            return false; // No transport layer found
+
+        // Use computed l4_offset for both length calculation and data reading
+        transport_len = pkt_len - l4_offset;
+
+        // Check if final_dst was set (SRv6 with SL > 0) - if all zeros, use NULL
+        __u8 *final_dst_ptr = NULL;
+        for (int i = 0; i < 16; i++) {
+            if (final_dst[i] != 0) {
+                final_dst_ptr = final_dst;
+                break;
+            }
+        }
+        csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, l4_offset, transport_len, proto, final_dst_ptr);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return false;
     } else {
@@ -230,7 +306,40 @@ static __noinline bool update_packet_lengths(struct xdp_md *ctx, __u16 target_le
         }
     }
 
-    // Validate l3_offset after VLAN parsing
+    // Handle MPLS - skip labels until S=1 (bottom of stack)
+    // MPLS header: Label(20) | Exp(3) | S(1) | TTL(8) = 4 bytes
+    // S bit is at byte offset 2, bit 0 (0x01)
+    if (eth_proto == bpf_htons(ETH_P_MPLS_UC) || eth_proto == bpf_htons(ETH_P_MPLS_MC)) {
+#pragma unroll
+        for (int i = 0; i < 8; i++) { // Max 8 MPLS labels
+            __u8 mpls_byte2;
+            if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &mpls_byte2, 1) < 0)
+                return false;
+            l3_offset += 4;        // Skip this MPLS label
+            if (mpls_byte2 & 0x01) // S bit set = bottom of stack
+                break;
+        }
+        // After MPLS, detect inner protocol from first nibble (IPv4=4, IPv6=6)
+        __u8 version_byte;
+        if (bpf_xdp_load_bytes(ctx, l3_offset, &version_byte, 1) < 0)
+            return false;
+        __u8 ip_version = (version_byte >> 4) & 0x0F;
+        if (ip_version == 4)
+            eth_proto = bpf_htons(ETH_P_IP);
+        else if (ip_version == 6)
+            eth_proto = bpf_htons(ETH_P_IPV6);
+        else {
+            // L2VPN: inner Ethernet frame after MPLS labels
+            // Skip inner Ethernet header (14 bytes) and read inner EtherType
+            __be16 inner_eth_proto;
+            if (bpf_xdp_load_bytes(ctx, l3_offset + 12, &inner_eth_proto, 2) < 0)
+                return false;
+            l3_offset += 14;
+            eth_proto = inner_eth_proto;
+        }
+    }
+
+    // Validate l3_offset after VLAN/MPLS parsing
     if (l3_offset >= target_len)
         return false;
 
@@ -272,12 +381,11 @@ static __noinline bool update_packet_lengths(struct xdp_md *ctx, __u16 target_le
         if (bpf_xdp_store_bytes(ctx, l3_offset + 4, &payload_len_be, 2) < 0)
             return false;
 
-        // Get next header (protocol) from IPv6 header (offset 6)
+        // Find transport layer (traversing extension headers like SRH)
         __u8 proto;
-        if (bpf_xdp_load_bytes(ctx, l3_offset + 6, &proto, 1) < 0)
-            return false;
-
-        __u16 l4_offset = l3_offset + sizeof(struct ipv6hdr);
+        __u16 l4_offset;
+        if (!ipv6_find_transport(ctx, l3_offset, &proto, &l4_offset, NULL))
+            return true; // No transport layer found, but payload_len is updated
 
         if (proto == IPPROTO_UDP) {
             // UDP: update len field
@@ -287,6 +395,48 @@ static __noinline bool update_packet_lengths(struct xdp_md *ctx, __u16 target_le
             __be16 udp_len_be = bpf_htons(udp_len);
             if (bpf_xdp_store_bytes(ctx, l4_offset + 4, &udp_len_be, 2) < 0)
                 return false;
+        } else if (proto == IPPROTO_ETHERNET) {
+            // L2VPN over SRv6: inner Ethernet frame after SRH
+            // Skip inner Ethernet header (14 bytes) and read inner EtherType
+            __be16 inner_eth_proto;
+            if (bpf_xdp_load_bytes(ctx, l4_offset + 12, &inner_eth_proto, 2) < 0)
+                return true;
+            __u16 inner_l3 = l4_offset + 14;
+
+            if (inner_eth_proto == bpf_htons(ETH_P_IP) && target_len > inner_l3) {
+                // Update inner IPv4 tot_len
+                __u16 inner_ip_len = target_len - inner_l3;
+                __be16 inner_ip_len_be = bpf_htons(inner_ip_len);
+                if (bpf_xdp_store_bytes(ctx, inner_l3 + 2, &inner_ip_len_be, 2) < 0)
+                    return false;
+                // Update inner UDP len (assume IHL=5, offset 9 for protocol)
+                __u8 inner_proto;
+                if (bpf_xdp_load_bytes(ctx, inner_l3 + 9, &inner_proto, 1) < 0)
+                    return false;
+                if (inner_proto == IPPROTO_UDP && target_len > inner_l3 + 20) {
+                    __u16 inner_udp_len = target_len - inner_l3 - 20;
+                    __be16 inner_udp_len_be = bpf_htons(inner_udp_len);
+                    if (bpf_xdp_store_bytes(ctx, inner_l3 + 24, &inner_udp_len_be, 2) < 0)
+                        return false;
+                }
+            }
+        } else if (proto == IPPROTO_IPIP) {
+            // L3VPN over SRv6: inner IPv4 after SRH
+            if (target_len > l4_offset) {
+                __u16 inner_ip_len = target_len - l4_offset;
+                __be16 inner_ip_len_be = bpf_htons(inner_ip_len);
+                if (bpf_xdp_store_bytes(ctx, l4_offset + 2, &inner_ip_len_be, 2) < 0)
+                    return false;
+                __u8 inner_proto;
+                if (bpf_xdp_load_bytes(ctx, l4_offset + 9, &inner_proto, 1) < 0)
+                    return false;
+                if (inner_proto == IPPROTO_UDP && target_len > l4_offset + 20) {
+                    __u16 inner_udp_len = target_len - l4_offset - 20;
+                    __be16 inner_udp_len_be = bpf_htons(inner_udp_len);
+                    if (bpf_xdp_store_bytes(ctx, l4_offset + 24, &inner_udp_len_be, 2) < 0)
+                        return false;
+                }
+            }
         }
     }
 
