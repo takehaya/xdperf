@@ -1,6 +1,6 @@
 module github.com/takehaya/xdperf
 
-go 1.26.0
+go 1.25.5
 
 require (
 	github.com/cilium/ebpf v0.19.0
