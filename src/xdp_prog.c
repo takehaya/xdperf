@@ -178,19 +178,19 @@ static __always_inline bool ipv6_find_transport(struct xdp_md *ctx, __u16 l3_off
             //                + last_entry(1) + flags(1) + tag(2) + segment_list[...]
             // Per RFC 8200, when Segments Left > 0, use final destination from SRH
             // When Segments Left = 0, use IPv6 Dst (packet has reached final destination)
-            __u8 srh_hdr[5]; // next_hdr, hdr_ext_len, routing_type, segments_left, last_entry
-            if (bpf_xdp_load_bytes(ctx, l4_offset, srh_hdr, 5) < 0)
+            __u8 srh_hdr[4]; // next_hdr, hdr_ext_len, routing_type, segments_left
+            if (bpf_xdp_load_bytes(ctx, l4_offset, srh_hdr, 4) < 0)
                 return false;
 
             __u8 segments_left = srh_hdr[3];
-            __u8 last_entry = srh_hdr[4];
 
             // Only use SRH final destination if Segments Left > 0
             if (final_dst && has_final_dst && segments_left > 0) {
-                // segment[LastEntry] is at SRH + 8 + LastEntry * 16
-                // Segments are stored in reverse order: segment[0] is last hop
-                __u16 seg_offset = l4_offset + 8 + (__u16)last_entry * 16;
-                if (bpf_xdp_load_bytes(ctx, seg_offset, final_dst, 16) < 0)
+                // Per RFC 8754, segment list is in reverse order:
+                //   segment[0] = final destination (last hop)
+                //   segment[LastEntry] = first hop (closest to source)
+                // Pseudo-header needs the final destination = segment[0] at SRH + 8
+                if (bpf_xdp_load_bytes(ctx, l4_offset + 8, final_dst, 16) < 0)
                     return false;
                 *has_final_dst = true;
             }
