@@ -137,13 +137,18 @@ static __noinline bool apply_diff(struct xdp_md *ctx, struct diff_value *dv)
     return bpf_xdp_store_bytes(ctx, dv->offset, dv->new_value, dv->size) >= 0;
 }
 
+// Ensure IPPROTO_ETHERNET is defined (not present in older kernel headers)
+#ifndef IPPROTO_ETHERNET
+#define IPPROTO_ETHERNET 143
+#endif
+
 // Helper: Traverse IPv6 extension headers to find transport layer
 // Returns true if transport layer found, outputs protocol and L4 offset
 // If final_dst is non-NULL and SRH is found, copies the final destination (segment[LastEntry]) to it
 // Supports: Hop-by-Hop (0), Routing (43), Fragment (44), Destination Options (60)
-// Also recognizes IPPROTO_ETHERNET (143) as a terminal protocol for L2VPN over SRv6
+// Also recognizes IPPROTO_ETHERNET (143), IPPROTO_IPIP (4), IPPROTO_IPV6 (41) as terminal protocols
 static __always_inline bool ipv6_find_transport(struct xdp_md *ctx, __u16 l3_offset, __u8 *out_proto, __u16 *out_l4_offset,
-                                                __u8 *final_dst)
+                                                __u8 *final_dst, bool *has_final_dst)
 {
     __u8 proto;
     if (bpf_xdp_load_bytes(ctx, l3_offset + 6, &proto, 1) < 0)
@@ -154,7 +159,7 @@ static __always_inline bool ipv6_find_transport(struct xdp_md *ctx, __u16 l3_off
 #pragma unroll
     for (int i = 0; i < 4; i++) { // Max 4 extension headers
         if (proto == IPPROTO_UDP || proto == IPPROTO_TCP || proto == IPPROTO_ICMPV6 || proto == IPPROTO_ETHERNET ||
-            proto == IPPROTO_IPIP) {
+            proto == IPPROTO_IPIP || proto == IPPROTO_IPV6) {
             *out_proto = proto;
             *out_l4_offset = l4_offset;
             return true;
@@ -169,20 +174,25 @@ static __always_inline bool ipv6_find_transport(struct xdp_md *ctx, __u16 l3_off
             l4_offset += (ext_hdr[1] + 1) * 8;
         } else if (proto == IPPROTO_ROUTING) {
             // Routing header (SRH): extract final destination for pseudo-header
-            // SRH structure: next_hdr(1) + hdr_ext_len(1) + routing_type(1) + segments_left(1) + ...
+            // SRH structure: next_hdr(1) + hdr_ext_len(1) + routing_type(1) + segments_left(1)
+            //                + last_entry(1) + flags(1) + tag(2) + segment_list[...]
             // Per RFC 8200, when Segments Left > 0, use final destination from SRH
             // When Segments Left = 0, use IPv6 Dst (packet has reached final destination)
-            __u8 srh_hdr[4]; // next_hdr, hdr_ext_len, routing_type, segments_left
-            if (bpf_xdp_load_bytes(ctx, l4_offset, srh_hdr, 4) < 0)
+            __u8 srh_hdr[5]; // next_hdr, hdr_ext_len, routing_type, segments_left, last_entry
+            if (bpf_xdp_load_bytes(ctx, l4_offset, srh_hdr, 5) < 0)
                 return false;
 
             __u8 segments_left = srh_hdr[3];
+            __u8 last_entry = srh_hdr[4];
 
             // Only use SRH final destination if Segments Left > 0
-            if (final_dst && segments_left > 0) {
-                // Read segment[LastEntry] (first 16 bytes of segment list at SRH + 8)
-                if (bpf_xdp_load_bytes(ctx, l4_offset + 8, final_dst, 16) < 0)
+            if (final_dst && has_final_dst && segments_left > 0) {
+                // segment[LastEntry] is at SRH + 8 + LastEntry * 16
+                // Segments are stored in reverse order: segment[0] is last hop
+                __u16 seg_offset = l4_offset + 8 + (__u16)last_entry * 16;
+                if (bpf_xdp_load_bytes(ctx, seg_offset, final_dst, 16) < 0)
                     return false;
+                *has_final_dst = true;
             }
 
             proto = srh_hdr[0];
@@ -249,21 +259,15 @@ static __noinline bool recalc_checksum(struct xdp_md *ctx, struct checksum_meta 
         // IPv6 transport checksum (supports extension headers like SRH)
         __u8 proto;
         __u16 l4_offset;
-        __u8 final_dst[16] = {0}; // Final destination for SRv6 pseudo-header (only set if SL > 0)
-        if (!ipv6_find_transport(ctx, meta->ip_header_offset, &proto, &l4_offset, final_dst))
+        __u8 final_dst[16] = {0};
+        bool has_final_dst = false;
+        if (!ipv6_find_transport(ctx, meta->ip_header_offset, &proto, &l4_offset, final_dst, &has_final_dst))
             return false; // No transport layer found
 
         // Use computed l4_offset for both length calculation and data reading
         transport_len = pkt_len - l4_offset;
 
-        // Check if final_dst was set (SRv6 with SL > 0) - if all zeros, use NULL
-        __u8 *final_dst_ptr = NULL;
-        for (int i = 0; i < 16; i++) {
-            if (final_dst[i] != 0) {
-                final_dst_ptr = final_dst;
-                break;
-            }
-        }
+        __u8 *final_dst_ptr = has_final_dst ? final_dst : NULL;
         csum = calc_transport_csum_ipv6(ctx, meta->ip_header_offset, l4_offset, transport_len, proto, final_dst_ptr);
         if (bpf_xdp_store_bytes(ctx, meta->csum_offset, &csum, 2) < 0)
             return false;
@@ -330,6 +334,8 @@ static __noinline bool update_packet_lengths(struct xdp_md *ctx, __u16 target_le
             eth_proto = bpf_htons(ETH_P_IPV6);
         else {
             // L2VPN: inner Ethernet frame after MPLS labels
+            // TODO: PW Control Word (RFC 4385) not supported - if present (first nibble 0),
+            //       4 bytes should be skipped before the inner Ethernet header
             // Skip inner Ethernet header (14 bytes) and read inner EtherType
             __be16 inner_eth_proto;
             if (bpf_xdp_load_bytes(ctx, l3_offset + 12, &inner_eth_proto, 2) < 0)
@@ -384,7 +390,7 @@ static __noinline bool update_packet_lengths(struct xdp_md *ctx, __u16 target_le
         // Find transport layer (traversing extension headers like SRH)
         __u8 proto;
         __u16 l4_offset;
-        if (!ipv6_find_transport(ctx, l3_offset, &proto, &l4_offset, NULL))
+        if (!ipv6_find_transport(ctx, l3_offset, &proto, &l4_offset, NULL, NULL))
             return true; // No transport layer found, but payload_len is updated
 
         if (proto == IPPROTO_UDP) {
@@ -409,16 +415,27 @@ static __noinline bool update_packet_lengths(struct xdp_md *ctx, __u16 target_le
                 __be16 inner_ip_len_be = bpf_htons(inner_ip_len);
                 if (bpf_xdp_store_bytes(ctx, inner_l3 + 2, &inner_ip_len_be, 2) < 0)
                     return false;
-                // Update inner UDP len (assume IHL=5, offset 9 for protocol)
+                // Read IHL and protocol from inner IPv4 header
+                __u8 inner_ver_ihl;
+                if (bpf_xdp_load_bytes(ctx, inner_l3, &inner_ver_ihl, 1) < 0)
+                    return false;
+                __u16 inner_ihl = (inner_ver_ihl & 0x0F) * 4;
                 __u8 inner_proto;
                 if (bpf_xdp_load_bytes(ctx, inner_l3 + 9, &inner_proto, 1) < 0)
                     return false;
-                if (inner_proto == IPPROTO_UDP && target_len > inner_l3 + 20) {
-                    __u16 inner_udp_len = target_len - inner_l3 - 20;
+                __u16 inner_l4 = inner_l3 + inner_ihl;
+                if (inner_proto == IPPROTO_UDP && target_len > inner_l4) {
+                    __u16 inner_udp_len = target_len - inner_l4;
                     __be16 inner_udp_len_be = bpf_htons(inner_udp_len);
-                    if (bpf_xdp_store_bytes(ctx, inner_l3 + 24, &inner_udp_len_be, 2) < 0)
+                    if (bpf_xdp_store_bytes(ctx, inner_l4 + 4, &inner_udp_len_be, 2) < 0)
                         return false;
                 }
+            } else if (inner_eth_proto == bpf_htons(ETH_P_IPV6) && target_len > inner_l3 + sizeof(struct ipv6hdr)) {
+                // Update inner IPv6 payload_len
+                __u16 inner_payload_len = target_len - inner_l3 - sizeof(struct ipv6hdr);
+                __be16 inner_payload_len_be = bpf_htons(inner_payload_len);
+                if (bpf_xdp_store_bytes(ctx, inner_l3 + 4, &inner_payload_len_be, 2) < 0)
+                    return false;
             }
         } else if (proto == IPPROTO_IPIP) {
             // L3VPN over SRv6: inner IPv4 after SRH
@@ -427,15 +444,29 @@ static __noinline bool update_packet_lengths(struct xdp_md *ctx, __u16 target_le
                 __be16 inner_ip_len_be = bpf_htons(inner_ip_len);
                 if (bpf_xdp_store_bytes(ctx, l4_offset + 2, &inner_ip_len_be, 2) < 0)
                     return false;
+                // Read IHL and protocol from inner IPv4 header
+                __u8 inner_ver_ihl;
+                if (bpf_xdp_load_bytes(ctx, l4_offset, &inner_ver_ihl, 1) < 0)
+                    return false;
+                __u16 inner_ihl = (inner_ver_ihl & 0x0F) * 4;
                 __u8 inner_proto;
                 if (bpf_xdp_load_bytes(ctx, l4_offset + 9, &inner_proto, 1) < 0)
                     return false;
-                if (inner_proto == IPPROTO_UDP && target_len > l4_offset + 20) {
-                    __u16 inner_udp_len = target_len - l4_offset - 20;
+                __u16 inner_l4 = l4_offset + inner_ihl;
+                if (inner_proto == IPPROTO_UDP && target_len > inner_l4) {
+                    __u16 inner_udp_len = target_len - inner_l4;
                     __be16 inner_udp_len_be = bpf_htons(inner_udp_len);
-                    if (bpf_xdp_store_bytes(ctx, l4_offset + 24, &inner_udp_len_be, 2) < 0)
+                    if (bpf_xdp_store_bytes(ctx, inner_l4 + 4, &inner_udp_len_be, 2) < 0)
                         return false;
                 }
+            }
+        } else if (proto == IPPROTO_IPV6) {
+            // L3VPN over SRv6: inner IPv6 after SRH
+            if (target_len > l4_offset + sizeof(struct ipv6hdr)) {
+                __u16 inner_payload_len = target_len - l4_offset - sizeof(struct ipv6hdr);
+                __be16 inner_payload_len_be = bpf_htons(inner_payload_len);
+                if (bpf_xdp_store_bytes(ctx, l4_offset + 4, &inner_payload_len_be, 2) < 0)
+                    return false;
             }
         }
     }
