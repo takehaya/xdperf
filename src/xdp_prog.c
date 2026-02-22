@@ -264,7 +264,9 @@ static __noinline bool recalc_checksum(struct xdp_md *ctx, struct checksum_meta 
         if (!ipv6_find_transport(ctx, meta->ip_header_offset, &proto, &l4_offset, final_dst, &has_final_dst))
             return false; // No transport layer found
 
-        // Use computed l4_offset for both length calculation and data reading
+        // Bounds check to prevent underflow in transport length calculation
+        if (l4_offset >= pkt_len)
+            return false;
         transport_len = pkt_len - l4_offset;
 
         __u8 *final_dst_ptr = has_final_dst ? final_dst : NULL;
