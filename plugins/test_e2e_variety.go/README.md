@@ -24,14 +24,14 @@ A plugin that generates various protocol packets for end-to-end testing.
 
 ## Usage
 
-Send all protocols
+Send all protocols:
 
 ```bash
 sudo xdperf run --device eth0 --plugin test_e2e_variety.go --pps 100 --duration 5s \
   --cfg '{"dst_ip":"192.168.1.2","src_ip":"192.168.1.1","dst_port":9999}'
 ```
 
-Send specific protocols only
+Send specific protocols only:
 
 ```bash
 sudo xdperf run --device eth0 --plugin test_e2e_variety.go --pps 10 --duration 2s \

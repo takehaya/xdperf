@@ -15,12 +15,12 @@ func BuildARPVariant(cfg VariantConfig) VariantResult {
 		return VariantResult{Err: err}
 	}
 
-	// ARP has no checksum, only vary sender IP
+	// ARP has no checksum, only vary sender IP (unicast range: 10.0.0.1 - 10.255.255.254)
 	return VariantResult{
 		Variant: &guest.PacketVariant{
 			Base: guest.BasePacket{Data: pkt.Data, Length: uint16(len(pkt.Data))},
 			Params: []guest.VariableParams{
-				{ByteStart: pkt.Offsets["arp.sender_ip"], ByteSize: 4, ByteRange: guest.TemplateRange{Start: 0, End: 0xFFFFFFFF}, PatternType: guest.ValuePatternTypeSequential},
+				{ByteStart: pkt.Offsets["arp.sender_ip"], ByteSize: 4, ByteRange: guest.TemplateRange{Start: 0x0A000001, End: 0x0AFFFFFE}, PatternType: guest.ValuePatternTypeSequential},
 			},
 			Checksums: nil, // ARP has no checksum
 			Weight:    1,
@@ -31,7 +31,6 @@ func BuildARPVariant(cfg VariantConfig) VariantResult {
 func BuildARPPacket(srcMAC [6]byte, senderIP, targetIP string, operation uint16) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 
-	// ARP broadcast
 	dstMAC := [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 
 	eth := &layers.Ethernet{

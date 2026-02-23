@@ -10,11 +10,8 @@ import (
 )
 
 func BuildTCPVariant(cfg VariantConfig) VariantResult {
-	payload := cfg.Payload
-	if len(payload) > 100 {
-		payload = payload[:100]
-	}
-	pkt, err := BuildTCPPacket(cfg.SrcMAC, cfg.DstMAC, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, 0x02, payload)
+	// SYN packet with no payload (standard TCP handshake)
+	pkt, err := BuildTCPPacket(cfg.SrcMAC, cfg.DstMAC, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, 0x02, nil)
 	if err != nil {
 		return VariantResult{Err: err}
 	}
@@ -24,9 +21,7 @@ func BuildTCPVariant(cfg VariantConfig) VariantResult {
 			Base: guest.BasePacket{Data: pkt.Data, Length: uint16(len(pkt.Data))},
 			Params: []guest.VariableParams{
 				{ByteStart: pkt.Offsets["tcp.src"], ByteSize: 2, ByteRange: guest.TemplateRange{Start: 1024, End: 65535}, PatternType: guest.ValuePatternTypeSequential},
-				{ByteStart: pkt.Offsets["tcp.flags"], ByteSize: 1, ByteRange: guest.TemplateRange{Start: 0, End: 63}, PatternType: guest.ValuePatternTypeSequential},
 				{ByteStart: pkt.Offsets["tcp.seq"], ByteSize: 4, ByteRange: guest.TemplateRange{Start: 1, End: 0xFFFFFFFF}, PatternType: guest.ValuePatternTypeSequential},
-				{ByteStart: guest.ByteStartPacketLength, ByteSize: 0, ByteRange: guest.TemplateRange{Start: 64, End: 256}, PatternType: guest.ValuePatternTypeSequential},
 			},
 			Checksums: []guest.ChecksumSpec{
 				{ChecksumOffset: 24, HeaderStart: 14, HeaderLen: 20, IPHeaderOffset: 14},
