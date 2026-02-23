@@ -33,9 +33,6 @@ func BuildARPPacket(srcMAC [6]byte, senderIP, targetIP string, operation uint16)
 
 	// ARP broadcast
 	dstMAC := [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-	if operation == layers.ARPReply {
-		// For reply, we'd normally set a specific MAC, but for testing use broadcast
-	}
 
 	eth := &layers.Ethernet{
 		SrcMAC:       net.HardwareAddr(srcMAC[:]),
