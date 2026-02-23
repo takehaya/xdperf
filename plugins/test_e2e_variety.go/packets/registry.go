@@ -10,8 +10,7 @@ ProtoICMPv4    = "icmpv4"
 	ProtoICMPv6    = "icmpv6"
 	ProtoTCP       = "tcp"
 	ProtoRaw       = "raw"
-	ProtoSRv6      = "srv6"
-	ProtoARP       = "arp"
+ProtoARP       = "arp"
 	ProtoEAPoL     = "eapol"
 	ProtoLLDP      = "lldp"
 	ProtoL2VPN     = "l2vpn"
@@ -30,8 +29,7 @@ ProtoICMPv4:    BuildICMPv4Variant,
 	ProtoICMPv6:    BuildICMPv6Variant,
 	ProtoTCP:       BuildTCPVariant,
 	ProtoRaw:       BuildRawVariant,
-	ProtoSRv6:      BuildSRv6Variant,
-	ProtoARP:       BuildARPVariant,
+ProtoARP:       BuildARPVariant,
 	ProtoEAPoL:     BuildEAPoLVariant,
 	ProtoLLDP:      BuildLLDPVariant,
 	ProtoL2VPN:     BuildL2VPNVariant,
@@ -51,8 +49,7 @@ ProtoICMPv4,
 		ProtoICMPv6,
 		ProtoTCP,
 		ProtoRaw,
-		ProtoSRv6,
-		ProtoARP,
+ProtoARP,
 		ProtoEAPoL,
 		ProtoLLDP,
 		ProtoL2VPN,

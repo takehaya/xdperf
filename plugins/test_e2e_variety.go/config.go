@@ -25,7 +25,7 @@ type GeneratorRequest struct {
 
 	// Protocol selection - list of protocols to include
 	// Empty or "all" means all protocols. Available protocols:
-	// ipv4_udp, ipv6_udp, vlan, qinq, icmpv4, icmpv6, tcp, raw, srv6,
+	// ipv4_udp, ipv6_udp, vlan, qinq, icmpv4, icmpv6, tcp, raw,
 	// arp, eapol, lldp, l2vpn, l3vpn, l2vpn_srv6, l3vpn_srv6
 	Protocols []string `json:"protocols"`
 
