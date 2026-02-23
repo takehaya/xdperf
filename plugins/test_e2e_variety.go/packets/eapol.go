@@ -10,9 +10,7 @@ import (
 )
 
 func BuildEAPoLVariant(cfg VariantConfig) VariantResult {
-	// EAPoL-Start is sent to the PAE group address (IEEE 802.1X)
-	paeGroupAddr := [6]byte{0x01, 0x80, 0xC2, 0x00, 0x00, 0x03}
-	pkt, err := BuildEAPoLPacket(cfg.SrcMAC, paeGroupAddr, layers.EAPOLTypeStart, nil)
+	pkt, err := BuildEAPoLPacket(cfg.SrcMAC, cfg.DstMAC, layers.EAPOLTypeStart, nil)
 	if err != nil {
 		return VariantResult{Err: err}
 	}

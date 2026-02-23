@@ -10,9 +10,7 @@ import (
 )
 
 func BuildLLDPVariant(cfg VariantConfig) VariantResult {
-	// LLDP destination is always the standard multicast address (IEEE 802.1AB)
-	lldpDstMAC := [6]byte{0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E}
-	pkt, err := BuildLLDPPacket(cfg.SrcMAC, lldpDstMAC, "chassis1", "port1", 120)
+	pkt, err := BuildLLDPPacket(cfg.SrcMAC, cfg.DstMAC, "chassis1", "port1", 120)
 	if err != nil {
 		return VariantResult{Err: err}
 	}
