@@ -153,8 +153,10 @@ static __always_inline __u16 calc_transport_csum_ipv4(struct xdp_md *ctx, __u16 
 }
 
 // Calculate transport layer checksum over IPv6
+// If final_dst is non-NULL, use it for pseudo-header instead of IPv6 header's daddr
+// (required for SRv6 per RFC 8200 - use final destination from SRH)
 static __always_inline __u16 calc_transport_csum_ipv6(struct xdp_md *ctx, __u16 ip6_offset, __u16 transport_offset,
-                                                      __u16 transport_len, __u8 protocol)
+                                                      __u16 transport_len, __u8 protocol, __u8 *final_dst)
 {
     struct ipv6hdr ip6h;
 
@@ -167,8 +169,9 @@ static __always_inline __u16 calc_transport_csum_ipv6(struct xdp_md *ctx, __u16 
     __u32 sum = 0;
 
     // Pseudo-header: source and destination IPv6 addresses
+    // Per RFC 8200, if Routing header exists, use final destination from it
     __u16 *src = (__u16 *)&ip6h.saddr;
-    __u16 *dst = (__u16 *)&ip6h.daddr;
+    __u16 *dst = final_dst ? (__u16 *)final_dst : (__u16 *)&ip6h.daddr;
 
     for (int i = 0; i < 8; i++) {
         sum += bpf_ntohs(src[i]);
