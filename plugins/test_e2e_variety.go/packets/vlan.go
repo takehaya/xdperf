@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildVLANVariant builds a VLAN tagged packet variant for testing
 func BuildVLANVariant(cfg VariantConfig) VariantResult {
 	pkt, err := BuildVLANTaggedPacket(cfg.SrcMAC, cfg.DstMAC, 100, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, cfg.Payload)
 	if err != nil {
@@ -33,7 +32,6 @@ func BuildVLANVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildQinQVariant builds a QinQ (double VLAN) packet variant for testing
 func BuildQinQVariant(cfg VariantConfig) VariantResult {
 	pkt, err := BuildQinQPacket(cfg.SrcMAC, cfg.DstMAC, 100, 200, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, cfg.Payload)
 	if err != nil {
@@ -58,7 +56,6 @@ func BuildQinQVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildVLANTaggedPacket creates a VLAN tagged (802.1Q) packet
 func BuildVLANTaggedPacket(srcMAC, dstMAC [6]byte, vlanID uint16, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 
@@ -110,7 +107,6 @@ func BuildVLANTaggedPacket(srcMAC, dstMAC [6]byte, vlanID uint16, srcIP, dstIP s
 	}, nil
 }
 
-// BuildQinQPacket creates a QinQ (double VLAN) packet
 func BuildQinQPacket(srcMAC, dstMAC [6]byte, outerVLAN, innerVLAN uint16, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 

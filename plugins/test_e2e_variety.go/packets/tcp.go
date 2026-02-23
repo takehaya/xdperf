@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildTCPVariant builds a TCP packet variant for testing
 func BuildTCPVariant(cfg VariantConfig) VariantResult {
 	payload := cfg.Payload
 	if len(payload) > 100 {
@@ -38,7 +37,6 @@ func BuildTCPVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildTCPPacket creates a TCP packet
 func BuildTCPPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, dstPort uint16, flags uint8, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 

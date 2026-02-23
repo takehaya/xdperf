@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildICMPv4Variant builds an ICMPv4 Echo Request packet variant for testing
 func BuildICMPv4Variant(cfg VariantConfig) VariantResult {
 	payload := cfg.Payload
 	if len(payload) > 56 {
@@ -39,7 +38,6 @@ func BuildICMPv4Variant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildICMPv6Variant builds an ICMPv6 Echo Request packet variant for testing
 func BuildICMPv6Variant(cfg VariantConfig) VariantResult {
 	payload := cfg.Payload
 	if len(payload) > 56 {
@@ -68,7 +66,6 @@ func BuildICMPv6Variant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildICMPv4Packet creates an ICMPv4 packet
 func BuildICMPv4Packet(srcMAC, dstMAC [6]byte, srcIP, dstIP string, icmpType, icmpCode uint8, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 
@@ -112,7 +109,6 @@ func BuildICMPv4Packet(srcMAC, dstMAC [6]byte, srcIP, dstIP string, icmpType, ic
 	}, nil
 }
 
-// BuildICMPv6Packet creates an ICMPv6 packet
 func BuildICMPv6Packet(srcMAC, dstMAC [6]byte, srcIP, dstIP string, icmpType, icmpCode uint8, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 
@@ -152,7 +148,6 @@ func BuildICMPv6Packet(srcMAC, dstMAC [6]byte, srcIP, dstIP string, icmpType, ic
 	}, nil
 }
 
-// BuildICMPv6EchoPacket creates an ICMPv6 Echo Request packet with proper structure
 func BuildICMPv6EchoPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, id, seq uint16, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 

@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildIPv6UDPVariant builds an IPv6 UDP packet variant for testing
 func BuildIPv6UDPVariant(cfg VariantConfig) VariantResult {
 	pkt, err := BuildIPv6UDPPacket(cfg.SrcMAC, cfg.DstMAC, cfg.SrcIPv6, cfg.DstIPv6, cfg.SrcPort, cfg.DstPort, cfg.Payload)
 	if err != nil {
@@ -33,7 +32,6 @@ func BuildIPv6UDPVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildIPv6UDPPacket creates an IPv6 UDP packet
 func BuildIPv6UDPPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 

@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildIPv4UDPVariant builds an IPv4 UDP packet variant for testing
 func BuildIPv4UDPVariant(cfg VariantConfig) VariantResult {
 	pkt, err := BuildIPv4UDPPacket(cfg.SrcMAC, cfg.DstMAC, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, cfg.Payload)
 	if err != nil {
@@ -37,7 +36,6 @@ func BuildIPv4UDPVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildIPv4UDPPacket creates an IPv4 UDP packet
 func BuildIPv4UDPPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 
@@ -84,7 +82,6 @@ func BuildIPv4UDPPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, ds
 	}, nil
 }
 
-// BuildIPv4WithOptionsPacket creates an IPv4 packet with IP options
 func BuildIPv4WithOptionsPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, dstPort uint16, options []byte, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 

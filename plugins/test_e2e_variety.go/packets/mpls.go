@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildMPLSVariant builds an MPLS packet variant for testing
 // Note: MPLS label field is 20 bits within 4 bytes, mixed with Exp(3), S(1), TTL(8).
 // Varying the label safely requires preserving S=1 and TTL. For simplicity, we only
 // vary the first 2 bytes of the label (upper 16 bits of 20-bit label) and UDP src port.
@@ -39,7 +38,6 @@ func BuildMPLSVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildMPLSStackVariant builds an MPLS stack packet variant for testing
 func BuildMPLSStackVariant(cfg VariantConfig) VariantResult {
 	pkt, err := BuildMPLSStackPacket(cfg.SrcMAC, cfg.DstMAC, []uint32{1000, 2000, 3000}, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, cfg.Payload)
 	if err != nil {
@@ -62,7 +60,6 @@ func BuildMPLSStackVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildMPLSPacket creates an MPLS packet with a single label
 func BuildMPLSPacket(srcMAC, dstMAC [6]byte, label uint32, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 
@@ -115,7 +112,6 @@ func BuildMPLSPacket(srcMAC, dstMAC [6]byte, label uint32, srcIP, dstIP string, 
 	}, nil
 }
 
-// BuildMPLSStackPacket creates an MPLS packet with multiple labels
 func BuildMPLSStackPacket(srcMAC, dstMAC [6]byte, labels []uint32, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 

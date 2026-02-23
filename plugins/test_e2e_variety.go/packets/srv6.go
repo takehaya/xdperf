@@ -10,7 +10,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildSRv6Variant builds an SRv6 packet variant for testing
 func BuildSRv6Variant(cfg VariantConfig) VariantResult {
 	segments := []string{"2001:db8:1::1", "2001:db8:2::1"}
 	pkt, err := BuildSRv6Packet(cfg.SrcMAC, cfg.DstMAC, cfg.SrcIPv6, cfg.DstIPv6, segments, cfg.SrcPort, cfg.DstPort, cfg.Payload)
@@ -86,7 +85,6 @@ func (s *SRv6Layer) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Serial
 	return nil
 }
 
-// BuildSRv6Packet creates an SRv6 packet with UDP payload
 // Structure: Ethernet(14) + IPv6(40) + SRH(8+16*n) + UDP(8) + Payload
 func BuildSRv6Packet(srcMAC, dstMAC [6]byte, srcIP, dstIP string, segments []string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
 	if len(segments) == 0 {

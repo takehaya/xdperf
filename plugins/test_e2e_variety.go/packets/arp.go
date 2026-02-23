@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildARPVariant builds an ARP packet variant for testing
 func BuildARPVariant(cfg VariantConfig) VariantResult {
 	pkt, err := BuildARPPacket(cfg.SrcMAC, cfg.SrcIP, cfg.DstIP, uint16(layers.ARPRequest))
 	if err != nil {
@@ -29,7 +28,6 @@ func BuildARPVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildARPPacket creates an ARP packet
 func BuildARPPacket(srcMAC [6]byte, senderIP, targetIP string, operation uint16) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 

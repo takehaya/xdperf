@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildRawVariant builds a raw Ethernet frame variant for testing
 func BuildRawVariant(cfg VariantConfig) VariantResult {
 	rawPayload := make([]byte, 46)
 	for i := range rawPayload {
@@ -35,7 +34,6 @@ func BuildRawVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildRawEthernetFrame creates a raw Ethernet frame with custom EtherType
 func BuildRawEthernetFrame(srcMAC, dstMAC [6]byte, etherType layers.EthernetType, payload []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 

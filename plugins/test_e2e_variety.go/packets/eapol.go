@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildEAPoLVariant builds an EAPoL packet variant for testing
 func BuildEAPoLVariant(cfg VariantConfig) VariantResult {
 	// EAPoL-Start has empty body
 	pkt, err := BuildEAPoLPacket(cfg.SrcMAC, cfg.DstMAC, layers.EAPOLTypeStart, nil)
@@ -30,7 +29,6 @@ func BuildEAPoLVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildEAPoLPacket creates an EAPoL packet
 func BuildEAPoLPacket(srcMAC, dstMAC [6]byte, eapolType layers.EAPOLType, body []byte) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 

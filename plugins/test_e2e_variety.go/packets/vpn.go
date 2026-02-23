@@ -10,7 +10,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildL2VPNVariant builds an L2VPN (MPLS with inner Ethernet) packet variant
 // Structure: Eth | MPLS(Transport) | MPLS(VPN) | Inner Eth | Inner IP | UDP
 func BuildL2VPNVariant(cfg VariantConfig) VariantResult {
 	// Inner MAC addresses (customer MACs)
@@ -40,7 +39,6 @@ func BuildL2VPNVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildL3VPNVariant builds an L3VPN (MPLS with inner IP) packet variant
 // Structure: Eth | MPLS(Transport) | MPLS(VPN) | Inner IP | UDP
 func BuildL3VPNVariant(cfg VariantConfig) VariantResult {
 	pkt, err := BuildL3VPNPacket(cfg.SrcMAC, cfg.DstMAC, 1000, 2000,
@@ -66,7 +64,6 @@ func BuildL3VPNVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildL2VPNSRv6Variant builds an L2VPN over SRv6 packet variant
 // Structure: Eth | IPv6 | SRH | Inner Eth | Inner IP | UDP
 func BuildL2VPNSRv6Variant(cfg VariantConfig) VariantResult {
 	segments := []string{"2001:db8:1::1", "2001:db8:2::1"}
@@ -97,7 +94,6 @@ func BuildL2VPNSRv6Variant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildL3VPNSRv6Variant builds an L3VPN over SRv6 packet variant
 // Structure: Eth | IPv6 | SRH | Inner IP | UDP
 func BuildL3VPNSRv6Variant(cfg VariantConfig) VariantResult {
 	segments := []string{"2001:db8:1::1", "2001:db8:2::1"}
@@ -126,7 +122,6 @@ func BuildL3VPNSRv6Variant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildL2VPNPacket creates an L2VPN packet (MPLS with inner Ethernet)
 func BuildL2VPNPacket(srcMAC, dstMAC [6]byte, transportLabel, vpnLabel uint32,
 	innerSrcMAC, innerDstMAC [6]byte, innerSrcIP, innerDstIP string,
 	srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
@@ -210,7 +205,6 @@ func BuildL2VPNPacket(srcMAC, dstMAC [6]byte, transportLabel, vpnLabel uint32,
 	}, nil
 }
 
-// BuildL3VPNPacket creates an L3VPN packet (MPLS with inner IP, no inner Ethernet)
 func BuildL3VPNPacket(srcMAC, dstMAC [6]byte, transportLabel, vpnLabel uint32,
 	innerSrcIP, innerDstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
 
@@ -283,7 +277,6 @@ func BuildL3VPNPacket(srcMAC, dstMAC [6]byte, transportLabel, vpnLabel uint32,
 	}, nil
 }
 
-// BuildL2VPNSRv6Packet creates an L2VPN over SRv6 packet
 // Structure: Eth(14) | IPv6(40) | SRH(8+16*n) | Inner Eth(14) | Inner IP(20) | UDP(8) | Payload
 func BuildL2VPNSRv6Packet(srcMAC, dstMAC [6]byte, outerSrcIP, outerDstIP string, segments []string,
 	innerSrcMAC, innerDstMAC [6]byte, innerSrcIP, innerDstIP string,
@@ -402,7 +395,6 @@ func BuildL2VPNSRv6Packet(srcMAC, dstMAC [6]byte, outerSrcIP, outerDstIP string,
 	}, nil
 }
 
-// BuildL3VPNSRv6Packet creates an L3VPN over SRv6 packet
 // Structure: Eth(14) | IPv6(40) | SRH(8+16*n) | Inner IP(20) | UDP(8) | Payload
 func BuildL3VPNSRv6Packet(srcMAC, dstMAC [6]byte, outerSrcIP, outerDstIP string, segments []string,
 	innerSrcIP, innerDstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {

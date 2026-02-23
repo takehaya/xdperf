@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// BuildLLDPVariant builds an LLDP packet variant for testing
 func BuildLLDPVariant(cfg VariantConfig) VariantResult {
 	pkt, err := BuildLLDPPacket(cfg.SrcMAC, cfg.DstMAC, "chassis1", "port1", 120)
 	if err != nil {
@@ -29,7 +28,6 @@ func BuildLLDPVariant(cfg VariantConfig) VariantResult {
 	}
 }
 
-// BuildLLDPPacket creates an LLDP packet
 func BuildLLDPPacket(srcMAC, dstMAC [6]byte, chassisID string, portID string, ttl uint16) (*PacketInfo, error) {
 	buf := gopacket.NewSerializeBuffer()
 
