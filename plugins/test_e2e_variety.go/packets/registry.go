@@ -6,9 +6,7 @@ const (
 	ProtoIPv6UDP   = "ipv6_udp"
 	ProtoVLAN      = "vlan"
 	ProtoQinQ      = "qinq"
-	ProtoMPLS      = "mpls"
-	ProtoMPLSStack = "mpls_stack"
-	ProtoICMPv4    = "icmpv4"
+ProtoICMPv4    = "icmpv4"
 	ProtoICMPv6    = "icmpv6"
 	ProtoTCP       = "tcp"
 	ProtoRaw       = "raw"
@@ -28,9 +26,7 @@ var Registry = map[string]VariantBuilder{
 	ProtoIPv6UDP:   BuildIPv6UDPVariant,
 	ProtoVLAN:      BuildVLANVariant,
 	ProtoQinQ:      BuildQinQVariant,
-	ProtoMPLS:      BuildMPLSVariant,
-	ProtoMPLSStack: BuildMPLSStackVariant,
-	ProtoICMPv4:    BuildICMPv4Variant,
+ProtoICMPv4:    BuildICMPv4Variant,
 	ProtoICMPv6:    BuildICMPv6Variant,
 	ProtoTCP:       BuildTCPVariant,
 	ProtoRaw:       BuildRawVariant,
@@ -51,9 +47,7 @@ func AllProtocols() []string {
 		ProtoIPv6UDP,
 		ProtoVLAN,
 		ProtoQinQ,
-		ProtoMPLS,
-		ProtoMPLSStack,
-		ProtoICMPv4,
+ProtoICMPv4,
 		ProtoICMPv6,
 		ProtoTCP,
 		ProtoRaw,
