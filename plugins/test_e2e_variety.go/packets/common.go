@@ -21,10 +21,11 @@ type VariantConfig struct {
 	Payload  []byte
 }
 
-// VariantResult contains the built variant or an error
+// VariantResult contains one or more built variants or an error
 type VariantResult struct {
-	Variant *guest.PacketVariant
-	Err     error
+	Variant  *guest.PacketVariant
+	Variants []guest.PacketVariant
+	Err      error
 }
 
 // VariantBuilder is a function that builds a packet variant

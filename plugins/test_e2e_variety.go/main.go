@@ -94,7 +94,11 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 			continue
 		}
 
-		variants = append(variants, *result.Variant)
+		if len(result.Variants) > 0 {
+			variants = append(variants, result.Variants...)
+		} else if result.Variant != nil {
+			variants = append(variants, *result.Variant)
+		}
 	}
 
 	if len(variants) == 0 {

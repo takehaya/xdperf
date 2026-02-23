@@ -10,25 +10,45 @@ import (
 )
 
 func BuildTCPVariant(cfg VariantConfig) VariantResult {
-	// SYN packet with no payload (standard TCP handshake)
-	pkt, err := BuildTCPPacket(cfg.SrcMAC, cfg.DstMAC, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, 0x02, nil)
+	// SYN packet (no payload, standard TCP handshake initiation)
+	synPkt, err := BuildTCPPacket(cfg.SrcMAC, cfg.DstMAC, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, 0x02, nil)
 	if err != nil {
 		return VariantResult{Err: err}
 	}
+	synVariant := guest.PacketVariant{
+		Base: guest.BasePacket{Data: synPkt.Data, Length: uint16(len(synPkt.Data))},
+		Params: []guest.VariableParams{
+			{ByteStart: synPkt.Offsets["tcp.src"], ByteSize: 2, ByteRange: guest.TemplateRange{Start: 1024, End: 65535}, PatternType: guest.ValuePatternTypeSequential},
+			{ByteStart: synPkt.Offsets["tcp.seq"], ByteSize: 4, ByteRange: guest.TemplateRange{Start: 1, End: 0xFFFFFFFF}, PatternType: guest.ValuePatternTypeSequential},
+		},
+		Checksums: []guest.ChecksumSpec{
+			{ChecksumOffset: 24, HeaderStart: 14, HeaderLen: 20, IPHeaderOffset: 14},
+			{ChecksumOffset: 50, HeaderStart: 34, HeaderLen: 0, IPHeaderOffset: 14},
+		},
+		Weight: 1,
+	}
+
+	// PSH+ACK packet (data transfer with variable payload length)
+	dataPkt, err := BuildTCPPacket(cfg.SrcMAC, cfg.DstMAC, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, 0x18, cfg.Payload)
+	if err != nil {
+		return VariantResult{Err: err}
+	}
+	dataVariant := guest.PacketVariant{
+		Base: guest.BasePacket{Data: dataPkt.Data, Length: uint16(len(dataPkt.Data))},
+		Params: []guest.VariableParams{
+			{ByteStart: dataPkt.Offsets["tcp.src"], ByteSize: 2, ByteRange: guest.TemplateRange{Start: 1024, End: 65535}, PatternType: guest.ValuePatternTypeSequential},
+			{ByteStart: dataPkt.Offsets["tcp.seq"], ByteSize: 4, ByteRange: guest.TemplateRange{Start: 1, End: 0xFFFFFFFF}, PatternType: guest.ValuePatternTypeSequential},
+			{ByteStart: guest.ByteStartPacketLength, ByteSize: 0, ByteRange: guest.TemplateRange{Start: 64, End: 1514}, PatternType: guest.ValuePatternTypeSequential},
+		},
+		Checksums: []guest.ChecksumSpec{
+			{ChecksumOffset: 24, HeaderStart: 14, HeaderLen: 20, IPHeaderOffset: 14},
+			{ChecksumOffset: 50, HeaderStart: 34, HeaderLen: 0, IPHeaderOffset: 14},
+		},
+		Weight: 1,
+	}
 
 	return VariantResult{
-		Variant: &guest.PacketVariant{
-			Base: guest.BasePacket{Data: pkt.Data, Length: uint16(len(pkt.Data))},
-			Params: []guest.VariableParams{
-				{ByteStart: pkt.Offsets["tcp.src"], ByteSize: 2, ByteRange: guest.TemplateRange{Start: 1024, End: 65535}, PatternType: guest.ValuePatternTypeSequential},
-				{ByteStart: pkt.Offsets["tcp.seq"], ByteSize: 4, ByteRange: guest.TemplateRange{Start: 1, End: 0xFFFFFFFF}, PatternType: guest.ValuePatternTypeSequential},
-			},
-			Checksums: []guest.ChecksumSpec{
-				{ChecksumOffset: 24, HeaderStart: 14, HeaderLen: 20, IPHeaderOffset: 14},
-				{ChecksumOffset: 50, HeaderStart: 34, HeaderLen: 0, IPHeaderOffset: 14},
-			},
-			Weight: 1,
-		},
+		Variants: []guest.PacketVariant{synVariant, dataVariant},
 	}
 }
 
@@ -68,8 +88,16 @@ func BuildTCPPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, dstPor
 		return nil, fmt.Errorf("failed to serialize TCP packet: %w", err)
 	}
 
+	// Pad to minimum frame size (64 bytes)
+	data := buf.Bytes()
+	if len(data) < 64 {
+		padded := make([]byte, 64)
+		copy(padded, data)
+		data = padded
+	}
+
 	return &PacketInfo{
-		Data: buf.Bytes(),
+		Data: data,
 		Offsets: map[string]uint64{
 			"eth.dst":   0,
 			"eth.src":   6,
