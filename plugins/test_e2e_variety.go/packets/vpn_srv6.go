@@ -10,60 +10,6 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// Structure: Eth | MPLS(Transport) | MPLS(VPN) | Inner Eth | Inner IP | UDP
-func BuildL2VPNVariant(cfg VariantConfig) VariantResult {
-	// Inner MAC addresses (customer MACs)
-	innerSrcMAC := [6]byte{0xA2, 0x00, 0x00, 0x00, 0x00, 0x01}
-	innerDstMAC := [6]byte{0xA2, 0x00, 0x00, 0x00, 0x00, 0x02}
-
-	pkt, err := BuildL2VPNPacket(cfg.SrcMAC, cfg.DstMAC, 1000, 2000,
-		innerSrcMAC, innerDstMAC, cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, cfg.Payload)
-	if err != nil {
-		return VariantResult{Err: err}
-	}
-
-	// Offsets: Eth(14) + MPLS(4) + MPLS(4) + InnerEth(14) + IP(20) + UDP(8)
-	return VariantResult{
-		Variant: &guest.PacketVariant{
-			Base: guest.BasePacket{Data: pkt.Data, Length: uint16(len(pkt.Data))},
-			Params: []guest.VariableParams{
-				{ByteStart: pkt.Offsets["udp.src"], ByteSize: 2, ByteRange: guest.TemplateRange{Start: 1024, End: 65535}, PatternType: guest.ValuePatternTypeSequential},
-				{ByteStart: guest.ByteStartPacketLength, ByteSize: 0, ByteRange: guest.TemplateRange{Start: 80, End: 256}, PatternType: guest.ValuePatternTypeSequential},
-			},
-			Checksums: []guest.ChecksumSpec{
-				{ChecksumOffset: uint16(pkt.Offsets["ip.checksum"]), HeaderStart: uint16(pkt.Offsets["inner_ip"]), HeaderLen: 20, IPHeaderOffset: uint16(pkt.Offsets["inner_ip"])},
-				{ChecksumOffset: uint16(pkt.Offsets["udp.checksum"]), HeaderStart: uint16(pkt.Offsets["udp.src"]), HeaderLen: 0, IPHeaderOffset: uint16(pkt.Offsets["inner_ip"])},
-			},
-			Weight: 1,
-		},
-	}
-}
-
-// Structure: Eth | MPLS(Transport) | MPLS(VPN) | Inner IP | UDP
-func BuildL3VPNVariant(cfg VariantConfig) VariantResult {
-	pkt, err := BuildL3VPNPacket(cfg.SrcMAC, cfg.DstMAC, 1000, 2000,
-		cfg.SrcIP, cfg.DstIP, cfg.SrcPort, cfg.DstPort, cfg.Payload)
-	if err != nil {
-		return VariantResult{Err: err}
-	}
-
-	// Offsets: Eth(14) + MPLS(4) + MPLS(4) + IP(20) + UDP(8)
-	return VariantResult{
-		Variant: &guest.PacketVariant{
-			Base: guest.BasePacket{Data: pkt.Data, Length: uint16(len(pkt.Data))},
-			Params: []guest.VariableParams{
-				{ByteStart: pkt.Offsets["udp.src"], ByteSize: 2, ByteRange: guest.TemplateRange{Start: 1024, End: 65535}, PatternType: guest.ValuePatternTypeSequential},
-				{ByteStart: guest.ByteStartPacketLength, ByteSize: 0, ByteRange: guest.TemplateRange{Start: 66, End: 256}, PatternType: guest.ValuePatternTypeSequential},
-			},
-			Checksums: []guest.ChecksumSpec{
-				{ChecksumOffset: uint16(pkt.Offsets["ip.checksum"]), HeaderStart: uint16(pkt.Offsets["inner_ip"]), HeaderLen: 20, IPHeaderOffset: uint16(pkt.Offsets["inner_ip"])},
-				{ChecksumOffset: uint16(pkt.Offsets["udp.checksum"]), HeaderStart: uint16(pkt.Offsets["udp.src"]), HeaderLen: 0, IPHeaderOffset: uint16(pkt.Offsets["inner_ip"])},
-			},
-			Weight: 1,
-		},
-	}
-}
-
 // Structure: Eth | IPv6 | SRH | Inner Eth | Inner IP | UDP
 func BuildL2VPNSRv6Variant(cfg VariantConfig) VariantResult {
 	segments := []string{"2001:db8:1::1", "2001:db8:2::1"}
@@ -122,162 +68,6 @@ func BuildL3VPNSRv6Variant(cfg VariantConfig) VariantResult {
 	}
 }
 
-func BuildL2VPNPacket(srcMAC, dstMAC [6]byte, transportLabel, vpnLabel uint32,
-	innerSrcMAC, innerDstMAC [6]byte, innerSrcIP, innerDstIP string,
-	srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
-
-	buf := gopacket.NewSerializeBuffer()
-
-	// Outer Ethernet
-	eth := &layers.Ethernet{
-		SrcMAC:       net.HardwareAddr(srcMAC[:]),
-		DstMAC:       net.HardwareAddr(dstMAC[:]),
-		EthernetType: layers.EthernetTypeMPLSUnicast,
-	}
-
-	// Transport label (outer)
-	mplsTransport := &layers.MPLS{
-		Label:       transportLabel,
-		TTL:         64,
-		StackBottom: false,
-	}
-
-	// VPN label (bottom of stack)
-	mplsVPN := &layers.MPLS{
-		Label:       vpnLabel,
-		TTL:         64,
-		StackBottom: true,
-	}
-
-	// Inner Ethernet
-	innerEth := &layers.Ethernet{
-		SrcMAC:       net.HardwareAddr(innerSrcMAC[:]),
-		DstMAC:       net.HardwareAddr(innerDstMAC[:]),
-		EthernetType: layers.EthernetTypeIPv4,
-	}
-
-	// Inner IP
-	ip4 := &layers.IPv4{
-		Version:  4,
-		IHL:      5,
-		TTL:      64,
-		SrcIP:    net.ParseIP(innerSrcIP),
-		DstIP:    net.ParseIP(innerDstIP),
-		Protocol: layers.IPProtocolUDP,
-	}
-
-	udp := &layers.UDP{
-		SrcPort: layers.UDPPort(srcPort),
-		DstPort: layers.UDPPort(dstPort),
-	}
-	if err := udp.SetNetworkLayerForChecksum(ip4); err != nil {
-		return nil, fmt.Errorf("failed to set network layer for checksum: %w", err)
-	}
-
-	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
-		eth, mplsTransport, mplsVPN, innerEth, ip4, udp, gopacket.Payload(payload)); err != nil {
-		return nil, fmt.Errorf("failed to serialize L2VPN packet: %w", err)
-	}
-
-	// Offsets: Eth(14) + MPLS(4) + MPLS(4) + InnerEth(14) + IP(20) + UDP(8)
-	innerEthOffset := uint64(22)  // 14 + 4 + 4
-	innerIPOffset := uint64(36)   // 22 + 14
-	udpOffset := uint64(56)       // 36 + 20
-
-	return &PacketInfo{
-		Data: buf.Bytes(),
-		Offsets: map[string]uint64{
-			"eth.dst":       0,
-			"eth.src":       6,
-			"mpls.transport": 14,
-			"mpls.vpn":       18,
-			"inner_eth.dst":  innerEthOffset,
-			"inner_eth.src":  innerEthOffset + 6,
-			"inner_ip":       innerIPOffset,
-			"ip.checksum":    innerIPOffset + 10,
-			"ip.src":         innerIPOffset + 12,
-			"ip.dst":         innerIPOffset + 16,
-			"udp.src":        udpOffset,
-			"udp.dst":        udpOffset + 2,
-			"udp.checksum":   udpOffset + 6,
-			"payload":        udpOffset + 8,
-		},
-	}, nil
-}
-
-func BuildL3VPNPacket(srcMAC, dstMAC [6]byte, transportLabel, vpnLabel uint32,
-	innerSrcIP, innerDstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
-
-	buf := gopacket.NewSerializeBuffer()
-
-	// Outer Ethernet
-	eth := &layers.Ethernet{
-		SrcMAC:       net.HardwareAddr(srcMAC[:]),
-		DstMAC:       net.HardwareAddr(dstMAC[:]),
-		EthernetType: layers.EthernetTypeMPLSUnicast,
-	}
-
-	// Transport label (outer)
-	mplsTransport := &layers.MPLS{
-		Label:       transportLabel,
-		TTL:         64,
-		StackBottom: false,
-	}
-
-	// VPN label (bottom of stack)
-	mplsVPN := &layers.MPLS{
-		Label:       vpnLabel,
-		TTL:         64,
-		StackBottom: true,
-	}
-
-	// Inner IP (no inner Ethernet)
-	ip4 := &layers.IPv4{
-		Version:  4,
-		IHL:      5,
-		TTL:      64,
-		SrcIP:    net.ParseIP(innerSrcIP),
-		DstIP:    net.ParseIP(innerDstIP),
-		Protocol: layers.IPProtocolUDP,
-	}
-
-	udp := &layers.UDP{
-		SrcPort: layers.UDPPort(srcPort),
-		DstPort: layers.UDPPort(dstPort),
-	}
-	if err := udp.SetNetworkLayerForChecksum(ip4); err != nil {
-		return nil, fmt.Errorf("failed to set network layer for checksum: %w", err)
-	}
-
-	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
-		eth, mplsTransport, mplsVPN, ip4, udp, gopacket.Payload(payload)); err != nil {
-		return nil, fmt.Errorf("failed to serialize L3VPN packet: %w", err)
-	}
-
-	// Offsets: Eth(14) + MPLS(4) + MPLS(4) + IP(20) + UDP(8)
-	innerIPOffset := uint64(22)  // 14 + 4 + 4
-	udpOffset := uint64(42)      // 22 + 20
-
-	return &PacketInfo{
-		Data: buf.Bytes(),
-		Offsets: map[string]uint64{
-			"eth.dst":        0,
-			"eth.src":        6,
-			"mpls.transport": 14,
-			"mpls.vpn":       18,
-			"inner_ip":       innerIPOffset,
-			"ip.checksum":    innerIPOffset + 10,
-			"ip.src":         innerIPOffset + 12,
-			"ip.dst":         innerIPOffset + 16,
-			"udp.src":        udpOffset,
-			"udp.dst":        udpOffset + 2,
-			"udp.checksum":   udpOffset + 6,
-			"payload":        udpOffset + 8,
-		},
-	}, nil
-}
-
-// Structure: Eth(14) | IPv6(40) | SRH(8+16*n) | Inner Eth(14) | Inner IP(20) | UDP(8) | Payload
 func BuildL2VPNSRv6Packet(srcMAC, dstMAC [6]byte, outerSrcIP, outerDstIP string, segments []string,
 	innerSrcMAC, innerDstMAC [6]byte, innerSrcIP, innerDstIP string,
 	srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
@@ -346,7 +136,7 @@ func BuildL2VPNSRv6Packet(srcMAC, dstMAC [6]byte, outerSrcIP, outerDstIP string,
 	}
 
 	// SRH with Ethernet as inner protocol (use raw protocol number)
-	srh := &SRv6LayerWithEthernet{
+	srh := &SRv6Layer{
 		NextHeader:   143, // Ethernet (RFC 8986)
 		HdrExtLen:    hdrExtLen,
 		RoutingType:  4,
@@ -395,7 +185,6 @@ func BuildL2VPNSRv6Packet(srcMAC, dstMAC [6]byte, outerSrcIP, outerDstIP string,
 	}, nil
 }
 
-// Structure: Eth(14) | IPv6(40) | SRH(8+16*n) | Inner IP(20) | UDP(8) | Payload
 func BuildL3VPNSRv6Packet(srcMAC, dstMAC [6]byte, outerSrcIP, outerDstIP string, segments []string,
 	innerSrcIP, innerDstIP string, srcPort, dstPort uint16, payload []byte) (*PacketInfo, error) {
 
@@ -458,7 +247,7 @@ func BuildL3VPNSRv6Packet(srcMAC, dstMAC [6]byte, outerSrcIP, outerDstIP string,
 	}
 
 	// SRH with IPv4 as inner protocol
-	srh := &SRv6LayerWithEthernet{
+	srh := &SRv6Layer{
 		NextHeader:   4, // IPv4 (IPIP)
 		HdrExtLen:    hdrExtLen,
 		RoutingType:  4,
@@ -504,8 +293,8 @@ func BuildL3VPNSRv6Packet(srcMAC, dstMAC [6]byte, outerSrcIP, outerDstIP string,
 	}, nil
 }
 
-// SRv6LayerWithEthernet is similar to SRv6Layer but allows any NextHeader
-type SRv6LayerWithEthernet struct {
+// SRv6Layer is a custom serializable SRv6 Segment Routing Header
+type SRv6Layer struct {
 	layers.BaseLayer
 	NextHeader   uint8
 	HdrExtLen    uint8
@@ -517,11 +306,11 @@ type SRv6LayerWithEthernet struct {
 	Segments     []net.IP
 }
 
-func (s *SRv6LayerWithEthernet) LayerType() gopacket.LayerType {
+func (s *SRv6Layer) LayerType() gopacket.LayerType {
 	return gopacket.LayerTypePayload
 }
 
-func (s *SRv6LayerWithEthernet) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.SerializeOptions) error {
+func (s *SRv6Layer) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.SerializeOptions) error {
 	srhLen := 8 + len(s.Segments)*16
 	bytes, err := b.PrependBytes(srhLen)
 	if err != nil {
