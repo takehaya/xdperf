@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/takehaya/xdperf/pkg/guest"
@@ -15,8 +16,8 @@ func main() {}
 //go:wasmexport plugin_init
 func plugin_init(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	msg := goshim.PluginGeneratorInitRequest()
-	guest.Log(1, "plugin initialized!: msg ->"+string(msg.PluginConfig))
-	guest.Log(1, "plugin version: "+version+", commit: "+commit+", date: "+date)
+	guest.Log(1, fmt.Sprintf("plugin initialized!: msg ->%s", string(msg.PluginConfig)))
+	guest.Log(1, fmt.Sprintf("plugin version: %s, commit: %s, date: %s", version, commit, date))
 
 	goshim.PluginGeneratorInitResponse(guest.GeneratorInitResponse{
 		Success: true,
@@ -30,27 +31,27 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 
 	// show input
 	reqJSON, _ := json.Marshal(req)
-	guest.Log(1, "plugin_process called with input: "+string(reqJSON))
+	guest.Log(1, fmt.Sprintf("plugin_process called with input: %s", string(reqJSON)))
 
 	// Parse destination MAC
 	dstMAC := [6]byte{}
 	dmac, err := guest.ParseMAC(req.DstMac)
 	if err != nil {
-		guest.Log(3, "failed to parse destination MAC address: "+err.Error())
+		guest.Log(3, fmt.Sprintf("failed to parse destination MAC address: %v", err))
 		return -5
 	}
 	copy(dstMAC[:], dmac)
 	if req.IsArpResolve {
 		dmacstr, err := guest.NeighborResolve(req.DstIP, req.DeviceName)
 		if err != nil {
-			guest.Log(3, "failed to lookup neighbor: "+err.Error())
+			guest.Log(3, fmt.Sprintf("failed to lookup neighbor: %v", err))
 			return -4
 		}
 		if dmacstr != "" {
-			guest.Log(1, "resolved MAC address: "+dmacstr)
+			guest.Log(1, fmt.Sprintf("resolved MAC address: %s", dmacstr))
 			dmac, err := guest.ParseMAC(dmacstr)
 			if err != nil {
-				guest.Log(3, "failed to parse MAC address: "+err.Error())
+				guest.Log(3, fmt.Sprintf("failed to parse MAC address: %v", err))
 				return -5
 			}
 			copy(dstMAC[:], dmac)
@@ -84,13 +85,13 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	for _, proto := range req.GetProtocolsToInclude() {
 		builder, ok := packets.Registry[proto]
 		if !ok {
-			guest.Log(2, "unknown protocol: "+proto)
+			guest.Log(2, fmt.Sprintf("unknown protocol: %s", proto))
 			continue
 		}
 
 		result := builder(cfg)
 		if result.Err != nil {
-			guest.Log(2, "failed to build "+proto+" packet: "+result.Err.Error())
+			guest.Log(2, fmt.Sprintf("failed to build %s packet: %v", proto, result.Err))
 			continue
 		}
 
@@ -118,7 +119,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	goshim.PluginGeneratorProcessResponse(res)
 
 	guest.ReportMetric("gen resp count", float64(len(variants)), time.Now().UnixNano())
-	guest.Log(1, "response sent with variants: "+string(rune('0'+len(variants)/10))+string(rune('0'+len(variants)%10)))
+	guest.Log(1, fmt.Sprintf("response sent with variants: %d", len(variants)))
 	return int32(len(variants))
 }
 
@@ -126,7 +127,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 func plugin_cleanup(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	msg := goshim.PluginGeneratorCleanupRequest()
 	guest.Log(1, "plugin cleanup")
-	guest.Log(1, "plugin cleanup!: msg ->"+string(msg.PluginConfig))
+	guest.Log(1, fmt.Sprintf("plugin cleanup!: msg ->%s", string(msg.PluginConfig)))
 
 	goshim.PluginGeneratorCleanupResponse(guest.GeneratorCleanupResponse{
 		Success: true,
