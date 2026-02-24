@@ -20,7 +20,7 @@ func BuildARPVariant(cfg VariantConfig) VariantResult {
 		Variant: &guest.PacketVariant{
 			Base: guest.BasePacket{Data: pkt.Data, Length: uint16(len(pkt.Data))},
 			Params: []guest.VariableParams{
-				{ByteStart: pkt.Offsets["arp.sender_ip"], ByteSize: 4, ByteRange: guest.TemplateRange{Start: 0x0A000001, End: 0x0AFFFFFE}, PatternType: guest.ValuePatternTypeSequential},
+				{ByteStart: pkt.Offsets["arp.sender_ip"], ByteSize: 4, ByteRange: guest.TemplateRange{Start: IPv4ToUint64("10.0.0.1"), End: IPv4ToUint64("10.255.255.254")}, PatternType: guest.ValuePatternTypeSequential},
 			},
 			Checksums: nil, // ARP has no checksum
 			Weight:    1,

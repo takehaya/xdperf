@@ -1,6 +1,19 @@
 package packets
 
-import "github.com/takehaya/xdperf/pkg/guest"
+import (
+	"encoding/binary"
+	"net"
+
+	"github.com/takehaya/xdperf/pkg/guest"
+)
+
+func IPv4ToUint64(ip string) uint64 {
+	v := net.ParseIP(ip).To4()
+	if v == nil {
+		return 0
+	}
+	return uint64(binary.BigEndian.Uint32(v))
+}
 
 // PacketInfo contains the built packet and offset information
 type PacketInfo struct {
