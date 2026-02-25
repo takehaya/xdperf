@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+	
 	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/takehaya/xdperf/plugins/test_e2e_variety/packets"
 )
@@ -39,7 +41,7 @@ func (r *GeneratorRequest) GetProtocolsToInclude() []string {
 		return packets.AllProtocols()
 	}
 	for _, p := range r.Protocols {
-		if p == "all" {
+		if strings.EqualFold(p, "all") {
 			return packets.AllProtocols()
 		}
 	}
