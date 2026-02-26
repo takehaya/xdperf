@@ -40,10 +40,12 @@ func (r *GeneratorRequest) GetProtocolsToInclude() []string {
 	if len(r.Protocols) == 0 {
 		return packets.AllProtocols()
 	}
-	for _, p := range r.Protocols {
-		if strings.EqualFold(p, "all") {
+	lower := make([]string, len(r.Protocols))
+	for i, p := range r.Protocols {
+		lower[i] = strings.ToLower(p)
+		if lower[i] == "all" {
 			return packets.AllProtocols()
 		}
 	}
-	return r.Protocols
+	return lower
 }
