@@ -79,6 +79,27 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	}
 	maxLen := uint16(len(packetBytes))
 
+	// Checksum specifications for IPv4/UDP packets
+	// Type is auto-detected from packet content at IPHeaderOffset
+	// srcPortOffset is the UDP header offset (Ethernet 14 + IP 20 = 34)
+	ipHeaderOffset := uint16(srcPortOffset) - 20 // IP header starts 20 bytes before UDP
+	checksums := []guest.ChecksumSpec{
+		{
+			// IPv4 header checksum (detected by csum_offset == ip_header_offset + 10)
+			ChecksumOffset: ipHeaderOffset + 10,
+			HeaderStart:    ipHeaderOffset,
+			HeaderLen:      20, // IPv4 header length
+			IPHeaderOffset: ipHeaderOffset,
+		},
+		{
+			// UDP checksum (detected from IP protocol field)
+			ChecksumOffset: uint16(srcPortOffset) + 6, // UDP checksum is at offset 6 from UDP header
+			HeaderStart:    uint16(srcPortOffset),     // Start of UDP header
+			HeaderLen:      0,                         // Computed from IP total length
+			IPHeaderOffset: ipHeaderOffset,
+		},
+	}
+
 	// create response
 	// imix pattern with 3 variants
 	// Variant A: Short packets (64-84 bytes), SrcPort 1024-1124, Weight=60%
@@ -111,7 +132,8 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 							PatternType: guest.ValuePatternTypeSequential,
 						},
 					},
-					Weight: uint32(req.IMIXRatio[0]),
+					Checksums: checksums,
+					Weight:    uint32(req.IMIXRatio[0]),
 				},
 				// Variant B: Mid packets (500-600 bytes), SrcPort 2000-2100, Weight=34%
 				{
@@ -133,7 +155,8 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 							PatternType: guest.ValuePatternTypeSequential,
 						},
 					},
-					Weight: uint32(req.IMIXRatio[1]),
+					Checksums: checksums,
+					Weight:    uint32(req.IMIXRatio[1]),
 				},
 				// Variant C: Varying source IP (4 bytes, 1500 bytes), Weight=6%
 				{
@@ -158,7 +181,8 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 							PatternType: guest.ValuePatternTypeSequential,
 						},
 					},
-					Weight: uint32(req.IMIXRatio[2]),
+					Checksums: checksums,
+					Weight:    uint32(req.IMIXRatio[2]),
 				},
 			},
 			// VariantSelectionModeMixed: weighted selection (A 60%, B 34%, C 6%)

@@ -15,14 +15,9 @@
 struct datarec {
     __u64 packets;
     __u64 bytes;
+    __u64 diff_errors;     // Failed diff applications
+    __u64 checksum_errors; // Failed checksum calculations
 };
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __type(key, __u32);
-    __type(value, struct datarec);
-    __uint(max_entries, 1);
-} tx_stats_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -30,32 +25,6 @@ struct {
     __type(value, struct datarec);
     __uint(max_entries, 1);
 } rx_stats_map SEC(".maps");
-
-#define MAX_PACKET_ENTRY 1024 * 128
-#define MAX_TEMPLATE_SIZE 2048
-struct pkt_template {
-    __u32 len;                    // actual length of data
-    __u8 data[MAX_TEMPLATE_SIZE]; // raw frame
-};
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, MAX_PACKET_ENTRY);
-    __type(key, __u32); // per-cpu id
-    __type(value, struct pkt_template);
-} tx_override_map SEC(".maps");
-
-// per-CPU packet state (count and current index)
-struct pkt_state {
-    __u32 count; // number of valid packet entries
-    __u32 idx;   // current packet index
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, struct pkt_state);
-} pkt_state_map SEC(".maps");
 
 // https://github.com/cloudflare/xdpcap
 // struct bpf_map_def SEC("maps") xdpcap_hook = XDPCAP_HOOK();

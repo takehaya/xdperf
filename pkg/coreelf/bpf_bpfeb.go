@@ -13,10 +13,45 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type BpfBasePacket struct {
+	_             structs.HostLayout
+	Len           uint16
+	ChecksumCount uint8
+	Pad           uint8
+	Data          [2048]uint8
+}
+
+type BpfChecksumMeta struct {
+	_              structs.HostLayout
+	CsumOffset     uint16
+	HeaderStart    uint16
+	HeaderLen      uint16
+	IpHeaderOffset uint16
+}
+
 type BpfDatarec struct {
-	_       structs.HostLayout
-	Packets uint64
-	Bytes   uint64
+	_              structs.HostLayout
+	Packets        uint64
+	Bytes          uint64
+	DiffErrors     uint64
+	ChecksumErrors uint64
+}
+
+type BpfDiffEntry struct {
+	_     structs.HostLayout
+	Diffs [8]struct {
+		_        structs.HostLayout
+		OldValue [8]uint8
+		NewValue [8]uint8
+		Offset   uint16
+		Size     uint8
+		_        [1]byte
+	}
+	PktLen     uint16
+	BaseIdx    uint8
+	DiffCount  uint8
+	LenChanged uint8
+	_          [1]byte
 }
 
 type BpfPktState struct {
@@ -25,10 +60,16 @@ type BpfPktState struct {
 	Idx   uint32
 }
 
-type BpfPktTemplate struct {
-	_    structs.HostLayout
-	Len  uint32
-	Data [2048]uint8
+type BpfTailCallCtx struct {
+	_             structs.HostLayout
+	BaseIdx       uint32
+	LocalIdx      uint32
+	TargetLen     uint16
+	DiffCount     uint8
+	ChecksumCount uint8
+	LenChanged    uint8
+	DiffErrors    uint8
+	Pad           [2]uint8
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.
@@ -73,28 +114,38 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	XdpPassDummy *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
-	XdpRx        *ebpf.ProgramSpec `ebpf:"xdp_rx"`
-	XdpTx        *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpPassDummy  *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
+	XdpRx         *ebpf.ProgramSpec `ebpf:"xdp_rx"`
+	XdpTx         *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpTxChecksum *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfMapSpecs struct {
-	PktStateMap   *ebpf.MapSpec `ebpf:"pkt_state_map"`
-	RxStatsMap    *ebpf.MapSpec `ebpf:"rx_stats_map"`
-	TxOverrideMap *ebpf.MapSpec `ebpf:"tx_override_map"`
-	TxStatsMap    *ebpf.MapSpec `ebpf:"tx_stats_map"`
-	XdpcapHook    *ebpf.MapSpec `ebpf:"xdpcap_hook"`
+	BasePacketMap   *ebpf.MapSpec `ebpf:"base_packet_map"`
+	ChecksumMetaMap *ebpf.MapSpec `ebpf:"checksum_meta_map"`
+	DiffMap         *ebpf.MapSpec `ebpf:"diff_map"`
+	PktStateMap     *ebpf.MapSpec `ebpf:"pkt_state_map"`
+	RxStatsMap      *ebpf.MapSpec `ebpf:"rx_stats_map"`
+	TailCallCtxMap  *ebpf.MapSpec `ebpf:"tail_call_ctx_map"`
+	TxStatsMap      *ebpf.MapSpec `ebpf:"tx_stats_map"`
+	XdpProgs        *ebpf.MapSpec `ebpf:"xdp_progs"`
+	XdpcapHook      *ebpf.MapSpec `ebpf:"xdpcap_hook"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfVariableSpecs struct {
-	EnableXdpcap *ebpf.VariableSpec `ebpf:"enable_xdpcap"`
-	SwapResp     *ebpf.VariableSpec `ebpf:"swap_resp"`
+	EnableXdpcap       *ebpf.VariableSpec `ebpf:"enable_xdpcap"`
+	MaxBasePackets     *ebpf.VariableSpec `ebpf:"max_base_packets"`
+	MaxChecksumEntries *ebpf.VariableSpec `ebpf:"max_checksum_entries"`
+	MaxDiffsPerPacket  *ebpf.VariableSpec `ebpf:"max_diffs_per_packet"`
+	MaxPacketSize      *ebpf.VariableSpec `ebpf:"max_packet_size"`
+	MinPacketSize      *ebpf.VariableSpec `ebpf:"min_packet_size"`
+	SwapResp           *ebpf.VariableSpec `ebpf:"swap_resp"`
 }
 
 // BpfObjects contains all objects after they have been loaded into the kernel.
@@ -117,19 +168,27 @@ func (o *BpfObjects) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfMaps struct {
-	PktStateMap   *ebpf.Map `ebpf:"pkt_state_map"`
-	RxStatsMap    *ebpf.Map `ebpf:"rx_stats_map"`
-	TxOverrideMap *ebpf.Map `ebpf:"tx_override_map"`
-	TxStatsMap    *ebpf.Map `ebpf:"tx_stats_map"`
-	XdpcapHook    *ebpf.Map `ebpf:"xdpcap_hook"`
+	BasePacketMap   *ebpf.Map `ebpf:"base_packet_map"`
+	ChecksumMetaMap *ebpf.Map `ebpf:"checksum_meta_map"`
+	DiffMap         *ebpf.Map `ebpf:"diff_map"`
+	PktStateMap     *ebpf.Map `ebpf:"pkt_state_map"`
+	RxStatsMap      *ebpf.Map `ebpf:"rx_stats_map"`
+	TailCallCtxMap  *ebpf.Map `ebpf:"tail_call_ctx_map"`
+	TxStatsMap      *ebpf.Map `ebpf:"tx_stats_map"`
+	XdpProgs        *ebpf.Map `ebpf:"xdp_progs"`
+	XdpcapHook      *ebpf.Map `ebpf:"xdpcap_hook"`
 }
 
 func (m *BpfMaps) Close() error {
 	return _BpfClose(
+		m.BasePacketMap,
+		m.ChecksumMetaMap,
+		m.DiffMap,
 		m.PktStateMap,
 		m.RxStatsMap,
-		m.TxOverrideMap,
+		m.TailCallCtxMap,
 		m.TxStatsMap,
+		m.XdpProgs,
 		m.XdpcapHook,
 	)
 }
@@ -138,17 +197,23 @@ func (m *BpfMaps) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfVariables struct {
-	EnableXdpcap *ebpf.Variable `ebpf:"enable_xdpcap"`
-	SwapResp     *ebpf.Variable `ebpf:"swap_resp"`
+	EnableXdpcap       *ebpf.Variable `ebpf:"enable_xdpcap"`
+	MaxBasePackets     *ebpf.Variable `ebpf:"max_base_packets"`
+	MaxChecksumEntries *ebpf.Variable `ebpf:"max_checksum_entries"`
+	MaxDiffsPerPacket  *ebpf.Variable `ebpf:"max_diffs_per_packet"`
+	MaxPacketSize      *ebpf.Variable `ebpf:"max_packet_size"`
+	MinPacketSize      *ebpf.Variable `ebpf:"min_packet_size"`
+	SwapResp           *ebpf.Variable `ebpf:"swap_resp"`
 }
 
 // BpfPrograms contains all programs after they have been loaded into the kernel.
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	XdpPassDummy *ebpf.Program `ebpf:"xdp_pass_dummy"`
-	XdpRx        *ebpf.Program `ebpf:"xdp_rx"`
-	XdpTx        *ebpf.Program `ebpf:"xdp_tx"`
+	XdpPassDummy  *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpRx         *ebpf.Program `ebpf:"xdp_rx"`
+	XdpTx         *ebpf.Program `ebpf:"xdp_tx"`
+	XdpTxChecksum *ebpf.Program `ebpf:"xdp_tx_checksum"`
 }
 
 func (p *BpfPrograms) Close() error {
@@ -156,6 +221,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpPassDummy,
 		p.XdpRx,
 		p.XdpTx,
+		p.XdpTxChecksum,
 	)
 }
 

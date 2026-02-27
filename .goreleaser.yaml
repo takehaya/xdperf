@@ -39,6 +39,28 @@ builds:
       - -X main.version={{ .Version }}
       - -X main.commit={{ .Commit }}
       - -X main.date={{ .Date }}
+  - id: plugin-test_e2e_variety.go
+    dir: ./plugins/test_e2e_variety.go
+    main: .
+    binary: test_e2e_variety.go
+    goos: [ wasip1 ]
+    goarch: [ wasm ]
+    buildmode: c-shared
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+  - id: plugin-imixudp.go
+    dir: ./plugins/imixudp.go
+    main: .
+    binary: imixudp.go
+    goos: [ wasip1 ]
+    goarch: [ wasm ]
+    buildmode: c-shared
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
 archives:
   - id: xdperf
     formats:
@@ -55,6 +77,16 @@ archives:
     - 'binary'
     ids:
     - plugin-simpleudp.go
+  - id: plugin-test_e2e_variety.go
+    formats:
+    - 'binary'
+    ids:
+    - plugin-test_e2e_variety.go
+  - id: plugin-imixudp.go
+    formats:
+    - 'binary'
+    ids:
+    - plugin-imixudp.go
 checksum:
   name_template: 'checksums.txt'
 snapshot:
