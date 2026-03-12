@@ -1,5 +1,93 @@
 # Changelog
 
+## [0.11.0](https://github.com/takehaya/xdperf/compare/v0.10.0...v0.11.0) (2026-02-27)
+
+
+### 🎉 Features
+
+* add checksum and diff entry structures ([9204839](https://github.com/takehaya/xdperf/commit/9204839b3ed5d823664e3214d7753c8256bdb242))
+* add checksum and diff entry structures ([3f761c9](https://github.com/takehaya/xdperf/commit/3f761c98ada47f78d6ebe263504fe31a44c636f1))
+* add diff calc logic to bpf ([de5bb2d](https://github.com/takehaya/xdperf/commit/de5bb2d36a7478d36d2db9853f660d7d73510af0))
+* add helper functions for diff-based packet generation ([4611c45](https://github.com/takehaya/xdperf/commit/4611c45cdf22a6258a619b98e7d7de3f7647f121))
+* add test e2e variety plugin ([2eb2f9b](https://github.com/takehaya/xdperf/commit/2eb2f9b69cd9791a9131ddfb8b8bcca69c2cbee6))
+* add test e2e variety plugin ([61e3f5e](https://github.com/takehaya/xdperf/commit/61e3f5e23376fb482e879aec6d1a434778e129e1))
+* diff based packet generation ([9cc5906](https://github.com/takehaya/xdperf/commit/9cc59062d2e4399378e3747f705f6186ad1e4cfa))
+* implement geneator ([42e1deb](https://github.com/takehaya/xdperf/commit/42e1deb60e19af8f86545a4dc88ce22aab9c763d))
+* implement geneator ([64670c4](https://github.com/takehaya/xdperf/commit/64670c46fa34fa72ba1d19919d24763957d2b89d))
+
+
+### 🐛 Bug Fixes
+
+* add boundary check ([caba0e4](https://github.com/takehaya/xdperf/commit/caba0e44b3fe4be612dd24868ce0529b3bf96511))
+* add boundary checks for target length in update_packet_lengths function ([99ba6dc](https://github.com/takehaya/xdperf/commit/99ba6dc7568059f9de587df73a330419cd0e9384))
+* add ICMPv4 checksum calculation support ([048c512](https://github.com/takehaya/xdperf/commit/048c512f0c40de94c2313f59c83e672852d74978))
+* add packets incluiding payload to tcp example ([1276404](https://github.com/takehaya/xdperf/commit/12764046a2fbf8ed2ca399aca53e06fccfaf0be4))
+* add start and end validation ([723d0af](https://github.com/takehaya/xdperf/commit/723d0afd521e3957008e87fe9f8ab23ebf15d28e))
+* add TODO comments for unsupported IPv6 extension headers in checksum calculations ([ff3ad93](https://github.com/takehaya/xdperf/commit/ff3ad930b804d07269a567b75ec59f31e01f8f35))
+* adjust SRH header size and loading logic in ipv6_find_transport ([751b0cf](https://github.com/takehaya/xdperf/commit/751b0cfacbfd6eae4209822970ffe7c573b5909d))
+* build error ([b47477e](https://github.com/takehaya/xdperf/commit/b47477eb40c621dfd062c9b4dfc57c0d82055355))
+* calc checksum algorithm ([e5ccdee](https://github.com/takehaya/xdperf/commit/e5ccdee31765321d93358b212b5236b2c835cc05))
+* checksum calculation for diff sizes 4, 6, and 8 with offset handling ([c2b0428](https://github.com/takehaya/xdperf/commit/c2b04284729e2711900ec380c095bbe3d47586e9))
+* delete pragma unroll ([12a4397](https://github.com/takehaya/xdperf/commit/12a4397a61cf6141c248687662f4daba7d9d2122))
+* diff based packet generation bpf encap ([d7e29e0](https://github.com/takehaya/xdperf/commit/d7e29e03cdf24b5a306537fb8902b57cb815315b))
+* icmpv4 checksum ([2dd36ac](https://github.com/takehaya/xdperf/commit/2dd36ac85ae9707be12ff52c07642be3eb88fca4))
+* introduce isAllowedByteSize function ([00411c9](https://github.com/takehaya/xdperf/commit/00411c937b5ed09bab20e47c7c0014c875595beb))
+* make checksum metadata to PERCPU array ([c5854e9](https://github.com/takehaya/xdperf/commit/c5854e9b4e522c5abaa8d5d5654ff92a3224b063))
+* make initChecksumMetaMaps PER CPU ARRAY ([2b5d348](https://github.com/takehaya/xdperf/commit/2b5d348076cddbafb8c2c4a4f841c8e910a8226e))
+* modify apply_diff function to handle sizes 6 and 8 with proper error handling ([afca2cc](https://github.com/takehaya/xdperf/commit/afca2ccd69d2544534f92498223051426ab23557))
+* modify to define magic numbers as const ([b5fd8c0](https://github.com/takehaya/xdperf/commit/b5fd8c022aa72c336412800f13b26f08fe7426c7))
+* refactor apply_diff function to validate diff sizes to reduce redundancy ([e858836](https://github.com/takehaya/xdperf/commit/e858836882faca535ad96e740d73439cf836bdc6))
+* refactor recalc_checksum and diff_affects_checksum functions to check whether it is ipv4 header or not ([d1ead1a](https://github.com/takehaya/xdperf/commit/d1ead1ad23cb3572749dbd58655bb7eab9ddb782))
+* remove unreachable code ([187ef7f](https://github.com/takehaya/xdperf/commit/187ef7f339010e98639d0a730bb727a36391f9e4))
+* rename MAX_TEMPLATE_SIZE to MAX_PACKET_SIZE ([5d419fa](https://github.com/takehaya/xdperf/commit/5d419fa9c58639472480d8dd2e2e66e507609bf9))
+* revert dstMAC update ([84bc27a](https://github.com/takehaya/xdperf/commit/84bc27aff169e64fc2549c4e34bb040079835b91))
+* srv6 checksum handling ([809bc93](https://github.com/takehaya/xdperf/commit/809bc93124aaa74c66a363a47432181964efe2c2))
+* update Go version to 1.26.0 ([dd77162](https://github.com/takehaya/xdperf/commit/dd7716201f603a7624ebf54018c46e49b7f1a497))
+* update goreleaser to release new plugins ([69d982f](https://github.com/takehaya/xdperf/commit/69d982faaa4ad4e0cd15b0bfa4202b544cbf1503))
+* update isAllowedByteSize function to use slices.Contains for validation ([60b1c26](https://github.com/takehaya/xdperf/commit/60b1c2690786cfb981d051ca50b3b333f58404ac))
+* update other plugins ([d86ce11](https://github.com/takehaya/xdperf/commit/d86ce11c47165df1944f33988a19de93826c68bf))
+* update other plugins ([bafd3fa](https://github.com/takehaya/xdperf/commit/bafd3fa03c2f87d749005dd04948caba77b3218c))
+* update return values in apply_diff and recalc_checksum functions for better error handling ([b3c11ed](https://github.com/takehaya/xdperf/commit/b3c11edf13bd0ed4baa9757a6b55351bc5b29f13))
+* update TODO for IPv4 header checksum for IP options ([51adfdd](https://github.com/takehaya/xdperf/commit/51adfdd37a7ea859c923af32578379ababff107c))
+* update unnatural packet generation ([d71a58e](https://github.com/takehaya/xdperf/commit/d71a58ed513ad533b76260be78c4ad3a63818c3f))
+* use bpf_loop in ICMPv4 checksum calculation ([bd66b10](https://github.com/takehaya/xdperf/commit/bd66b1069d8566060da393f26ad20ff09be562ea))
+* use go releaaser v2.13.3 ([e584d2f](https://github.com/takehaya/xdperf/commit/e584d2fd4b9c4d64388d2dfc555fd07e8a7be98b))
+* use IPv4ToUint64 for readability ([4d7826a](https://github.com/takehaya/xdperf/commit/4d7826aa58687774d80351078f32ce2fa321df21))
+* use istrings.EqualFold for "all" param ([c2eb750](https://github.com/takehaya/xdperf/commit/c2eb7505dcd9f57c6c7fa0e8b286070fe8854923))
+* use lower in GetProtocolsToInclude ([d067428](https://github.com/takehaya/xdperf/commit/d067428063ac77517d7e592e2350c44aab71d86a))
+* validate l3_offset after VLAN parsing in update_packet_lengths function ([70546a2](https://github.com/takehaya/xdperf/commit/70546a2004e03d86c87103bf5f219da051bd7cc9))
+
+
+### 🔧 Miscellaneous Chores
+
+* add blank line ([d51ff3a](https://github.com/takehaya/xdperf/commit/d51ff3ac288fc52c1f0bd784800a05121b4b5857))
+* add comments for supported checksum types ([80cbef2](https://github.com/takehaya/xdperf/commit/80cbef213f10effc32430b09060f70c127e8bbe4))
+* add README for test_e2e_variety.go ([72cb33e](https://github.com/takehaya/xdperf/commit/72cb33e2e6ba4f630f3919b5a78055b5bbef621e))
+* add unit tests ([937f7ce](https://github.com/takehaya/xdperf/commit/937f7ceb0d3833827efac6354ddbf020078a4374))
+* fix format ([266c665](https://github.com/takehaya/xdperf/commit/266c665c9b83f88710efebabe9bd96bb46a37d79))
+* fix format ([f25b014](https://github.com/takehaya/xdperf/commit/f25b01434fccd2770492530dcc430bfd84ae9eec))
+* fix logging format in main ([f81e9f2](https://github.com/takehaya/xdperf/commit/f81e9f2cf31592e925781c082247e2f523a6584c))
+* modify not to use magic numbers ([364bdee](https://github.com/takehaya/xdperf/commit/364bdee2f3845ee4971127f271948cbd44ca9189))
+* remove mpls ([8146cb3](https://github.com/takehaya/xdperf/commit/8146cb349f34e5fadd5bdfe02d794c1b41f1efdb))
+* remove obvious comments ([d8c2192](https://github.com/takehaya/xdperf/commit/d8c2192dd98fc4fb5ece3db7aebc83e0873084f2))
+* remove simple srv6 ([84993a0](https://github.com/takehaya/xdperf/commit/84993a09fa3a63632d60d3e178779759bcb6307d))
+* update comments ([0eef67e](https://github.com/takehaya/xdperf/commit/0eef67e8ee1fa93183af5b36bc290182e8b3e716))
+* update go to 1.25.5 ([3e0d85f](https://github.com/takehaya/xdperf/commit/3e0d85fefcc77622a8d827147dc0e1e88c090e3a))
+* update incorrect comments ([0820d22](https://github.com/takehaya/xdperf/commit/0820d22942225ba9bf4e86d52efcec7498190f50))
+* use fixed seed for generator_test.go ([7dabde7](https://github.com/takehaya/xdperf/commit/7dabde7fe4769f2a52eaafe736092f0ddd9f6932))
+
+
+### ♻️ Code Refactoring
+
+* load consts dynamically ([9852446](https://github.com/takehaya/xdperf/commit/98524469db3ddc76e8540306d007a6d24ccedd84))
+* replace full packet copy with base + diff approach ([0c8c55a](https://github.com/takehaya/xdperf/commit/0c8c55a67aac368ff32f15f3e73b9843d63bc2c1))
+* split vpn.go to 2 files ([f3ea1d2](https://github.com/takehaya/xdperf/commit/f3ea1d20baeda5b4dd6c144626787b378eda73fe))
+* use bool instead of macro ([a249a30](https://github.com/takehaya/xdperf/commit/a249a30776321ff7896bb5a0cf84eef4a302dc6d))
+* use builtin memcpy for simplification ([85ef8a1](https://github.com/takehaya/xdperf/commit/85ef8a1c9ac9e11be716fa32c7f5b8e0da16f554))
+* use calc_ipv4_header_csum ([ec0348b](https://github.com/takehaya/xdperf/commit/ec0348bf7153372dbf328bdef6a6f372800970a5))
+* use table based implementation ([4b4a7fe](https://github.com/takehaya/xdperf/commit/4b4a7fe9c9ecc4221a357b26ac4ba54de8a7e00b))
+* xdperf packet generation and XDP program ([d079630](https://github.com/takehaya/xdperf/commit/d07963087f139909cc32f843c84a11e53a786cba))
+
 ## [0.10.0](https://github.com/takehaya/xdperf/compare/v0.9.0...v0.10.0) (2025-12-18)
 
 
