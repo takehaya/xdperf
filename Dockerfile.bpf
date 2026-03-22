@@ -1,11 +1,19 @@
-FROM golang:trixie as builder
+FROM golang:trixie AS builder
 
+ARG LLVM_VERSION=22
 RUN apt-get update && \
-	apt-get install -y clang llvm libelf-dev libbpf-dev gcc-multilib
+	apt-get install -y wget gnupg libelf-dev libbpf-dev gcc-multilib && \
+	echo "deb http://apt.llvm.org/trixie/ llvm-toolchain-trixie-${LLVM_VERSION} main" > /etc/apt/sources.list.d/llvm.list && \
+	wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg && \
+	apt-get update && \
+	apt-get install -y clang-${LLVM_VERSION} llvm-${LLVM_VERSION} && \
+	ln -s /usr/bin/clang-${LLVM_VERSION} /usr/bin/clang && \
+	ln -s /usr/bin/llvm-strip-${LLVM_VERSION} /usr/bin/llvm-strip && \
+	apt-get clean
 WORKDIR /app
 COPY . .
-
-ARG BPF_CLANG=clang
+RUN clang-${LLVM_VERSION} --version
+ARG BPF_CLANG=clang-${LLVM_VERSION}
 ARG BPF_CFLAGS="-O2 -g -Wall -Werror"
 ENV BPF_CLANG=${BPF_CLANG}
 ENV BPF_CFLAGS=${BPF_CFLAGS}

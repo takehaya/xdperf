@@ -1,6 +1,6 @@
 # tips
 ## なぜかpacketが飛んでいかない
-### Dummy XDP　ProgをAttachしていない
+### Dummy　XDP　ProgをAttachしていない
 何も気にしないで実行するとこんな感じで失敗してしまってるのがわかる。以下`trace-cmd`の様子です。
 ```shell
 $ sudo trace-cmd stream -e xdp
@@ -38,7 +38,7 @@ NIC statistics:
      rx_queue_0_kicks: 1
 ```
 
-## パフォーマンスチューニング
+## パフォーマンスチューニング(virtio-net編)
 そもそも肝心要のパケットの負荷を掛けれる性能が微妙だと困るという話があるので、それを検証してみる。
 output性能が十分出るかを見たい。環境は virtio-net ドライバ上のVMである。
 
@@ -193,7 +193,6 @@ TCP data split:         n/a
 この辺のNICの環境とかが良ければワンチャンありそう。
 
 また、batch-sizeを変化して試してみるのはアリなのかもしれない。
-
 ### 余談
 この実装はeBPF Mapに任意のパケットを書き込んでおいてそれを上書きすることで高速にパケットを投げつけている。
 そこであえてその変更をコメントアウトしてみたらどうなるか確かめてみる。
@@ -217,7 +216,7 @@ ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 -
 #### Multicore
 おおよそピーク性能で69Mppsほどでてる
 ```shell
-ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 15 --parallelism 15 --infinite --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
+ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 --count 15 --parallelism 15 --infinite --batch-size 256 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200}'
 // 略
 67,429,179 xmit/s, 771,666.21 Mbps
 56,420,664 xmit/s, 645,682.77 Mbps
@@ -233,3 +232,140 @@ ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 -
 ```
 
 この事から1coreで2Mpps, Multiで最大10Mppsほどがこの書き換えでオーバーヘッドになってることがわかった。
+
+## パフォーマンスチューニング(intel ice編)
+要はベアメタルサーバーでのチューニングという話。
+とりあえずこの辺をやっておくと良い。
+
+```shell
+# とりあえずiommu=pt (passthrough) にすると、DMAアドレス変換をバイパスしてロック競合がなくなる。
+# DMA アドレス変換を バイパス し、デバイスが物理アドレスを直接使うので、IOTLB フラッシュ不要、結果として spinlock 競合が消える。
+GRUB_CMDLINE_LINUX_DEFAULT="mitigations=off iommu=pt"
+sudo sed -i 's/mitigations=off/mitigations=off iommu=pt/' /etc/default/grub
+sudo update-grub
+sudo reboot
+
+# txのリングを描くと、むしろキャッシュに乗らなくなるので下げた方がいい
+sudo ethtool -G enp138s0f0np0 tx 256
+```
+
+以下に実際の結果のビフォーアフターを載せておく。なお、パケットのランダマイズとかは全然聞いてないという実装でマイクロベンチの参考として利用するのが望ましい。
+
+### 1core(before)
+```shell
+$ sudo ./out/bin/xdperf run --plugin=simpleudp.go --device=enp138s0f0np0 --plugin-path="./out/bin" --count 1 --parallelism 1 --infinite --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200, "is_arp_resolve":false}'
+2026-03-21T22:52:26Z    INFO    xdperf wasm plugin loader initialized
+2026-03-21T22:52:26Z    INFO    calculated map sizes    {"tx_override_map_size": 2, "diff_map_size": 2}
+2026-03-21T22:52:26Z    INFO    xdperf xdp code loader initialized
+2026-03-21T22:52:26Z    INFO    start client mode
+2026-03-21T22:52:26Z    INFO    testing simple plugin communication
+[PLUGIN] [1] plugin initialized!: msg ->{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200, "is_arp_resolve":false}
+[PLUGIN] [1] plugin version: dev, commit: none, date: unknown
+2026-03-21T22:52:26Z    INFO    plugin initialized successfully
+2026-03-21T22:52:26Z    INFO    calling plugin  {"merged_config": {"count":1,"device_mac_addr":"QKa3laLQ","device_name":"enp138s0f0np0","dst_ip":"192.168.1.2","dst_port":10001,"is_arp_resolve":false,"payload_size":1200,"src_ip":"192.168.1.1"}}
+[PLUGIN] [1] plugin_process called with input: {"src_ip":"192.168.1.1","dst_ip":"192.168.1.2","dst_mac":"ff:ff:ff:ff:ff:ff","is_arp_resolve":false,"src_port":1234,"dst_port":10001,"payload_size":1200,"count":1,"device_mac_addr":"QKa3laLQ","device_name":"enp138s0f0np0"}
+[METRIC] gen resp count 1.000000 time=2026-03-21T22:52:26.745770481Z
+[PLUGIN] [1] response sent
+2026-03-21T22:52:26Z    INFO    after GenerateTemplate success
+2026-03-21T22:52:26Z    INFO    received response       {"pattern": "sequential", "raw_packet_template_count": 0, "variable_packet_template_count": 1}
+2026-03-21T22:52:26Z    INFO    plugin call successful
+2026-03-21T22:52:26Z    INFO    packet entries generated        {"template_type": "variable", "num_bases": 1, "num_entries": 1, "total_checksums": 2}
+2026-03-21T22:52:26Z    INFO    packet distribution calculated  {"total_entries": 1, "num_bases": 1, "parallelism": 1, "num_cpus": 64, "counts_per_cpu": [1]}
+2026-03-21T22:52:26Z    INFO    base packet maps initialized    {"num_bases": 1}
+2026-03-21T22:52:26Z    INFO    diff map populated      {"num_entries": 1, "num_cpus": 64, "max_count_per_cpu": 1}
+2026-03-21T22:52:26Z    INFO    checksum meta maps initialized  {"num_bases": 1, "total_checksums": 2}
+2026-03-21T22:52:26Z    INFO    BPF maps initialized
+2026-03-21T22:52:26Z    INFO    TX packet processing started (infinite) {"parallelism": 1, "packet_pool_size": 1, "target_pps": 0, "repeat_per_batch": 1048576, "batch_size": 64, "total_batches_per_cpu": 0, "batch_interval": "0s", "infinite_mode": true}
+1,694,193 xmit/s, 827.24 Mbps
+1,688,832 xmit/s, 824.62 Mbps
+1,714,800 xmit/s, 837.30 Mbps
+1,682,897 xmit/s, 821.73 Mbps
+1,704,149 xmit/s, 832.10 Mbps
+1,728,537 xmit/s, 844.01 Mbps
+1,688,219 xmit/s, 824.33 Mbps
+1,719,123 xmit/s, 839.42 Mbps
+```
+
+### 1core(after)
+```shell
+$ sudo ./out/bin/xdperf run --plugin=simpleudp.go --device=enp138s0f0np0 --plugin-path="./out/bin" --count 1 --parallelism 1 --infinite --batch-size 256 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200, "is_arp_resolve":false}'
+2026-03-21T23:51:10Z    INFO    xdperf wasm plugin loader initialized
+2026-03-21T23:51:10Z    INFO    calculated map sizes    {"tx_override_map_size": 2, "diff_map_size": 2}
+2026-03-21T23:51:10Z    INFO    xdperf xdp code loader initialized
+2026-03-21T23:51:10Z    INFO    start client mode
+2026-03-21T23:51:10Z    INFO    testing simple plugin communication
+[PLUGIN] [1] plugin initialized!: msg ->{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200, "is_arp_resolve":false}
+[PLUGIN] [1] plugin version: dev, commit: none, date: unknown
+2026-03-21T23:51:10Z    INFO    plugin initialized successfully
+2026-03-21T23:51:10Z    INFO    calling plugin  {"merged_config": {"count":1,"device_mac_addr":"QKa3laLQ","device_name":"enp138s0f0np0","dst_ip":"192.168.1.2","dst_port":10001,"is_arp_resolve":false,"payload_size":1200,"src_ip":"192.168.1.1"}}
+[PLUGIN] [1] plugin_process called with input: {"src_ip":"192.168.1.1","dst_ip":"192.168.1.2","dst_mac":"ff:ff:ff:ff:ff:ff","is_arp_resolve":false,"src_port":1234,"dst_port":10001,"payload_size":1200,"count":1,"device_mac_addr":"QKa3laLQ","device_name":"enp138s0f0np0"}
+[METRIC] gen resp count 1.000000 time=2026-03-21T23:51:10.677664812Z
+[PLUGIN] [1] response sent
+2026-03-21T23:51:10Z    INFO    after GenerateTemplate success
+2026-03-21T23:51:10Z    INFO    received response       {"pattern": "sequential", "raw_packet_template_count": 0, "variable_packet_template_count": 1}
+2026-03-21T23:51:10Z    INFO    plugin call successful
+2026-03-21T23:51:10Z    INFO    packet entries generated        {"template_type": "variable", "num_bases": 1, "num_entries": 1, "total_checksums": 2}
+2026-03-21T23:51:10Z    INFO    packet distribution calculated  {"total_entries": 1, "num_bases": 1, "parallelism": 1, "num_cpus": 64, "counts_per_cpu": [1]}
+2026-03-21T23:51:10Z    INFO    base packet maps initialized    {"num_bases": 1}
+2026-03-21T23:51:10Z    INFO    diff map populated      {"num_entries": 1, "num_cpus": 64, "max_count_per_cpu": 1}
+2026-03-21T23:51:10Z    INFO    checksum meta maps initialized  {"num_bases": 1, "total_checksums": 2}
+2026-03-21T23:51:10Z    INFO    BPF maps initialized
+2026-03-21T23:51:10Z    INFO    TX packet processing started (infinite) {"parallelism": 1, "packet_pool_size": 1, "target_pps": 0, "repeat_per_batch": 1048576, "batch_size": 256, "total_batches_per_cpu": 0, "batch_interval": "0s", "infinite_mode": true}
+2,335,807 xmit/s, 22,133.43 Mbps
+2,382,658 xmit/s, 22,577.37 Mbps
+2,386,800 xmit/s, 22,616.62 Mbps
+2,344,430 xmit/s, 22,215.13 Mbps
+2,384,529 xmit/s, 22,595.10 Mbps
+2,385,075 xmit/s, 22,600.27 Mbps
+2,336,158 xmit/s, 22,136.75 Mbps
+```
+
+### 50core(after)
+```shell
+$ sudo ./out/bin/xdperf run --plugin=simpleudp.go --device=enp138s0f0np0 --plugin-path="./out/bin" --count 50 --parallelism 50 --infinite --batch-size 64 --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 64, "is_arp_resolve":false}'
+2026-03-21T23:15:37Z    INFO    xdperf wasm plugin loader initialized
+2026-03-21T23:15:37Z    INFO    calculated map sizes    {"tx_override_map_size": 2, "diff_map_size": 2}
+2026-03-21T23:15:38Z    INFO    xdperf xdp code loader initialized
+2026-03-21T23:15:38Z    INFO    start client mode
+2026-03-21T23:15:38Z    INFO    testing simple plugin communication
+[PLUGIN] [1] plugin initialized!: msg ->{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 64, "is_arp_resolve":false}
+[PLUGIN] [1] plugin version: dev, commit: none, date: unknown
+2026-03-21T23:15:38Z    INFO    plugin initialized successfully
+2026-03-21T23:15:38Z    INFO    calling plugin  {"merged_config": {"count":50,"device_mac_addr":"QKa3laLQ","device_name":"enp138s0f0np0","dst_ip":"192.168.1.2","dst_port":10001,"is_arp_resolve":false,"payload_size":64,"src_ip":"192.168.1.1"}}
+[PLUGIN] [1] plugin_process called with input: {"src_ip":"192.168.1.1","dst_ip":"192.168.1.2","dst_mac":"ff:ff:ff:ff:ff:ff","is_arp_resolve":false,"src_port":1234,"dst_port":10001,"payload_size":64,"count":50,"device_mac_addr":"QKa3laLQ","device_name":"enp138s0f0np0"}
+[METRIC] gen resp count 1.000000 time=2026-03-21T23:15:38.104877516Z
+[PLUGIN] [1] response sent
+2026-03-21T23:15:38Z    INFO    after GenerateTemplate success
+2026-03-21T23:15:38Z    INFO    received response       {"pattern": "sequential", "raw_packet_template_count": 0, "variable_packet_template_count": 1}
+2026-03-21T23:15:38Z    INFO    plugin call successful
+2026-03-21T23:15:38Z    INFO    packet entries generated        {"template_type": "variable", "num_bases": 1, "num_entries": 50, "total_checksums": 2}
+2026-03-21T23:15:38Z    INFO    packet distribution calculated  {"total_entries": 50, "num_bases": 1, "parallelism": 50, "num_cpus": 64, "counts_per_cpu": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]}
+2026-03-21T23:15:38Z    INFO    base packet maps initialized    {"num_bases": 1}
+2026-03-21T23:15:38Z    INFO    diff map populated      {"num_entries": 50, "num_cpus": 64, "max_count_per_cpu": 1}
+2026-03-21T23:15:38Z    INFO    checksum meta maps initialized  {"num_bases": 1, "total_checksums": 2}
+2026-03-21T23:15:38Z    INFO    BPF maps initialized
+2026-03-21T23:15:38Z    INFO    TX packet processing started (infinite) {"parallelism": 50, "packet_pool_size": 50, "target_pps": 0, "repeat_per_batch": 1048576, "batch_size": 64, "total_batches_per_cpu": 0, "batch_interval": "0s", "infinite_mode": true}
+110,505,244 xmit/s, 89,367.34 Mbps
+113,027,996 xmit/s, 91,407.53 Mbps
+108,708,027 xmit/s, 87,913.90 Mbps
+107,752,480 xmit/s, 87,141.13 Mbps
+107,804,080 xmit/s, 87,182.86 Mbps
+107,955,753 xmit/s, 87,305.53 Mbps
+107,731,458 xmit/s, 87,124.13 Mbps
+107,816,944 xmit/s, 87,193.27 Mbps
+107,567,108 xmit/s, 86,991.22 Mbps
+107,738,984 xmit/s, 87,130.22 Mbps
+107,794,842 xmit/s, 87,175.39 Mbps
+107,690,096 xmit/s, 87,090.68 Mbps
+107,477,386 xmit/s, 86,918.66 Mbps
+```
+
+### perf撮り方
+ちなみにこうやるとカーネルの性能情報が取れそう
+```shell
+# 実行中にこれを起動する
+sudo perf record -g -a -- sleep 5
+
+# この辺を使ってみてみると色々わかる
+sudo perf report --sort=symbol --no-children | head -30
+```
