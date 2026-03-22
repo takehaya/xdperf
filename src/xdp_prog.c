@@ -819,18 +819,11 @@ int xdp_tx(struct xdp_md *ctx)
             }
         } else {
             // Last partial chunk - compute remaining bytes
-            // Use signed arithmetic so compiler doesn't optimize away the < 1 check
-            __s32 remaining_signed = (__s32)target_len - (__s32)offset;
-
-            // Bounds check with signed comparison - compiler can't optimize this away
-            if (remaining_signed < 1 || remaining_signed >= COPY_CHUNK_SIZE)
+            // Use 'var &= const' pattern for verifier bounds proof (works across LLVM versions)
+            __u32 remaining = target_len - offset;
+            remaining &= (COPY_CHUNK_SIZE - 1); // Mask to [0, 63], verifier-friendly
+            if (remaining == 0)
                 break;
-
-            // Convert to unsigned after bounds are established
-            __u32 remaining = (__u32)remaining_signed;
-
-            // Barrier to ensure verifier sees the bounded value
-            asm volatile("" : "+r"(remaining));
 
             long ret = bpf_xdp_store_bytes(ctx, offset, base->data + offset, remaining);
             if (ret < 0) {

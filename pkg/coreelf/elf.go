@@ -1,12 +1,13 @@
 package coreelf
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"structs"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/pkg/errors"
 )
 
 // MaxPacketEntry is the maximum number of entries for tx_override_map.
@@ -28,7 +29,8 @@ type XdpMd struct {
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -I ./src -I /usr/include/x86_64-linux-gnu
 
-func ReadCollection(constants map[string]interface{}, mapSize uint32, diffMapSize uint32) (*BpfObjects, *ebpf.CollectionSpec, error) {
+func ReadCollection(constants map[string]any, mapSize uint32, diffMapSize uint32, debug ...bool) (*BpfObjects, *ebpf.CollectionSpec, error) {
+	debugMode := len(debug) > 0 && debug[0]
 	// Remove memory limit for BPF
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, nil, fmt.Errorf("failed to remove memory limit: %w", err)
@@ -64,15 +66,9 @@ func ReadCollection(constants map[string]interface{}, mapSize uint32, diffMapSiz
 			return nil, nil, err
 		}
 	}
-	err = spec.LoadAndAssign(objs, &ebpf.CollectionOptions{
-		Programs: ebpf.ProgramOptions{LogSizeStart: 1073741823, LogLevel: ebpf.LogLevelInstruction},
-	})
+	err = spec.LoadAndAssign(objs, nil)
 	if err != nil {
-		var verr *ebpf.VerifierError
-		if errors.As(err, &verr) {
-			fmt.Printf("%+v\n", verr)
-		}
-		return nil, nil, fmt.Errorf("fail to load and assign bpf objects: %w", err)
+		return nil, nil, fmt.Errorf("fail to load bpf objects: %w", loadWithVerifierLog(spec, objs, debugMode))
 	}
 
 	// Populate the prog_array for tail calls
@@ -124,4 +120,31 @@ func LoadDummyProgram() (*ebpf.Program, func(), error) {
 	}
 
 	return prog, cleanup, nil
+}
+
+// loadWithVerifierLog retries loading with verbose verifier log and returns the error.
+func loadWithVerifierLog(spec *ebpf.CollectionSpec, objs *BpfObjects, debugMode bool) error {
+	err := spec.LoadAndAssign(objs, &ebpf.CollectionOptions{
+		Programs: ebpf.ProgramOptions{LogSizeStart: 1 << 30, LogLevel: ebpf.LogLevelInstruction},
+	})
+	if err == nil {
+		return nil
+	}
+	var verr *ebpf.VerifierError
+	if !errors.As(err, &verr) {
+		return err
+	}
+	if debugMode {
+		fmt.Printf("%+v\n", verr)
+		return err
+	}
+	log := fmt.Sprintf("%+v", verr)
+	lines := strings.Split(log, "\n")
+	const tailLines = 50
+	if len(lines) > tailLines {
+		fmt.Printf("... (%d lines truncated, use --debugmode for full log)\n", len(lines)-tailLines)
+		lines = lines[len(lines)-tailLines:]
+	}
+	fmt.Println(strings.Join(lines, "\n"))
+	return err
 }

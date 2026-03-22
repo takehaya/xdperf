@@ -94,7 +94,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		zap.Uint32("diff_map_size", diffMapSize),
 	)
 
-	obj, bpfSpec, err := coreelf.ReadCollection(consts, mapSize, diffMapSize)
+	obj, bpfSpec, err := coreelf.ReadCollection(consts, mapSize, diffMapSize, cfg.DebugMode > 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load eBPF objects: %w", err)
 	}
