@@ -1,6 +1,6 @@
 # tips
 ## なぜかpacketが飛んでいかない
-### Dummy　XDP　ProgをAttachしていない
+### Dummy XDP ProgをAttachしていない
 何も気にしないで実行するとこんな感じで失敗してしまってるのがわかる。以下`trace-cmd`の様子です。
 ```shell
 $ sudo trace-cmd stream -e xdp
