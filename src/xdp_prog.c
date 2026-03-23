@@ -22,6 +22,50 @@ char _license[] SEC("license") = "GPL";
 // Minimum packet size for chunk-based copy (must be >= 64 for verifier bounds)
 #define COPY_CHUNK_SIZE 64
 
+// Maximum number of full-size chunks (2048 / 64 = 32)
+#define MAX_COPY_CHUNKS 32
+
+// Copy base packet to XDP buffer using fixed-size chunks.
+// Extracted as __noinline to isolate verifier state from the caller — the
+// unrolled 32-iteration loop generates many verifier states on its own;
+// keeping it inline together with the apply_diff switch loop pushes kernel
+// 6.1's verifier over the 1M processed-instruction limit.
+static __noinline int copy_base_packet(struct xdp_md *ctx, struct base_packet *base, __u16 target_len)
+{
+    // Re-establish bounds for verifier — __noinline loses caller's constraints.
+    // Without this, the verifier sees target_len as [0, 65535] and allows
+    // chunk offsets that exceed base->data[MAX_PACKET_SIZE].
+    if (target_len < COPY_CHUNK_SIZE || target_len > MAX_PACKET_SIZE)
+        return -1;
+
+    // First chunk: always copy 64 bytes
+    if (bpf_xdp_store_bytes(ctx, 0, base->data, COPY_CHUNK_SIZE) < 0)
+        return -1;
+
+    for (int chunk = 1; chunk <= MAX_COPY_CHUNKS; chunk++) {
+        __u32 offset = chunk * COPY_CHUNK_SIZE;
+
+        // Direct constant comparison so the verifier can prove
+        // base->data + offset is in bounds.  On kernel 6.1 the
+        // target_len <= offset check alone is not enough because
+        // the verifier does not prune impossible umin > umax states.
+        if (offset >= MAX_PACKET_SIZE)
+            break;
+
+        if (target_len <= offset)
+            break;
+
+        if (target_len >= offset + COPY_CHUNK_SIZE) {
+            if (bpf_xdp_store_bytes(ctx, offset, base->data + offset, COPY_CHUNK_SIZE) < 0)
+                break;
+        } else {
+            break; // Partial chunk handled by tail copy in caller
+        }
+    }
+
+    return 0;
+}
+
 // Expose COPY_CHUNK_SIZE to Go via spec.Variables
 volatile __u32 min_packet_size = COPY_CHUNK_SIZE;
 
@@ -106,35 +150,37 @@ int xdp_rx(struct xdp_md *ctx)
     RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
 }
 
-// Check if size is a supported diff size for bpf_xdp_store_bytes
-// Supported sizes: 1, 2, 4, 6, 8 bytes
-static __always_inline bool is_supported_diff_size(__u8 size)
-{
-    switch (size) {
-    case 1:
-    case 2:
-    case 4:
-    case 6:
-    case 8:
-        return true;
-    default:
-        return false;
-    }
-}
-
 // Apply a single diff value to the packet
 // Uses bpf_xdp_store_bytes() to avoid verifier issues with variable-offset writes
 // new_value is stored in big-endian (network byte order)
 // Note: __noinline prevents verifier state explosion when called from unrolled loop
+//
+// Each bpf_xdp_store_bytes call uses a literal constant size. On kernel 6.1,
+// the verifier cannot narrow umin through JEQ fall-through, so passing a
+// variable size always risks "size=0" rejection regardless of prior checks.
 static __noinline bool apply_diff(struct xdp_md *ctx, struct diff_value *dv)
 {
-    if (dv->size == 0 || dv->offset == 0xFFFF)
+    if (dv->offset == 0xFFFF)
+        return true; // Skip sentinel
+
+    __u16 offset = dv->offset;
+
+    switch (dv->size) {
+    case 0:
         return true; // Skip empty diff
-
-    if (!is_supported_diff_size(dv->size))
-        return false;
-
-    return bpf_xdp_store_bytes(ctx, dv->offset, dv->new_value, dv->size) >= 0;
+    case 1:
+        return bpf_xdp_store_bytes(ctx, offset, dv->new_value, 1) >= 0;
+    case 2:
+        return bpf_xdp_store_bytes(ctx, offset, dv->new_value, 2) >= 0;
+    case 4:
+        return bpf_xdp_store_bytes(ctx, offset, dv->new_value, 4) >= 0;
+    case 6:
+        return bpf_xdp_store_bytes(ctx, offset, dv->new_value, 6) >= 0;
+    case 8:
+        return bpf_xdp_store_bytes(ctx, offset, dv->new_value, 8) >= 0;
+    default:
+        return false; // Unsupported size
+    }
 }
 
 // Ensure IPPROTO_ETHERNET is defined (not present in older kernel headers)
@@ -779,57 +825,25 @@ int xdp_tx(struct xdp_md *ctx)
     }
 
     // 6. Copy base packet
-    // The verifier loses scalar bounds after helper calls.
-    // Solution: Copy in fixed-size chunks with compile-time constants.
-    // Require minimum COPY_CHUNK_SIZE byte packets for chunk-based copy.
-
-    // Require minimum packet size
     if (target_len < COPY_CHUNK_SIZE) {
         DEBUG_PRINT("packet too small (min 64 bytes): %u\n", target_len);
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // First chunk: always copy 64 bytes
-    long ret1 = bpf_xdp_store_bytes(ctx, 0, base->data, COPY_CHUNK_SIZE);
-    if (ret1 < 0) {
-        DEBUG_PRINT("bpf_xdp_store_bytes chunk1 failed: %ld\n", ret1);
+    if (copy_base_packet(ctx, base, target_len) < 0) {
+        DEBUG_PRINT("copy_base_packet failed\n");
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-// Second chunk: copy remaining bytes if packet > 64 bytes
-// Use fixed-size chunks with compile-time constant for verifier
-// Support up to 2048 bytes (32 chunks of 64 bytes) to match MAX_PACKET_SIZE
-#define MAX_COPY_CHUNKS 32
-
-#pragma unroll
-    for (int chunk = 1; chunk <= MAX_COPY_CHUNKS; chunk++) {
-        __u32 offset = chunk * COPY_CHUNK_SIZE;
-
-        // Check if we need this chunk
-        if (target_len <= offset)
-            break;
-
-        // Check if this is a full chunk or partial chunk
-        if (target_len >= offset + COPY_CHUNK_SIZE) {
-            // Full chunk - use constant size
-            long ret = bpf_xdp_store_bytes(ctx, offset, base->data + offset, COPY_CHUNK_SIZE);
-            if (ret < 0) {
-                DEBUG_PRINT("bpf_xdp_store_bytes chunk %d failed\n", chunk);
-                break;
-            }
-        } else {
-            // Last partial chunk - compute remaining bytes
-            // Use 'var &= const' pattern for verifier bounds proof (works across LLVM versions)
-            __u32 remaining = target_len - offset;
-            remaining &= (COPY_CHUNK_SIZE - 1); // Mask to [0, 63], verifier-friendly
-            if (remaining == 0)
-                break;
-
-            long ret = bpf_xdp_store_bytes(ctx, offset, base->data + offset, remaining);
-            if (ret < 0) {
-                DEBUG_PRINT("bpf_xdp_store_bytes last chunk failed\n");
-            }
-            break; // This was the last chunk
+    // Tail copy: re-copy the last COPY_CHUNK_SIZE bytes to cover partial chunks.
+    // Must be in the caller (not in __noinline copy_base_packet) because the
+    // kernel 6.1 verifier loses map_value type tracking for pointer arguments
+    // passed through __noinline boundaries when combined with variable offsets.
+    if (target_len > COPY_CHUNK_SIZE) {
+        __u32 tail_off = target_len - COPY_CHUNK_SIZE;
+        tail_off &= (MAX_PACKET_SIZE - 1); // Bound for verifier: [0, 2047]
+        if (tail_off <= MAX_PACKET_SIZE - COPY_CHUNK_SIZE) {
+            bpf_xdp_store_bytes(ctx, tail_off, base->data + tail_off, COPY_CHUNK_SIZE);
         }
     }
 
