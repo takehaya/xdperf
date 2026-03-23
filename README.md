@@ -180,6 +180,21 @@ make bpf-gen
 # CEXTRA_FLAGS="-DXDPERF_DEBUG" make bpf-gen
 ```
 
+### Multi kernel version test
+```shell
+# Prerequisite: install vimto with static linking (once)
+CGO_ENABLED=0 go install lmb.io/vimto@v0.4.0
+
+# Enable KVM access (once, resets on reboot)
+sudo chmod 0666 /dev/kvm
+
+# Run tests on a specific kernel version
+vimto -kernel :6.1 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
+vimto -kernel :6.6 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
+vimto -kernel :6.12 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
+vimto -kernel :6.18 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
+```
+
 ## Inspired by
 - We implemented the packet transmission mechanism with reference to [xdp-trafficgen](https://github.com/xdp-project/xdp-tools/tree/main/xdp-trafficgen). I think elements such as its probe implementation are excellent.
 - We adopted the name xdperf simply because we thought it was a good name. See also [https://github.com/higebu/xdperf](https://github.com/higebu/xdperf)
