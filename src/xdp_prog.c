@@ -725,10 +725,8 @@ static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct check
 
     DEBUG_PRINT("csum_diff: old_csum=0x%x seed=0x%x diff_count=%d is_udp=%d\n", old_csum, csum, diff_count, is_udp);
 
-    // Apply bpf_csum_diff for each diff using values from diff_value struct
-    // No variable-offset map access needed
     // NOTE: Do NOT use #pragma unroll here - it causes verifier state explosion
-    // The bounded loop (i < MAX_DIFFS_PER_PACKET where MAX=8) is handled by the verifier
+    // The bounded loop (i < MAX_DIFFS_PER_PACKET) is handled by the verifier
     // Each iteration calls __noinline apply_single_csum_diff to isolate branching
     for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
         if (i >= diff_count)

@@ -39,7 +39,7 @@ type BpfDatarec struct {
 
 type BpfDiffEntry struct {
 	_     structs.HostLayout
-	Diffs [4]struct {
+	Diffs [6]struct {
 		_        structs.HostLayout
 		OldValue [8]uint8
 		NewValue [8]uint8
