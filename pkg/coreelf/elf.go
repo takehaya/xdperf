@@ -75,10 +75,18 @@ func ReadCollection(constants map[string]any, mapSize uint32, diffMapSize uint32
 	}
 
 	// Populate the prog_array for tail calls
-	// xdp_tx tail-calls to xdp_tx_checksum at index 0
+	// Index 0: xdp_tx_checksum (len_changed path)
+	// Index 1: xdp_tx_csum_diff (incremental checksum path)
 	if objs.XdpProgs != nil && objs.XdpTxChecksum != nil {
 		checksumProgFD := uint32(objs.XdpTxChecksum.FD())
 		if err := objs.XdpProgs.Put(uint32(0), checksumProgFD); err != nil {
+			objs.Close()
+			return nil, nil, fmt.Errorf("fail to populate xdp_progs map: %w", err)
+		}
+	}
+	if objs.XdpProgs != nil && objs.XdpTxCsumDiff != nil {
+		csumDiffProgFD := uint32(objs.XdpTxCsumDiff.FD())
+		if err := objs.XdpProgs.Put(uint32(1), csumDiffProgFD); err != nil {
 			objs.Close()
 			return nil, nil, fmt.Errorf("fail to populate xdp_progs map: %w", err)
 		}

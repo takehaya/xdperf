@@ -912,8 +912,39 @@ int xdp_tx(struct xdp_md *ctx)
     RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
 }
 
+// Helper: update round-robin index and stats (shared by checksum programs)
+static __always_inline void update_stats_and_index(__u32 local_idx, __u16 target_len, __u8 diff_errors, __u8 checksum_errors)
+{
+    __u32 zero = 0;
+
+    // Update index (round-robin)
+    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
+    if (state) {
+        __u32 count = state->count;
+        if (count > MAX_DIFF_ENTRIES)
+            count = MAX_DIFF_ENTRIES;
+        __u32 next = local_idx + 1;
+        if (next >= count)
+            next = 0;
+        state->idx = next;
+    }
+
+    // Update stats
+    struct datarec *rec = bpf_map_lookup_elem(&tx_stats_map, &zero);
+    if (rec) {
+        rec->packets++;
+        rec->bytes += target_len;
+        if (diff_errors)
+            rec->diff_errors += diff_errors;
+        if (checksum_errors)
+            rec->checksum_errors += checksum_errors;
+    }
+}
+
 // Second part of xdp_tx: checksum processing and stats update
 // Called via tail call from xdp_tx to avoid verifier instruction limit
+// Handles len_changed path (full recalculation) and dispatches to
+// xdp_tx_csum_diff for incremental checksum updates
 SEC("xdp")
 int xdp_tx_checksum(struct xdp_md *ctx)
 {
@@ -929,9 +960,78 @@ int xdp_tx_checksum(struct xdp_md *ctx)
     __u32 base_idx = tc_ctx->base_idx;
     __u32 local_idx = tc_ctx->local_idx;
     __u16 target_len = tc_ctx->target_len;
-    __u8 diff_count = tc_ctx->diff_count;
+    __u8 diff_errors = tc_ctx->diff_errors;
     __u8 checksum_count = tc_ctx->checksum_count;
     __u8 len_changed = tc_ctx->len_changed;
+
+    // Bounds check
+    if (checksum_count > MAX_CHECKSUM_ENTRIES)
+        checksum_count = MAX_CHECKSUM_ENTRIES;
+    if (base_idx >= MAX_BASE_PACKETS)
+        base_idx = 0;
+
+    // 2. If length unchanged, tail call to dedicated incremental checksum program
+    if (!len_changed) {
+        bpf_tail_call(ctx, &xdp_progs, XDP_PROG_CSUM_DIFF);
+        // Tail call failed
+        DEBUG_PRINT("tail call to xdp_tx_csum_diff failed\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    // 3. len_changed path: update IP/UDP length fields, then recalculate checksums from scratch
+    __u8 checksum_errors = 0;
+
+    if (!update_packet_lengths(ctx, target_len)) {
+        DEBUG_PRINT("update_packet_lengths failed\n");
+        checksum_errors++;
+    }
+
+    // Recalculate checksums from scratch
+    // Error handling strategy:
+    // - meta lookup fail: break (map issue, subsequent lookups likely fail too)
+    // - recalc fail: continue (only affects this checksum, others may succeed)
+    __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
+    for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
+        if (i >= checksum_count)
+            break;
+        __u32 csum_idx = csum_base_offset + i;
+        struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
+        if (!meta) {
+            DEBUG_PRINT("checksum_meta_map lookup failed at %d\n", i);
+            checksum_errors++;
+            break;
+        }
+        if (!recalc_checksum(ctx, meta, target_len)) {
+            DEBUG_PRINT("recalc_checksum failed at %d\n", i);
+            checksum_errors++;
+        }
+    }
+
+    update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
+    DEBUG_PRINT("xdp_tx_checksum: idx=%u len=%u\n", local_idx, target_len);
+    RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
+}
+
+// Third part of xdp_tx: incremental checksum updates using bpf_csum_diff
+// Called via tail call from xdp_tx_checksum when packet length is unchanged
+// Split into separate program to stay under verifier instruction limit
+SEC("xdp")
+int xdp_tx_csum_diff(struct xdp_md *ctx)
+{
+    __u32 zero = 0;
+
+    // 1. Retrieve context from tail call
+    struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
+    if (!tc_ctx) {
+        DEBUG_PRINT("tail_call_ctx_map lookup failed in csum_diff\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    __u32 base_idx = tc_ctx->base_idx;
+    __u32 local_idx = tc_ctx->local_idx;
+    __u16 target_len = tc_ctx->target_len;
+    __u8 diff_count = tc_ctx->diff_count;
+    __u8 checksum_count = tc_ctx->checksum_count;
     __u8 diff_errors = tc_ctx->diff_errors;
 
     // Bounds check
@@ -943,83 +1043,34 @@ int xdp_tx_checksum(struct xdp_md *ctx)
     // 2. Get diff entry for incremental checksum (need diffs array)
     struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
     if (!diff) {
-        DEBUG_PRINT("diff_map lookup failed in checksum\n");
+        DEBUG_PRINT("diff_map lookup failed in csum_diff\n");
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // 3. Handle checksums - use incremental or full recalculation based on length change
+    // 3. Apply incremental checksum updates using bpf_csum_diff
+    // Error handling strategy:
+    // - meta lookup fail: break (map issue, subsequent lookups likely fail too)
+    // - csum_diff fail: continue (only affects this checksum, others may succeed)
     __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
     __u8 checksum_errors = 0;
 
-    if (len_changed) {
-        // Packet length changed - update IP/UDP length fields first
-        if (!update_packet_lengths(ctx, target_len)) {
-            DEBUG_PRINT("update_packet_lengths failed\n");
+    for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
+        if (i >= checksum_count)
+            break;
+        __u32 csum_idx = csum_base_offset + i;
+        struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
+        if (!meta) {
+            DEBUG_PRINT("checksum_meta_map lookup failed at %d\n", i);
+            checksum_errors++;
+            break;
+        }
+        if (!apply_csum_with_bpf_diff(ctx, meta, diff->diffs, diff_count, target_len)) {
+            DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
             checksum_errors++;
         }
-
-        // Then recalculate checksums from scratch
-        // Error handling strategy:
-        // - meta lookup fail: break (map issue, subsequent lookups likely fail too)
-        // - recalc fail: continue (only affects this checksum, others may succeed)
-        for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
-            if (i >= checksum_count)
-                break;
-            __u32 csum_idx = csum_base_offset + i;
-            struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
-            if (!meta) {
-                DEBUG_PRINT("checksum_meta_map lookup failed at %d\n", i);
-                checksum_errors++;
-                break;
-            }
-            if (!recalc_checksum(ctx, meta, target_len)) {
-                DEBUG_PRINT("recalc_checksum failed at %d\n", i);
-                checksum_errors++;
-            }
-        }
-    } else {
-        // Packet length unchanged - use bpf_csum_diff for incremental updates
-        // Same error handling strategy as above
-        for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
-            if (i >= checksum_count)
-                break;
-            __u32 csum_idx = csum_base_offset + i;
-            struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
-            if (!meta) {
-                DEBUG_PRINT("checksum_meta_map lookup failed at %d\n", i);
-                checksum_errors++;
-                break;
-            }
-            if (!apply_csum_with_bpf_diff(ctx, meta, diff->diffs, diff_count, target_len)) {
-                DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
-                checksum_errors++;
-            }
-        }
     }
 
-    // 4. Update index (round-robin)
-    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
-    if (state) {
-        __u32 count = state->count;
-        if (count > MAX_DIFF_ENTRIES)
-            count = MAX_DIFF_ENTRIES;
-        __u32 next = local_idx + 1;
-        if (next >= count)
-            next = 0;
-        state->idx = next;
-    }
-
-    // 5. Update stats
-    struct datarec *rec = bpf_map_lookup_elem(&tx_stats_map, &zero);
-    if (rec) {
-        rec->packets++;
-        rec->bytes += target_len;
-        if (diff_errors)
-            rec->diff_errors += diff_errors;
-        if (checksum_errors)
-            rec->checksum_errors += checksum_errors;
-    }
-
-    DEBUG_PRINT("xdp_tx_checksum: idx=%u len=%u\n", local_idx, target_len);
+    update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
+    DEBUG_PRINT("xdp_tx_csum_diff: idx=%u len=%u\n", local_idx, target_len);
     RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
 }
