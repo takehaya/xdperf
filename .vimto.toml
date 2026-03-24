@@ -1,0 +1,4 @@
+kernel = "ghcr.io/cilium/ci-kernels:stable-selftests"
+memory = "2G"
+smp = "cpus=2"
+user = "root"

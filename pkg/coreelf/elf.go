@@ -3,7 +3,6 @@ package coreelf
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"structs"
 
 	"github.com/cilium/ebpf"
@@ -68,7 +67,11 @@ func ReadCollection(constants map[string]any, mapSize uint32, diffMapSize uint32
 	}
 	err = spec.LoadAndAssign(objs, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("fail to load bpf objects: %w", loadWithVerifierLog(spec, objs, debugMode))
+		if debugMode {
+			// Retry with verbose verifier log (expensive — can OOM in small VMs)
+			return nil, nil, fmt.Errorf("fail to load bpf objects: %w", loadWithVerifierLog(spec, objs))
+		}
+		return nil, nil, fmt.Errorf("fail to load bpf objects: %w", err)
 	}
 
 	// Populate the prog_array for tail calls
@@ -123,7 +126,9 @@ func LoadDummyProgram() (*ebpf.Program, func(), error) {
 }
 
 // loadWithVerifierLog retries loading with verbose verifier log and returns the error.
-func loadWithVerifierLog(spec *ebpf.CollectionSpec, objs *BpfObjects, debugMode bool) error {
+// Only called in debug mode — instruction-level verifier logging is expensive and
+// can OOM in memory-constrained CI VMs (especially on older kernels like 6.1).
+func loadWithVerifierLog(spec *ebpf.CollectionSpec, objs *BpfObjects) error {
 	err := spec.LoadAndAssign(objs, &ebpf.CollectionOptions{
 		Programs: ebpf.ProgramOptions{LogSizeStart: 1 << 30, LogLevel: ebpf.LogLevelInstruction},
 	})
@@ -134,17 +139,6 @@ func loadWithVerifierLog(spec *ebpf.CollectionSpec, objs *BpfObjects, debugMode 
 	if !errors.As(err, &verr) {
 		return err
 	}
-	if debugMode {
-		fmt.Printf("%+v\n", verr)
-		return err
-	}
-	log := fmt.Sprintf("%+v", verr)
-	lines := strings.Split(log, "\n")
-	const tailLines = 50
-	if len(lines) > tailLines {
-		fmt.Printf("... (%d lines truncated, use --debugmode for full log)\n", len(lines)-tailLines)
-		lines = lines[len(lines)-tailLines:]
-	}
-	fmt.Println(strings.Join(lines, "\n"))
+	fmt.Printf("%+v\n", verr)
 	return err
 }

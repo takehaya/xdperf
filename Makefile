@@ -67,6 +67,10 @@ test-runnable: ## check no panic at init()
 test: ## Run the tests of the project
 	$(GOTEST) -v -exec sudo -race ./... $(OUTPUT_OPTIONS)
 
+.PHONY: test-bpf
+test-bpf: ## Run BPF program load tests (requires root/CAP_BPF)
+	$(GOTEST) -v -exec sudo ./pkg/coreelf/ -run TestBpf
+
 ## Golang:
 .PHONY: bpf-gen
 

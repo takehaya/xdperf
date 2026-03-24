@@ -1,0 +1,86 @@
+---
+name: BPF load test
+
+on:
+  push:
+    paths:
+      - 'go.*'
+      - '**.go'
+      - '**.h'
+      - '**.c'
+      - 'pkg/coreelf/**'
+      - '.github/workflows/bpf_load_test.yaml'
+  pull_request:
+    paths:
+      - 'go.*'
+      - '**.go'
+      - '**.h'
+      - '**.c'
+      - 'pkg/coreelf/**'
+      - '.github/workflows/bpf_load_test.yaml'
+
+jobs:
+  bpf-load-test:
+    name: BPF load test (kernel ${{ matrix.kernel }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel:
+          - "6.1"
+          - "6.6"
+          - "6.12"
+          - "6.18"
+    permissions:
+      contents: read
+    env:
+      VIMTO_VERSION: v0.4.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ./go.mod
+
+      - name: Cache vimto binary
+        uses: actions/cache@v4
+        id: vimto-cache
+        with:
+          path: ~/go/bin/vimto
+          key: vimto-bin-${{ runner.os }}-${{ env.VIMTO_VERSION }}
+
+      - name: Install vimto
+        if: steps.vimto-cache.outputs.cache-hit != 'true'
+        run: CGO_ENABLED=0 go install lmb.io/vimto@${{ env.VIMTO_VERSION }}
+
+      - name: Cache QEMU packages
+        uses: actions/cache@v4
+        id: qemu-cache
+        with:
+          path: ~/.cache/qemu-debs
+          key: qemu-debs-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install QEMU
+        run: |
+          if [ -d ~/.cache/qemu-debs ]; then
+            sudo cp ~/.cache/qemu-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+          mkdir -p ~/.cache/qemu-debs
+          cp /var/cache/apt/archives/qemu*.deb ~/.cache/qemu-debs/ 2>/dev/null || true
+
+      - name: Enable KVM
+        run: sudo chmod 0666 /dev/kvm
+
+      - name: Cache kernel images
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vimto
+          key: vimto-kernel-${{ matrix.kernel }}
+
+      - name: Run BPF load test
+        run: vimto -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
