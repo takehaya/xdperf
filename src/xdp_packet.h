@@ -15,7 +15,7 @@
 #define MAX_DIFF_ENTRIES 131072
 
 // Maximum number of checksum metadata entries per base packet
-#define MAX_CHECKSUM_ENTRIES 2
+#define MAX_CHECKSUM_ENTRIES 4
 
 // Maximum number of base packets (variants)
 #define MAX_BASE_PACKETS 16
