@@ -683,12 +683,81 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
     return csum;
 }
 
-// Apply checksum updates using bpf_csum_diff for each diff value
-// Uses old_value and new_value from diff_value struct directly, avoiding map access
-// Constructs 4-byte aligned values with zero padding that doesn't affect the checksum result
-// Note: __noinline prevents verifier state explosion when called from unrolled loop
-static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, struct diff_value *diffs,
-                                                __u8 diff_count, __u16 pkt_len)
+// Context for bpf_loop callback that applies incremental checksum diffs.
+// We store local_idx instead of a diffs pointer because map_value type
+// information is lost when passed through the void* callback context,
+// causing "R2 unbounded memory access" on the verifier.
+struct csum_diff_loop_ctx {
+    struct xdp_md *ctx;
+    struct checksum_meta *meta;
+    __u32 local_idx;
+    __u8 diff_count;
+    __u16 pkt_len;
+    __wsum csum;
+};
+
+// bpf_loop callback: apply a single diff to the running checksum.
+// The verifier verifies this callback body once regardless of iteration count,
+// avoiding the per-iteration state explosion from apply_single_csum_diff branching.
+static long csum_diff_loop_callback(__u32 idx, void *vctx)
+{
+    struct csum_diff_loop_ctx *c = vctx;
+    if (idx >= MAX_DIFFS_PER_PACKET)
+        return 1;
+    if (idx >= c->diff_count)
+        return 1;
+
+    // Re-lookup diff_map to get a fresh map_value pointer the verifier trusts
+    struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &c->local_idx);
+    if (!diff)
+        return 1;
+
+    // Use switch with constant indices instead of diff->diffs[idx].
+    // Older kernel verifiers (6.1–6.12) cannot prove bounds after idx * sizeof(diff_value)
+    // multiplication, even with prior range checks. Constant indices give the verifier
+    // compile-time-known offsets into the map_value.
+    struct diff_value *dv;
+    switch (idx) {
+    case 0:
+        dv = &diff->diffs[0];
+        break;
+    case 1:
+        dv = &diff->diffs[1];
+        break;
+    case 2:
+        dv = &diff->diffs[2];
+        break;
+    case 3:
+        dv = &diff->diffs[3];
+        break;
+    case 4:
+        dv = &diff->diffs[4];
+        break;
+    case 5:
+        dv = &diff->diffs[5];
+        break;
+    case 6:
+        dv = &diff->diffs[6];
+        break;
+    case 7:
+        dv = &diff->diffs[7];
+        break;
+    default:
+        return 1;
+    }
+    c->csum = apply_single_csum_diff(c->ctx, dv, c->meta, c->pkt_len, c->csum);
+    return 0;
+}
+
+// Apply checksum updates using bpf_csum_diff for each diff value.
+// Uses bpf_loop + callback to avoid verifier state explosion on older kernels
+// (6.1) where the bounded for-loop causes MAX_CHECKSUM_ENTRIES * MAX_DIFFS_PER_PACKET
+// * branches to exceed the 1M instruction limit.
+// Takes local_idx (diff_map key) instead of a diffs pointer because map_value type
+// information is lost when passed through the void* bpf_loop callback context.
+// Note: __noinline prevents verifier state explosion when called from outer loop
+static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, __u32 local_idx, __u8 diff_count,
+                                                __u16 pkt_len)
 {
     // Load current checksum value from packet (base packet was copied, checksum not yet modified)
     // No byte order conversion - values are in network byte order as read from packet
@@ -725,14 +794,18 @@ static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct check
 
     DEBUG_PRINT("csum_diff: old_csum=0x%x seed=0x%x diff_count=%d is_udp=%d\n", old_csum, csum, diff_count, is_udp);
 
-    // NOTE: Do NOT use #pragma unroll here - it causes verifier state explosion
-    // The bounded loop (i < MAX_DIFFS_PER_PACKET) is handled by the verifier
-    // Each iteration calls __noinline apply_single_csum_diff to isolate branching
-    for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
-        if (i >= diff_count)
-            break;
-        csum = apply_single_csum_diff(ctx, &diffs[i], meta, pkt_len, csum);
-    }
+    // Use bpf_loop to apply diffs — the verifier checks the callback once,
+    // avoiding per-iteration state explosion from apply_single_csum_diff branching.
+    struct csum_diff_loop_ctx loop_ctx = {
+        .ctx = ctx,
+        .meta = meta,
+        .local_idx = local_idx,
+        .diff_count = diff_count,
+        .pkt_len = pkt_len,
+        .csum = csum,
+    };
+    bpf_loop(diff_count, csum_diff_loop_callback, &loop_ctx, 0);
+    csum = loop_ctx.csum;
 
     // Fold and finalize the checksum
     DEBUG_PRINT("csum_diff: final csum=0x%llx\n", (unsigned long long)csum);
@@ -1038,14 +1111,9 @@ int xdp_tx_csum_diff(struct xdp_md *ctx)
     if (base_idx >= MAX_BASE_PACKETS)
         base_idx = 0;
 
-    // 2. Get diff entry for incremental checksum (need diffs array)
-    struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
-    if (!diff) {
-        DEBUG_PRINT("diff_map lookup failed in csum_diff\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
-
-    // 3. Apply incremental checksum updates using bpf_csum_diff
+    // 2. Apply incremental checksum updates using bpf_csum_diff
+    // diff_map is re-looked up inside the bpf_loop callback (csum_diff_loop_callback)
+    // because map_value pointers lose type tracking through void* callback context.
     // Error handling strategy:
     // - meta lookup fail: break (map issue, subsequent lookups likely fail too)
     // - csum_diff fail: continue (only affects this checksum, others may succeed)
@@ -1062,7 +1130,7 @@ int xdp_tx_csum_diff(struct xdp_md *ctx)
             checksum_errors++;
             break;
         }
-        if (!apply_csum_with_bpf_diff(ctx, meta, diff->diffs, diff_count, target_len)) {
+        if (!apply_csum_with_bpf_diff(ctx, meta, local_idx, diff_count, target_len)) {
             DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
             checksum_errors++;
         }

@@ -9,7 +9,7 @@
 #define MAX_PACKET_SIZE 2048
 
 // Maximum number of diffs per packet
-#define MAX_DIFFS_PER_PACKET 6
+#define MAX_DIFFS_PER_PACKET 8
 
 // Maximum number of diff entries (per CPU)
 #define MAX_DIFF_ENTRIES 131072
