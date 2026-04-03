@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.11.1](https://github.com/takehaya/xdperf/compare/v0.11.0...v0.11.1) (2026-03-24)
+
+
+### ⚡ Performance Improvements
+
+* optimize BPF program for verifier compatibility and reduced states ([b6e5081](https://github.com/takehaya/xdperf/commit/b6e50817cb522d3ad348e0c6a30e0a50bb20e994))
+
+
+### 📝 Documentation
+
+* add multi-kernel test instructions to README ([a6dd94e](https://github.com/takehaya/xdperf/commit/a6dd94ecc8337feb402f1ed292300bbcc475c13e))
+
+
+### 🔧 Miscellaneous Chores
+
+* modify text ([eba1731](https://github.com/takehaya/xdperf/commit/eba17319f0cf72ba788d5f1043ae94289fbc61df))
+* modify text ([5a1621d](https://github.com/takehaya/xdperf/commit/5a1621de5b8f314a8628e7fcbedbba6394367b2e))
+* tuning xdperf docs and verifier log ([c2486d9](https://github.com/takehaya/xdperf/commit/c2486d96c7107f47295c30b0ce885e813b670f16))
+* tuning xdperf docs and verifier log ([4a28a78](https://github.com/takehaya/xdperf/commit/4a28a78542e12faaec36bffccfad3345b6e89738))
+
+
+### ♻️ Code Refactoring
+
+* simplify verifier log to debug-only mode to prevent OOM ([27b7321](https://github.com/takehaya/xdperf/commit/27b7321ee2a7edb239152dc4a9d64834c468f7a5))
+
 ## [0.11.0](https://github.com/takehaya/xdperf/compare/v0.10.0...v0.11.0) (2026-02-27)
 
 
