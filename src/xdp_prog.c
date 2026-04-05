@@ -694,6 +694,7 @@ struct csum_diff_loop_ctx {
     __u8 diff_count;
     __u16 pkt_len;
     __wsum csum;
+    bool error; // set if diff_map lookup fails inside callback
 };
 
 // bpf_loop callback: apply a single diff to the running checksum.
@@ -709,8 +710,10 @@ static long csum_diff_loop_callback(__u32 idx, void *vctx)
 
     // Re-lookup diff_map to get a fresh map_value pointer the verifier trusts
     struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &c->local_idx);
-    if (!diff)
+    if (!diff) {
+        c->error = true;
         return 1;
+    }
 
     // Use switch with constant indices instead of diff->diffs[idx].
     // Older kernel verifiers (6.1–6.12) cannot prove bounds after idx * sizeof(diff_value)
@@ -805,6 +808,8 @@ static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct check
         .csum = csum,
     };
     bpf_loop(diff_count, csum_diff_loop_callback, &loop_ctx, 0);
+    if (loop_ctx.error)
+        return false;
     csum = loop_ctx.csum;
 
     // Fold and finalize the checksum
