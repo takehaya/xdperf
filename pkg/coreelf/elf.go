@@ -75,13 +75,29 @@ func ReadCollection(constants map[string]any, mapSize uint32, diffMapSize uint32
 	}
 
 	// Populate the prog_array for tail calls
-	// xdp_tx tail-calls to xdp_tx_checksum at index 0
-	if objs.XdpProgs != nil && objs.XdpTxChecksum != nil {
-		checksumProgFD := uint32(objs.XdpTxChecksum.FD())
-		if err := objs.XdpProgs.Put(uint32(0), checksumProgFD); err != nil {
-			objs.Close()
-			return nil, nil, fmt.Errorf("fail to populate xdp_progs map: %w", err)
-		}
+	// Index 0: xdp_tx_checksum (len_changed path)
+	// Index 1: xdp_tx_csum_diff (incremental checksum path)
+	if objs.XdpProgs == nil {
+		objs.Close()
+		return nil, nil, fmt.Errorf("xdp_progs map is missing from BPF objects")
+	}
+	if objs.XdpTxChecksum == nil {
+		objs.Close()
+		return nil, nil, fmt.Errorf("xdp_tx_checksum program is missing from BPF objects")
+	}
+	if objs.XdpTxCsumDiff == nil {
+		objs.Close()
+		return nil, nil, fmt.Errorf("xdp_tx_csum_diff program is missing from BPF objects")
+	}
+	checksumProgFD := uint32(objs.XdpTxChecksum.FD())
+	if err := objs.XdpProgs.Put(uint32(0), checksumProgFD); err != nil {
+		objs.Close()
+		return nil, nil, fmt.Errorf("fail to populate xdp_progs[0] (xdp_tx_checksum): %w", err)
+	}
+	csumDiffProgFD := uint32(objs.XdpTxCsumDiff.FD())
+	if err := objs.XdpProgs.Put(uint32(1), csumDiffProgFD); err != nil {
+		objs.Close()
+		return nil, nil, fmt.Errorf("fail to populate xdp_progs[1] (xdp_tx_csum_diff): %w", err)
 	}
 
 	return objs, spec, nil

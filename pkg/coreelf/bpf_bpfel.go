@@ -118,6 +118,7 @@ type BpfProgramSpecs struct {
 	XdpRx         *ebpf.ProgramSpec `ebpf:"xdp_rx"`
 	XdpTx         *ebpf.ProgramSpec `ebpf:"xdp_tx"`
 	XdpTxChecksum *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
+	XdpTxCsumDiff *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_diff"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -214,6 +215,7 @@ type BpfPrograms struct {
 	XdpRx         *ebpf.Program `ebpf:"xdp_rx"`
 	XdpTx         *ebpf.Program `ebpf:"xdp_tx"`
 	XdpTxChecksum *ebpf.Program `ebpf:"xdp_tx_checksum"`
+	XdpTxCsumDiff *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
 }
 
 func (p *BpfPrograms) Close() error {
@@ -222,6 +224,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpRx,
 		p.XdpTx,
 		p.XdpTxChecksum,
+		p.XdpTxCsumDiff,
 	)
 }
 

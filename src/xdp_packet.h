@@ -15,7 +15,7 @@
 #define MAX_DIFF_ENTRIES 131072
 
 // Maximum number of checksum metadata entries per base packet
-#define MAX_CHECKSUM_ENTRIES 2
+#define MAX_CHECKSUM_ENTRIES 4
 
 // Maximum number of base packets (variants)
 #define MAX_BASE_PACKETS 16
@@ -130,14 +130,16 @@ struct {
 } tail_call_ctx_map SEC(".maps");
 
 // Program array for tail calls
-// Index 0: xdp_tx_checksum
+// Index 0: xdp_tx_checksum (len_changed path)
+// Index 1: xdp_tx_csum_diff (incremental checksum path)
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 1);
+    __uint(max_entries, 2);
     __type(key, __u32);
     __type(value, __u32);
 } xdp_progs SEC(".maps");
 
 #define XDP_PROG_CHECKSUM 0
+#define XDP_PROG_CSUM_DIFF 1
 
 #endif // XDP_PACKET_H
