@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.2](https://github.com/takehaya/xdperf/compare/v0.11.1...v0.11.2) (2026-04-11)
+
+
+### 🐛 Bug Fixes
+
+* address PR review — propagate bpf_loop callback error and simplify nil guards ([e3c4589](https://github.com/takehaya/xdperf/commit/e3c4589a3aa77b2ef151a09aa09aba425e47a2bc))
+* use bpf_loop for incremental checksum diff to avoid verifier limit ([44eff76](https://github.com/takehaya/xdperf/commit/44eff7682a02fc45a578353bfd8393cba23b44ab))
+* verfier BPF program is too large error ([39c8cd1](https://github.com/takehaya/xdperf/commit/39c8cd15d8286c395ca0ffe9eeb6efaf1161f93a))
+
+
+### ⚡ Performance Improvements
+
+* add wazero CompilationCache for faster WASM plugin startup ([e0fb3c5](https://github.com/takehaya/xdperf/commit/e0fb3c572bd1fb1f947fa32177a82fb0611860c8))
+* add wazero CompilationCache for faster WASM plugin startup ([7e6a1b4](https://github.com/takehaya/xdperf/commit/7e6a1b4b84d39b1f1a341216f4db0c91de3cf312))
+
 ## [0.11.1](https://github.com/takehaya/xdperf/compare/v0.11.0...v0.11.1) (2026-03-24)
 
 
