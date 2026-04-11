@@ -34,6 +34,7 @@ type Config struct {
 	DebugMode    int
 
 	ShowNICStats bool // show NIC-level statistics (may include other traffic on the same interface)
+	WasmCacheDir string // WASM compilation cache directory (empty = default ~/.cache/xdperf/wasm/)
 }
 
 func (c *Config) Validate() error {

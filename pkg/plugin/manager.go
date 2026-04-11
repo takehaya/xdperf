@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/stealthrocket/wasi-go"
 	"github.com/stealthrocket/wasi-go/imports"
@@ -16,9 +17,24 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
+// ManagerOption is a functional option for NewManager
+type ManagerOption func(*managerOptions)
+
+type managerOptions struct {
+	cacheDir string
+}
+
+// WithCacheDir sets the directory for WASM compilation cache
+func WithCacheDir(dir string) ManagerOption {
+	return func(o *managerOptions) {
+		o.cacheDir = dir
+	}
+}
+
 // Manager is the plugin manager
 type Manager struct {
 	runtime          wazero.Runtime
+	cache            wazero.CompilationCache
 	plugins          map[string]*wasmPlugin
 	pluginDir        string
 	mu               sync.RWMutex
@@ -46,12 +62,33 @@ type wasmPlugin struct {
 }
 
 // NewManager is a function to create a new plugin manager
-func NewManager(pluginDir string, pluginCfg string, pluginLang string) (*Manager, error) {
+func NewManager(pluginDir string, pluginCfg string, pluginLang string, opts ...ManagerOption) (*Manager, error) {
 	ctx := context.Background()
-	runtime := wazero.NewRuntime(ctx)
 
-	// wrc := wazero.NewRuntimeConfigInterpreter()
-	// runtime := wazero.NewRuntimeWithConfig(ctx, wrc)
+	options := &managerOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	// Resolve cache directory
+	cacheDir := options.cacheDir
+	if cacheDir == "" {
+		userCache, err := os.UserCacheDir()
+		if err != nil {
+			userCache = os.TempDir()
+		}
+		cacheDir = filepath.Join(userCache, "xdperf", "wasm")
+	}
+
+	// Create file-backed compilation cache (falls back to in-memory on error)
+	cache, err := wazero.NewCompilationCacheWithDir(cacheDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to create WASM disk cache at %s: %v (using in-memory cache)\n", cacheDir, err)
+		cache = wazero.NewCompilationCache()
+	}
+
+	runtimeConfig := wazero.NewRuntimeConfig().WithCompilationCache(cache)
+	runtime := wazero.NewRuntimeWithConfig(ctx, runtimeConfig)
 
 	ctx, sys, err := imports.NewBuilder().
 		WithEnv(os.Environ()...).Instantiate(ctx, runtime)
@@ -65,6 +102,7 @@ func NewManager(pluginDir string, pluginCfg string, pluginLang string) (*Manager
 
 	m := &Manager{
 		runtime:          runtime,
+		cache:            cache,
 		plugins:          make(map[string]*wasmPlugin),
 		pluginDir:        pluginDir,
 		wasiP1HostModule: wasiP1HostModule,
@@ -124,7 +162,16 @@ func (m *Manager) LoadPlugin(ctx context.Context, name string) error {
 	}
 	ctx = withModuleInstance(ctx, m.wasiP1HostModule)
 
-	module, err := m.runtime.InstantiateWithConfig(ctx, wasmBytes,
+	// Compile module (uses disk cache on subsequent runs)
+	compileStart := time.Now()
+	compiled, err := m.runtime.CompileModule(ctx, wasmBytes)
+	if err != nil {
+		return fmt.Errorf("failed to compile plugin module %s: %w", name, err)
+	}
+	fmt.Fprintf(os.Stderr, "wasm: compiled %s (%d bytes) in %v\n", name, len(wasmBytes), time.Since(compileStart))
+
+	// Instantiate from pre-compiled module
+	module, err := m.runtime.InstantiateModule(ctx, compiled,
 		wazero.NewModuleConfig().WithStartFunctions("_initialize"))
 	if err != nil {
 		return fmt.Errorf("failed to instantiate module: %w", err)
@@ -247,6 +294,11 @@ func (m *Manager) Close(ctx context.Context) error {
 	}
 	if err := m.runtime.Close(ctx); err != nil && firstErr == nil {
 		firstErr = err
+	}
+	if m.cache != nil {
+		if err := m.cache.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }
