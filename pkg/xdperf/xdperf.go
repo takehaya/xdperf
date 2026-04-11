@@ -42,7 +42,11 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 	cleanupFnList = append(cleanupFnList, cleanup)
 	var pm *plugin.Manager
 	if cfg.Sender {
-		pm, err = plugin.NewManager(cfg.PluginPath, cfg.PluginConfig, cfg.PluginLanguage)
+		var managerOpts []plugin.ManagerOption
+		if cfg.WasmCacheDir != "" {
+			managerOpts = append(managerOpts, plugin.WithCacheDir(cfg.WasmCacheDir))
+		}
+		pm, err = plugin.NewManager(cfg.PluginPath, cfg.PluginConfig, cfg.PluginLanguage, managerOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed init plugin manager: %w", err)
 		}
