@@ -1055,48 +1055,136 @@ static __noinline bool cache_one_diff(struct diff_entry *diff, __u8 dc, __u16 of
     }
 }
 
-// Cache computed checksum values into diff_entry as additional diffs.
-// Only caches when len_changed=0 (no length field changes to track).
-// For len_changed=1, the length update logic (update_packet_lengths) handles
-// VLAN/MPLS/SRv6 inner packet lengths which are too complex to cache reliably.
-// Sets csum_cached=1 ONLY if ALL checksums were successfully stored.
+// Cache computed length field values and checksum values into diff_entry as additional diffs.
+// After the first pass (update_packet_lengths + recalc_checksum), all values in the packet are
+// correct. We read them back and store as diffs so subsequent passes skip the tail call chain.
+// Sets csum_cached=1 ONLY if ALL required values were successfully stored.
+// For encapsulated packets (SRv6/MPLS with inner IPs), safely bails out if the packet structure
+// is too complex to enumerate length fields from checksum_meta alone.
 static __noinline void cache_csum_to_diffs(struct xdp_md *ctx, __u32 local_idx, __u32 base_idx, __u8 checksum_count,
                                            __u8 len_changed, __u16 target_len)
 {
-    // Don't cache when packet length changed — update_packet_lengths modifies
-    // multiple nested length fields (outer IPv6, inner IPv4/IPv6, inner UDP)
-    // that we cannot reliably enumerate and cache here.
-    if (len_changed)
-        return;
-
     struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
     if (!diff || diff->csum_cached)
         return;
 
     __u8 dc = diff->diff_count;
+    __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
 
-    // Verify enough slots for ALL checksums before starting.
-    // Partial caching would leave some checksums stale while skipping computation.
-    if (dc + checksum_count > MAX_DIFFS_PER_PACKET)
-        return;
+    // When len_changed, also cache length field values written by update_packet_lengths.
+    // Enumerate offsets from checksum_meta (ip_header_offset, header_start).
+    // Safety: verify all metas reference the outermost IP (no encapsulation).
+    if (len_changed) {
+        // Parse Ethernet/VLAN to find outermost L3 offset
+        struct ethhdr eth;
+        if (bpf_xdp_load_bytes(ctx, 0, &eth, sizeof(eth)) < 0)
+            return;
+        __u16 l3_offset = sizeof(struct ethhdr);
+        __u16 proto = eth.h_proto;
+        if (proto == bpf_htons(ETH_P_8021Q) || proto == bpf_htons(ETH_P_8021AD)) {
+            __be16 vlan_proto;
+            if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &vlan_proto, 2) < 0)
+                return;
+            proto = vlan_proto;
+            l3_offset += 4;
+            if (proto == bpf_htons(ETH_P_8021Q)) {
+                if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &vlan_proto, 2) < 0)
+                    return;
+                l3_offset += 4;
+            }
+        }
+        // MPLS: bail out — inner IP offsets are too complex to derive
+        if (proto == bpf_htons(ETH_P_MPLS_UC) || proto == bpf_htons(ETH_P_MPLS_MC))
+            return;
+
+        // Collect unique length field offsets from checksum_meta entries.
+        // Dedup: track offsets we've already seen (max 2*MAX_CHECKSUM_ENTRIES entries).
+        __u16 len_offsets[MAX_CHECKSUM_ENTRIES * 2];
+        __u8 len_count = 0;
+
+        for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
+            if (i >= checksum_count)
+                break;
+            __u32 csum_idx = csum_base_offset + i;
+            struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
+            if (!meta)
+                return;
+
+            // Safety: verify this meta references the outermost IP header.
+            // If not, there's encapsulation (SRv6 inner IP) we can't fully cache.
+            if (meta->ip_header_offset != l3_offset)
+                return;
+
+            // IP length field offset
+            __u16 ip_len_off = (meta->ip_version == 4) ? l3_offset + 2 : l3_offset + 4;
+
+            // Dedup check before adding
+            bool dup = false;
+            for (int j = 0; j < MAX_CHECKSUM_ENTRIES * 2; j++) {
+                if (j >= len_count)
+                    break;
+                if (len_offsets[j] == ip_len_off) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup && len_count < MAX_CHECKSUM_ENTRIES * 2)
+                len_offsets[len_count++] = ip_len_off;
+
+            // UDP length field offset
+            if (meta->ip_protocol == IPPROTO_UDP) {
+                __u16 udp_len_off = meta->header_start + 4;
+                dup = false;
+                for (int j = 0; j < MAX_CHECKSUM_ENTRIES * 2; j++) {
+                    if (j >= len_count)
+                        break;
+                    if (len_offsets[j] == udp_len_off) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup && len_count < MAX_CHECKSUM_ENTRIES * 2)
+                    len_offsets[len_count++] = udp_len_off;
+            }
+        }
+
+        // Slot budget: need len_count (lengths) + checksum_count (checksums)
+        if (dc + len_count + checksum_count > MAX_DIFFS_PER_PACKET)
+            return;
+
+        // Cache length field values (already correct from update_packet_lengths)
+        for (int i = 0; i < MAX_CHECKSUM_ENTRIES * 2; i++) {
+            if (i >= len_count)
+                break;
+            __u8 buf[2];
+            if (bpf_xdp_load_bytes(ctx, len_offsets[i], buf, 2) < 0)
+                return;
+            if (!cache_one_diff(diff, dc, len_offsets[i], buf))
+                return;
+            dc++;
+        }
+    } else {
+        // No length changes: just verify slot budget for checksums
+        if (dc + checksum_count > MAX_DIFFS_PER_PACKET)
+            return;
+    }
 
     // Cache checksum values
     __u8 cached = 0;
-    __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
     for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
         if (i >= checksum_count)
             break;
         __u32 csum_idx = csum_base_offset + i;
         struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
         if (!meta)
-            return; // Map error — don't set csum_cached
+            return;
 
         __u8 buf[2];
         if (bpf_xdp_load_bytes(ctx, meta->csum_offset, buf, 2) < 0)
-            return; // Read error — don't set csum_cached
+            return;
 
         if (!cache_one_diff(diff, dc, meta->csum_offset, buf))
-            return; // Slot write failed — don't set csum_cached
+            return;
         dc++;
         cached++;
     }

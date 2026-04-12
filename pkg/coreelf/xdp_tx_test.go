@@ -780,3 +780,65 @@ func TestXdpTxRawMode(t *testing.T) {
 		t.Errorf("raw mode: dst port = %d, want 80", gotPort)
 	}
 }
+
+// TestXdpTxIMIXCsumCache simulates an IMIX-like workload where entries have
+// different packet lengths (len_changed=1) and verifies that checksum caching
+// works correctly after the first round-robin cycle.
+func TestXdpTxIMIXCsumCache(t *testing.T) {
+	objs := loadWithDiffMap(t, 2)
+
+	// Two variants with different lengths (simulating IMIX)
+	basePkt := buildUDPPacketSized(t, 80, 128) // base is 128B
+
+	// Entry 0: port 8080, target 128B (same as base, len_changed=0)
+	entry0 := makeDiffEntry(basePkt, 128, 8080, false)
+	// Entry 1: port 9090, target 192B (different from base, len_changed=1)
+	entry1 := makeDiffEntry(basePkt, 192, 9090, true)
+
+	setupSingleBase(t, objs, basePkt, []BpfDiffEntry{entry0, entry1})
+
+	const udpDstPortOffset = 36
+	expected0 := buildUDPPacketSized(t, 8080, 128)
+	expected1 := buildUDPPacketSized(t, 9090, 192)
+
+	// === First cycle: compute + cache ===
+	// Run 1: entry 0 (128B, no len change)
+	_, out1 := runXdpTx(t, objs.XdpTx, basePkt)
+	verifyChecksums(t, "run 1 (128B, compute)", out1, expected0)
+
+	// Run 2: entry 1 (192B, len_changed)
+	_, out2 := runXdpTxExpectLen(t, objs.XdpTx, out1, 192)
+	verifyChecksums(t, "run 2 (192B, len_changed, compute)", out2, expected1)
+
+	// === Second cycle: should use cached path ===
+	// Run 3: entry 0 (128B, cached)
+	_, out3 := runXdpTxExpectLen(t, objs.XdpTx, out2, 128)
+	gotPort3 := binary.BigEndian.Uint16(out3[udpDstPortOffset : udpDstPortOffset+2])
+	if gotPort3 != 8080 {
+		t.Errorf("run 3: dst port = %d, want 8080", gotPort3)
+	}
+	verifyChecksums(t, "run 3 (128B, cached)", out3, expected0)
+
+	// Run 4: entry 1 (192B, cached)
+	_, out4 := runXdpTxExpectLen(t, objs.XdpTx, out3, 192)
+	gotPort4 := binary.BigEndian.Uint16(out4[udpDstPortOffset : udpDstPortOffset+2])
+	if gotPort4 != 9090 {
+		t.Errorf("run 4: dst port = %d, want 9090", gotPort4)
+	}
+	verifyChecksums(t, "run 4 (192B, len_changed, cached)", out4, expected1)
+
+	// Verify no errors
+	key := uint32(0)
+	var stats []BpfDatarec
+	if err := objs.TxStatsMap.Lookup(&key, &stats); err != nil {
+		t.Fatalf("tx_stats_map lookup: %v", err)
+	}
+	for _, s := range stats {
+		if s.DiffErrors != 0 {
+			t.Errorf("diff_errors = %d", s.DiffErrors)
+		}
+		if s.ChecksumErrors != 0 {
+			t.Errorf("checksum_errors = %d", s.ChecksumErrors)
+		}
+	}
+}
