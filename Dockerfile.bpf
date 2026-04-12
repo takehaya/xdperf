@@ -2,9 +2,9 @@ FROM golang:trixie AS builder
 
 ARG LLVM_VERSION=22
 RUN apt-get update && \
-	apt-get install -y wget gnupg libelf-dev libbpf-dev gcc-multilib && \
+	apt-get install -y curl gnupg libelf-dev libbpf-dev gcc-multilib && \
 	echo "deb http://apt.llvm.org/trixie/ llvm-toolchain-trixie-${LLVM_VERSION} main" > /etc/apt/sources.list.d/llvm.list && \
-	wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg && \
+	curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg && \
 	apt-get update && \
 	apt-get install -y clang-${LLVM_VERSION} llvm-${LLVM_VERSION} && \
 	ln -s /usr/bin/clang-${LLVM_VERSION} /usr/bin/clang && \

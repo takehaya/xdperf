@@ -27,6 +27,8 @@ type BpfChecksumMeta struct {
 	HeaderStart    uint16
 	HeaderLen      uint16
 	IpHeaderOffset uint16
+	IpVersion      uint8
+	IpProtocol     uint8
 }
 
 type BpfDatarec struct {
@@ -40,24 +42,25 @@ type BpfDatarec struct {
 type BpfDiffEntry struct {
 	_     structs.HostLayout
 	Diffs [8]struct {
-		_        structs.HostLayout
-		OldValue [8]uint8
-		NewValue [8]uint8
-		Offset   uint16
-		Size     uint8
-		_        [1]byte
+		_           structs.HostLayout
+		OldValue    [8]uint8
+		NewValue    [8]uint8
+		Offset      uint16
+		Size        uint8
+		AffectsCsum uint8
 	}
 	PktLen     uint16
 	BaseIdx    uint8
 	DiffCount  uint8
 	LenChanged uint8
-	_          [1]byte
+	CsumCached uint8
 }
 
 type BpfPktState struct {
-	_     structs.HostLayout
-	Count uint32
-	Idx   uint32
+	_           structs.HostLayout
+	Count       uint32
+	Idx         uint32
+	LastBaseIdx uint32
 }
 
 type BpfTailCallCtx struct {
