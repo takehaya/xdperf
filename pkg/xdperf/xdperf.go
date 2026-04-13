@@ -17,6 +17,7 @@ import (
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/takehaya/xdperf/pkg/logger"
+	"github.com/takehaya/xdperf/pkg/numa"
 	"github.com/takehaya/xdperf/pkg/plugin"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
@@ -31,6 +32,7 @@ type Xdperf struct {
 	Device        *net.Interface
 	cfg           Config
 	bpfSpec       *ebpf.CollectionSpec
+	cpus          []int // resolved CPU list for workers
 }
 
 func NewXdperf(cfg Config) (*Xdperf, error) {
@@ -115,6 +117,20 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		return nil, fmt.Errorf("failed get device %s: %w", cfg.Device, err)
 	}
 
+	// Resolve CPU list based on NUMA topology
+	cpus, err := numa.SelectCPUs(cfg.CPUMode, cfg.Parallelism, cfg.Device)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select CPUs: %w", err)
+	}
+	if len(cpus) != cfg.Parallelism {
+		cfg.Parallelism = len(cpus)
+	}
+	logger.Info("CPU selection",
+		zap.String("mode", cfg.CPUMode),
+		zap.Ints("selected_cpus", cpus),
+		zap.Int("parallelism", cfg.Parallelism),
+	)
+
 	return &Xdperf{
 		Logger:        logger,
 		PluginManager: pm,
@@ -123,6 +139,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		cfg:           cfg,
 		Device:        dev,
 		bpfSpec:       bpfSpec,
+		cpus:          cpus,
 	}, nil
 }
 
@@ -329,7 +346,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	var once sync.Once
 	var firstErr error
 
-	for i := range x.cfg.Parallelism {
+	for _, cpu := range x.cpus {
 		p, err := prog.Clone()
 		if err != nil {
 			return fmt.Errorf("failed to clone XDP program: %w", err)
@@ -346,7 +363,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 					cancel()
 				})
 			}
-		}(i)
+		}(cpu)
 	}
 
 	// Wait for either signal or all goroutines to complete

@@ -340,30 +340,30 @@ func (x *Xdperf) initBpfMaps(bases []BasePacketInfo, diffEntries []DiffEntry) er
 		parallelism = numCpus
 	}
 
-	// Distribute diff entries across CPUs
+	// Distribute diff entries across selected CPUs (NUMA-aware)
 	totalEntries := len(diffEntries)
 	entriesPerCPU := totalEntries / parallelism
 	remainder := totalEntries % parallelism
 
 	countsPerCPU := make([]uint32, numCpus)
-	for cpu := 0; cpu < numCpus; cpu++ {
-		if cpu < parallelism {
-			count := entriesPerCPU
-			if cpu < remainder {
-				count++
-			}
-			countsPerCPU[cpu] = uint32(count)
-		} else {
-			countsPerCPU[cpu] = 0
+	for i, cpu := range x.cpus {
+		count := entriesPerCPU
+		if i < remainder {
+			count++
 		}
+		countsPerCPU[cpu] = uint32(count)
 	}
 
+	cpuCounts := make(map[int]uint32, len(x.cpus))
+	for _, cpu := range x.cpus {
+		cpuCounts[cpu] = countsPerCPU[cpu]
+	}
 	x.Logger.Info("packet distribution calculated",
 		zap.Int("total_entries", totalEntries),
 		zap.Int("num_bases", len(bases)),
 		zap.Int("parallelism", parallelism),
 		zap.Int("num_cpus", numCpus),
-		zap.Any("counts_per_cpu", countsPerCPU[:parallelism]),
+		zap.Any("counts_per_cpu", cpuCounts),
 	)
 
 	// Initialize BPF maps in order of dependency.

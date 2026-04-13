@@ -33,8 +33,9 @@ type Config struct {
 	EnableXdpcap bool // enable xdpcap support (default: false for max performance)
 	DebugMode    int
 
-	ShowNICStats bool // show NIC-level statistics (may include other traffic on the same interface)
+	ShowNICStats bool   // show NIC-level statistics (may include other traffic on the same interface)
 	WasmCacheDir string // WASM compilation cache directory (empty = default ~/.cache/xdperf/wasm/)
+	CPUMode      string // NUMA-aware CPU selection mode (auto/local/balanced/node:N/CPU list)
 }
 
 func (c *Config) Validate() error {
