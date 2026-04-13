@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.3](https://github.com/takehaya/xdperf/compare/v0.11.2...v0.11.3) (2026-04-13)
+
+
+### 🐛 Bug Fixes
+
+* prevent csum_cached on partial cache or len_changed entries ([80c2a6c](https://github.com/takehaya/xdperf/commit/80c2a6caa3bc9d693b2488588713bcd08ac9cfa0))
+
+
+### ⚡ Performance Improvements
+
+* enable checksum caching for len_changed entries (IMIX support) ([8bccded](https://github.com/takehaya/xdperf/commit/8bccded4f444bb952a1629d2e1f297fd7d622f10))
+* optimize XDP TX path with copy skip, checksum caching, and pre-computed bitmasks ([1fc3b1f](https://github.com/takehaya/xdperf/commit/1fc3b1f543037f560ac4650ab1564ed8e082a97c))
+* optimize XDP TX with copy skip and checksum caching ([b6189ef](https://github.com/takehaya/xdperf/commit/b6189efbfd86a66d95246740bd864021de752370))
+
+
+### ♻️ Code Refactoring
+
+* replace cache_one_diff switch cases with CACHE_DIFF_CASE macro ([f6f01fb](https://github.com/takehaya/xdperf/commit/f6f01fbb31689c9ddaf950525dd885e16ce7c97a))
+
 ## [0.11.2](https://github.com/takehaya/xdperf/compare/v0.11.1...v0.11.2) (2026-04-11)
 
 
