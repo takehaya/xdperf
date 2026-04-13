@@ -40,31 +40,36 @@ struct diff_value {
     __u8 new_value[8]; // New value to write (big-endian)
     __u16 offset;      // Byte offset in packet
     __u8 size;         // 1, 2, 4, 6, or 8 bytes
+    __u8 affects_csum; // Bitmask: bit i = this diff affects checksum[i] (pre-computed by host)
 };
 
 // Diff entry for one packet (contains all diffs for that packet)
 struct diff_entry {
     struct diff_value diffs[MAX_DIFFS_PER_PACKET];
-    __u16 pkt_len;    // Packet length (for variable length)
-    __u8 base_idx;    // Index into base_packet_map (which base to use)
-    __u8 diff_count;  // Actual number of diffs in this entry
-    __u8 len_changed; // 1 if pkt_len differs from base, 0 otherwise (affects checksum handling)
+    __u16 pkt_len;     // Packet length (for variable length)
+    __u8 base_idx;     // Index into base_packet_map (which base to use)
+    __u8 diff_count;   // Actual number of diffs (grows after csum caching)
+    __u8 len_changed;  // 1 if pkt_len differs from base, 0 otherwise
+    __u8 csum_cached;  // 1 = checksum values cached as additional diffs, skip computation
 };
 
 // Checksum metadata (how to recalculate checksums)
-// The checksum type is auto-detected from packet content at ip_header_offset.
-// For IPv4 header checksum, set csum_offset == header_start (IP header start).
+// ip_version and ip_protocol are cached by the host to avoid per-packet
+// bpf_xdp_load_bytes calls for checksum type detection.
 struct checksum_meta {
     __u16 csum_offset;      // Offset of checksum field in packet
     __u16 header_start;     // Start of header to checksum
     __u16 header_len;       // Length of header (0 = compute from IP/transport length)
     __u16 ip_header_offset; // Offset of IP header (for pseudo-header)
+    __u8 ip_version;        // 4 or 6 (cached from packet)
+    __u8 ip_protocol;       // IPPROTO_UDP, IPPROTO_TCP, etc. (cached from packet)
 };
 
 // Per-CPU packet state
 struct pkt_state {
-    __u32 count; // Number of valid diff entries
-    __u32 idx;   // Current index (round-robin)
+    __u32 count;         // Number of valid diff entries
+    __u32 idx;           // Current index (round-robin)
+    __u32 last_base_idx; // Last base_idx used (0xFFFFFFFF = none, forces first copy)
 };
 
 // Base packet map (multiple base packets for different variants)

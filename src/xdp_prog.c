@@ -69,6 +69,9 @@ static __noinline int copy_base_packet(struct xdp_md *ctx, struct base_packet *b
 // Expose COPY_CHUNK_SIZE to Go via spec.Variables
 volatile __u32 min_packet_size = COPY_CHUNK_SIZE;
 
+// Forward declarations for functions used across program boundaries
+static __always_inline void update_stats_and_index(__u32 local_idx, __u16 target_len, __u8 diff_errors, __u8 checksum_errors);
+
 SEC("xdp")
 int xdp_pass_dummy(struct xdp_md *ctx)
 {
@@ -183,6 +186,40 @@ static __noinline bool apply_diff(struct xdp_md *ctx, struct diff_value *dv)
     }
 }
 
+// Capture actual buffer values into old_value fields before apply_diff overwrites them.
+// Called only when base packet copy is skipped, so the incremental checksum path
+// uses the real "before" values (previous iteration's diff values) instead of stale
+// base values. When copy IS performed, old_value already matches the base packet.
+// Note: __noinline isolates verifier state from the caller.
+static __noinline void capture_old_values(struct xdp_md *ctx, struct diff_entry *diff, __u8 diff_count)
+{
+    for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
+        if (i >= diff_count)
+            break;
+        struct diff_value *dv = &diff->diffs[i];
+        if (dv->offset == 0xFFFF || dv->size == 0)
+            continue;
+        __u16 offset = dv->offset;
+        switch (dv->size) {
+        case 1:
+            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 1);
+            break;
+        case 2:
+            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 2);
+            break;
+        case 4:
+            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 4);
+            break;
+        case 6:
+            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 6);
+            break;
+        case 8:
+            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 8);
+            break;
+        }
+    }
+}
+
 // Ensure IPPROTO_ETHERNET is defined (not present in older kernel headers)
 #ifndef IPPROTO_ETHERNET
 #define IPPROTO_ETHERNET 143
@@ -269,12 +306,8 @@ static __noinline bool recalc_checksum(struct xdp_md *ctx, struct checksum_meta 
     __u16 csum;
     __u16 transport_len;
 
-    // First load IP version to determine checksum type
-    __u8 version_byte;
-    if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) < 0)
-        return false;
-
-    __u8 ip_version = (version_byte >> 4) & 0x0F;
+    // Use cached ip_version from checksum_meta instead of loading from packet
+    __u8 ip_version = meta->ip_version;
 
     if (ip_version == 4) {
         // Load IPv4 header
@@ -531,68 +564,15 @@ static __always_inline __u16 csum_fold_helper(__u64 csum)
     return (__u16)~sum;
 }
 
-// Check if a diff affects a particular checksum.
-// Assumption: dv->offset + dv->size does not overflow __u16.
-// This is guaranteed because valid packet offsets are < 2048 (MAX_PACKET_SIZE)
-// and size is at most 8 bytes.
-// Auto-detects checksum type (IPv4 header vs transport) from packet content.
-// Note: __noinline prevents verifier state explosion when called from loops
-static __noinline bool diff_affects_checksum(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta, __u16 pkt_len)
-{
-    __u16 diff_start = dv->offset;
-    __u16 diff_end = dv->offset + dv->size; // Safe: offset < 2048, size <= 8
-
-    // First load IP version to determine checksum type
-    __u8 version_byte;
-    if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) < 0)
-        // Cannot read IP header version, so we cannot reliably exclude checksum impact.
-        // Conservatively return true to ensure checksum is recalculated.
-        return true;
-
-    __u8 ip_version = (version_byte >> 4) & 0x0F;
-
-    if (ip_version == 4) {
-        // Check if this is IPv4 header checksum
-        if (meta->csum_offset == meta->ip_header_offset + offsetof(struct iphdr, check)) {
-            // IPv4 header checksum covers [ip_offset, ip_offset + sizeof(struct iphdr))
-            __u16 ip_start = meta->ip_header_offset;
-            __u16 ip_end = ip_start + sizeof(struct iphdr);
-            return diff_start < ip_end && diff_end > ip_start;
-        }
-
-        // Get protocol to check if ICMP
-        __u8 proto;
-        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset + 9, &proto, 1) < 0)
-            return true; // Conservative: assume affects
-
-        // ICMP doesn't use pseudo-header, so IP address changes don't affect ICMP checksum
-        if (proto != IPPROTO_ICMP) {
-            // IPv4 transport (TCP/UDP): Pseudo-header includes src IP at ip_offset+12, dst IP at ip_offset+16
-            __u16 src_ip = meta->ip_header_offset + offsetof(struct iphdr, saddr);
-            __u16 dst_ip_end = meta->ip_header_offset + sizeof(struct iphdr);
-            if (diff_start < dst_ip_end && diff_end > src_ip)
-                return true;
-        }
-    } else if (ip_version == 6) {
-        // IPv6: Pseudo-header includes src/dst addresses at ip_offset+8 to ip_offset+40
-        __u16 src_ip = meta->ip_header_offset + offsetof(struct ipv6hdr, saddr);
-        __u16 dst_ip_end = meta->ip_header_offset + sizeof(struct ipv6hdr);
-        if (diff_start < dst_ip_end && diff_end > src_ip)
-            return true;
-    }
-
-    // Transport layer data
-    return diff_start < pkt_len && diff_end > meta->header_start;
-}
-
 // Process a single diff for checksum update
 // Supported sizes: 1, 2, 4, 6, 8 bytes (validated in apply_diff)
 // Offset parity matters: checksum is computed over 16-bit words, so byte position affects calculation
+// csum_idx identifies which checksum we're processing (0-3), used with dv->affects_csum bitmask.
 static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta,
-                                                __u16 pkt_len, __wsum csum)
+                                                __u16 pkt_len, __wsum csum, __u8 csum_idx)
 {
-    // Skip if this diff doesn't affect the checksum
-    if (!diff_affects_checksum(ctx, dv, meta, pkt_len))
+    // Skip if this diff doesn't affect the checksum (pre-computed bitmask by host)
+    if (!(dv->affects_csum & (1 << csum_idx)))
         return csum;
 
     bool odd_offset = dv->offset & 1;
@@ -692,6 +672,7 @@ struct csum_diff_loop_ctx {
     struct checksum_meta *meta;
     __u32 local_idx;
     __u8 diff_count;
+    __u8 csum_idx; // Which checksum we're processing (for affects_csum bitmask)
     __u16 pkt_len;
     __wsum csum;
     bool error; // set if diff_map lookup fails inside callback
@@ -748,7 +729,7 @@ static long csum_diff_loop_callback(__u32 idx, void *vctx)
     default:
         return 1;
     }
-    c->csum = apply_single_csum_diff(c->ctx, dv, c->meta, c->pkt_len, c->csum);
+    c->csum = apply_single_csum_diff(c->ctx, dv, c->meta, c->pkt_len, c->csum, c->csum_idx);
     return 0;
 }
 
@@ -759,35 +740,22 @@ static long csum_diff_loop_callback(__u32 idx, void *vctx)
 // Takes local_idx (diff_map key) instead of a diffs pointer because map_value type
 // information is lost when passed through the void* bpf_loop callback context.
 // Note: __noinline prevents verifier state explosion when called from outer loop
-static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, __u32 local_idx, __u8 diff_count,
-                                                __u16 pkt_len)
+// diff_count_csum_idx packs two values: low byte = diff_count, high byte = csum_idx.
+// This keeps the argument count at 5 (BPF limit).
+static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, __u32 local_idx,
+                                                __u16 diff_count_csum_idx, __u16 pkt_len)
 {
+    __u8 diff_count = diff_count_csum_idx & 0xFF;
+    __u8 csum_idx = (diff_count_csum_idx >> 8) & 0xFF;
     // Load current checksum value from packet (base packet was copied, checksum not yet modified)
     // No byte order conversion - values are in network byte order as read from packet
     __u16 old_csum;
     if (bpf_xdp_load_bytes(ctx, meta->csum_offset, &old_csum, 2) < 0)
         return false;
 
-    // Detect if this is a UDP checksum for special handling of 0 value
     // UDP checksum of 0 means "no checksum" but is stored as 0xFFFF per RFC 768
-    bool is_udp = false;
-    if (meta->csum_offset != meta->ip_header_offset + offsetof(struct iphdr, check)) {
-        // Not IPv4 header checksum, check if UDP
-        __u8 version_byte;
-        if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset, &version_byte, 1) == 0) {
-            __u8 ip_version = (version_byte >> 4) & 0x0F;
-            if (ip_version == 4) {
-                __u8 proto;
-                if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset + 9, &proto, 1) == 0)
-                    is_udp = (proto == IPPROTO_UDP);
-            } else if (ip_version == 6) {
-                // TODO: Extension headers not supported
-                __u8 nexthdr;
-                if (bpf_xdp_load_bytes(ctx, meta->ip_header_offset + 6, &nexthdr, 1) == 0)
-                    is_udp = (nexthdr == IPPROTO_UDP);
-            }
-        }
-    }
+    // Use cached ip_protocol from checksum_meta instead of loading from packet
+    bool is_udp = (meta->ip_protocol == IPPROTO_UDP);
 
     if (old_csum == 0 && is_udp)
         old_csum = 0xFFFF;
@@ -804,6 +772,7 @@ static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct check
         .meta = meta,
         .local_idx = local_idx,
         .diff_count = diff_count,
+        .csum_idx = csum_idx,
         .pkt_len = pkt_len,
         .csum = csum,
     };
@@ -900,26 +869,46 @@ int xdp_tx(struct xdp_md *ctx)
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // 6. Copy base packet
-    if (target_len < COPY_CHUNK_SIZE) {
-        DEBUG_PRINT("packet too small (min 64 bytes): %u\n", target_len);
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    // 6. Copy base packet (skip if same base and no resize needed)
+    // XDP TX recycles packets, so the buffer retains its contents between
+    // iterations. When base_idx hasn't changed and the packet length is the
+    // same, the buffer already contains the correct base data (with previous
+    // diffs applied at their offsets — those will be overwritten in step 7).
+    // Only skip for multi-chunk packets (> COPY_CHUNK_SIZE) where the copy
+    // savings outweigh the capture_old_values overhead. For single-chunk
+    // packets (== COPY_CHUNK_SIZE), the copy is just 1 helper call — skipping
+    // it adds no meaningful savings, so we take the fast path with zero overhead.
+    bool need_copy;
+    if (target_len <= COPY_CHUNK_SIZE) {
+        // Fast path: small packets, copy is trivial (1 helper call).
+        // No tracking overhead — don't touch last_base_idx at all.
+        need_copy = true;
+    } else {
+        need_copy = (base_idx != state->last_base_idx) || (cur_len != target_len);
+        state->last_base_idx = base_idx;
     }
 
-    if (copy_base_packet(ctx, base, target_len) < 0) {
-        DEBUG_PRINT("copy_base_packet failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
-    }
+    if (need_copy) {
+        if (target_len < COPY_CHUNK_SIZE) {
+            DEBUG_PRINT("packet too small (min 64 bytes): %u\n", target_len);
+            RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        }
 
-    // Tail copy: re-copy the last COPY_CHUNK_SIZE bytes to cover partial chunks.
-    // Must be in the caller (not in __noinline copy_base_packet) because the
-    // kernel 6.1 verifier loses map_value type tracking for pointer arguments
-    // passed through __noinline boundaries when combined with variable offsets.
-    if (target_len > COPY_CHUNK_SIZE) {
-        __u32 tail_off = target_len - COPY_CHUNK_SIZE;
-        tail_off &= (MAX_PACKET_SIZE - 1); // Bound for verifier: [0, 2047]
-        if (tail_off <= MAX_PACKET_SIZE - COPY_CHUNK_SIZE) {
-            bpf_xdp_store_bytes(ctx, tail_off, base->data + tail_off, COPY_CHUNK_SIZE);
+        if (copy_base_packet(ctx, base, target_len) < 0) {
+            DEBUG_PRINT("copy_base_packet failed\n");
+            RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        }
+
+        // Tail copy: re-copy the last COPY_CHUNK_SIZE bytes to cover partial chunks.
+        // Must be in the caller (not in __noinline copy_base_packet) because the
+        // kernel 6.1 verifier loses map_value type tracking for pointer arguments
+        // passed through __noinline boundaries when combined with variable offsets.
+        if (target_len > COPY_CHUNK_SIZE) {
+            __u32 tail_off = target_len - COPY_CHUNK_SIZE;
+            tail_off &= (MAX_PACKET_SIZE - 1); // Bound for verifier: [0, 2047]
+            if (tail_off <= MAX_PACKET_SIZE - COPY_CHUNK_SIZE) {
+                bpf_xdp_store_bytes(ctx, tail_off, base->data + tail_off, COPY_CHUNK_SIZE);
+            }
         }
     }
 
@@ -938,6 +927,13 @@ int xdp_tx(struct xdp_md *ctx)
     __u8 diff_count = diff->diff_count;
     if (diff_count > MAX_DIFFS_PER_PACKET)
         diff_count = MAX_DIFFS_PER_PACKET;
+
+    // When copy was skipped AND checksums are not yet cached, capture the actual
+    // buffer values at diff offsets into old_value fields. The incremental checksum
+    // path uses old_value as the "before" reference. When csum_cached=1, the
+    // checksum is already stored as a diff, so old_values are irrelevant — skip.
+    if (!need_copy && diff_count > 0 && !diff->csum_cached)
+        capture_old_values(ctx, diff, diff_count);
 
     // Track diff errors for debugging (looked up later for stats)
     __u8 diff_errors = 0;
@@ -963,7 +959,16 @@ int xdp_tx(struct xdp_md *ctx)
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // 8. Store context for tail call and jump to checksum program
+    // 8. If checksums are cached as diffs, skip the entire checksum tail call chain.
+    // On the first pass, the checksum programs compute and cache the results.
+    // On subsequent passes, the cached values are already applied by apply_diff above.
+    if (diff->csum_cached) {
+        update_stats_and_index(local_idx, target_len, diff_errors, 0);
+        DEBUG_PRINT("xdp_tx: csum_cached, skipping checksum\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
+    }
+
+    // 9. Store context for tail call and jump to checksum program
     // This splits the verifier work between two programs
     struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
     if (!tc_ctx) {
@@ -986,6 +991,181 @@ int xdp_tx(struct xdp_md *ctx)
     // Tail call failed - this should not happen if prog_array is properly set up
     DEBUG_PRINT("tail call to xdp_tx_checksum failed\n");
     RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+}
+
+// Cache computed checksum (and length) values back into diff_entry as additional diffs.
+// Called once after the first checksum computation; subsequent iterations skip checksum entirely.
+// Also caches length field values when len_changed, so update_packet_lengths is also skipped.
+
+// Helper macro: generate a switch case that writes a cached diff at constant index N.
+// Using constant indices in each case satisfies verifier bounds checking
+// (variable indexing into map_value arrays fails on kernel 6.1).
+#define CACHE_DIFF_CASE(N)                                     \
+    case N:                                                    \
+        diff->diffs[N].offset = offset;                        \
+        diff->diffs[N].size = 2;                               \
+        diff->diffs[N].affects_csum = 0;                       \
+        __builtin_memcpy(diff->diffs[N].new_value, value, 2);  \
+        return true;
+
+// Store a single cached diff at slot 'dc' (verifier-safe bounded access)
+static __noinline bool cache_one_diff(struct diff_entry *diff, __u8 dc, __u16 offset, __u8 *value)
+{
+    switch (dc) {
+    CACHE_DIFF_CASE(0)
+    CACHE_DIFF_CASE(1)
+    CACHE_DIFF_CASE(2)
+    CACHE_DIFF_CASE(3)
+    CACHE_DIFF_CASE(4)
+    CACHE_DIFF_CASE(5)
+    CACHE_DIFF_CASE(6)
+    CACHE_DIFF_CASE(7)
+    default:
+        return false;
+    }
+}
+
+#undef CACHE_DIFF_CASE
+
+// Cache computed length field values and checksum values into diff_entry as additional diffs.
+// After the first pass (update_packet_lengths + recalc_checksum), all values in the packet are
+// correct. We read them back and store as diffs so subsequent passes skip the tail call chain.
+// Sets csum_cached=1 ONLY if ALL required values were successfully stored.
+// For encapsulated packets (SRv6/MPLS with inner IPs), safely bails out if the packet structure
+// is too complex to enumerate length fields from checksum_meta alone.
+static __noinline void cache_csum_to_diffs(struct xdp_md *ctx, __u32 local_idx, __u32 base_idx, __u8 checksum_count,
+                                           __u8 len_changed, __u16 target_len)
+{
+    struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
+    if (!diff || diff->csum_cached)
+        return;
+
+    __u8 dc = diff->diff_count;
+    __u32 csum_base_offset = base_idx * MAX_CHECKSUM_ENTRIES;
+
+    // When len_changed, also cache length field values written by update_packet_lengths.
+    // Enumerate offsets from checksum_meta (ip_header_offset, header_start).
+    // Safety: verify all metas reference the outermost IP (no encapsulation).
+    if (len_changed) {
+        // Parse Ethernet/VLAN to find outermost L3 offset
+        struct ethhdr eth;
+        if (bpf_xdp_load_bytes(ctx, 0, &eth, sizeof(eth)) < 0)
+            return;
+        __u16 l3_offset = sizeof(struct ethhdr);
+        __u16 proto = eth.h_proto;
+        if (proto == bpf_htons(ETH_P_8021Q) || proto == bpf_htons(ETH_P_8021AD)) {
+            __be16 vlan_proto;
+            if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &vlan_proto, 2) < 0)
+                return;
+            proto = vlan_proto;
+            l3_offset += 4;
+            if (proto == bpf_htons(ETH_P_8021Q)) {
+                if (bpf_xdp_load_bytes(ctx, l3_offset + 2, &vlan_proto, 2) < 0)
+                    return;
+                l3_offset += 4;
+            }
+        }
+        // MPLS: bail out — inner IP offsets are too complex to derive
+        if (proto == bpf_htons(ETH_P_MPLS_UC) || proto == bpf_htons(ETH_P_MPLS_MC))
+            return;
+
+        // Collect unique length field offsets from checksum_meta entries.
+        // Dedup: track offsets we've already seen (max 2*MAX_CHECKSUM_ENTRIES entries).
+        __u16 len_offsets[MAX_CHECKSUM_ENTRIES * 2];
+        __u8 len_count = 0;
+
+        for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
+            if (i >= checksum_count)
+                break;
+            __u32 csum_idx = csum_base_offset + i;
+            struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
+            if (!meta)
+                return;
+
+            // Safety: verify this meta references the outermost IP header.
+            // If not, there's encapsulation (SRv6 inner IP) we can't fully cache.
+            if (meta->ip_header_offset != l3_offset)
+                return;
+
+            // IP length field offset
+            __u16 ip_len_off = (meta->ip_version == 4) ? l3_offset + 2 : l3_offset + 4;
+
+            // Dedup check before adding
+            bool dup = false;
+            for (int j = 0; j < MAX_CHECKSUM_ENTRIES * 2; j++) {
+                if (j >= len_count)
+                    break;
+                if (len_offsets[j] == ip_len_off) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup && len_count < MAX_CHECKSUM_ENTRIES * 2)
+                len_offsets[len_count++] = ip_len_off;
+
+            // UDP length field offset
+            if (meta->ip_protocol == IPPROTO_UDP) {
+                __u16 udp_len_off = meta->header_start + 4;
+                dup = false;
+                for (int j = 0; j < MAX_CHECKSUM_ENTRIES * 2; j++) {
+                    if (j >= len_count)
+                        break;
+                    if (len_offsets[j] == udp_len_off) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup && len_count < MAX_CHECKSUM_ENTRIES * 2)
+                    len_offsets[len_count++] = udp_len_off;
+            }
+        }
+
+        // Slot budget: need len_count (lengths) + checksum_count (checksums)
+        if (dc + len_count + checksum_count > MAX_DIFFS_PER_PACKET)
+            return;
+
+        // Cache length field values (already correct from update_packet_lengths)
+        for (int i = 0; i < MAX_CHECKSUM_ENTRIES * 2; i++) {
+            if (i >= len_count)
+                break;
+            __u8 buf[2];
+            if (bpf_xdp_load_bytes(ctx, len_offsets[i], buf, 2) < 0)
+                return;
+            if (!cache_one_diff(diff, dc, len_offsets[i], buf))
+                return;
+            dc++;
+        }
+    } else {
+        // No length changes: just verify slot budget for checksums
+        if (dc + checksum_count > MAX_DIFFS_PER_PACKET)
+            return;
+    }
+
+    // Cache checksum values
+    __u8 cached = 0;
+    for (int i = 0; i < MAX_CHECKSUM_ENTRIES; i++) {
+        if (i >= checksum_count)
+            break;
+        __u32 csum_idx = csum_base_offset + i;
+        struct checksum_meta *meta = bpf_map_lookup_elem(&checksum_meta_map, &csum_idx);
+        if (!meta)
+            return;
+
+        __u8 buf[2];
+        if (bpf_xdp_load_bytes(ctx, meta->csum_offset, buf, 2) < 0)
+            return;
+
+        if (!cache_one_diff(diff, dc, meta->csum_offset, buf))
+            return;
+        dc++;
+        cached++;
+    }
+
+    // Only mark cached if ALL checksums were stored
+    if (cached == checksum_count) {
+        diff->diff_count = dc;
+        diff->csum_cached = 1;
+    }
 }
 
 // Helper: update round-robin index and stats (shared by checksum programs)
@@ -1083,6 +1263,9 @@ int xdp_tx_checksum(struct xdp_md *ctx)
         }
     }
 
+    // Cache computed checksums (and length fields) into diff_entry for future skip
+    cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, len_changed, target_len);
+
     update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
     DEBUG_PRINT("xdp_tx_checksum: idx=%u len=%u\n", local_idx, target_len);
     RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
@@ -1135,11 +1318,14 @@ int xdp_tx_csum_diff(struct xdp_md *ctx)
             checksum_errors++;
             break;
         }
-        if (!apply_csum_with_bpf_diff(ctx, meta, local_idx, diff_count, target_len)) {
+        if (!apply_csum_with_bpf_diff(ctx, meta, local_idx, diff_count | ((__u16)i << 8), target_len)) {
             DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
             checksum_errors++;
         }
     }
+
+    // Cache computed checksums into diff_entry for future skip
+    cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, 0, target_len);
 
     update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
     DEBUG_PRINT("xdp_tx_csum_diff: idx=%u len=%u\n", local_idx, target_len);

@@ -2,12 +2,31 @@ package xdperf
 
 import (
 	"fmt"
+	"math"
 	"strings"
+	"syscall"
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
+)
+
+// IPv4/IPv6 header layout constants (matching kernel struct offsets)
+const (
+	ipv4HeaderSize          = 20
+	ipv4ChecksumFieldOffset = 10 // offsetof(struct iphdr, check)
+	ipv4SaddrOffset         = 12 // offsetof(struct iphdr, saddr)
+	ipv4ProtocolOffset      = 9  // offsetof(struct iphdr, protocol)
+	ipv4TotLenOffset        = 2  // offsetof(struct iphdr, tot_len)
+
+	ipv6HeaderSize       = 40
+	ipv6SaddrOffset      = 8 // offsetof(struct ipv6hdr, saddr)
+	ipv6NextHeaderOffset = 6 // offsetof(struct ipv6hdr, nexthdr)
+	ipv6PayloadLenOffset = 4 // offsetof(struct ipv6hdr, payload_len)
+
+	// Sentinel value for pkt_state.last_base_idx (no previous base, forces first copy)
+	lastBaseIdxSentinel = math.MaxUint32
 )
 
 // getBpfConstant reads a BPF constant value from spec.Variables
@@ -90,13 +109,54 @@ func (x *Xdperf) initBasePacketMaps(bases []BasePacketInfo, numCpus int) error {
 	return nil
 }
 
+// diffAffectsChecksum checks if a diff value overlaps with a checksum's coverage area.
+// This replicates the BPF-side logic but runs once at init time.
+func diffAffectsChecksum(dv DiffValue, cs guest.ChecksumSpec, pktData []byte, pktLen uint16) bool {
+	diffStart := dv.Offset
+	diffEnd := dv.Offset + uint16(dv.Size)
+
+	ipOff := int(cs.IPHeaderOffset)
+	if ipOff >= len(pktData) {
+		return true // conservative
+	}
+	ipVersion := (pktData[ipOff] >> 4) & 0x0F
+
+	if ipVersion == 4 {
+		if cs.ChecksumOffset == cs.IPHeaderOffset+ipv4ChecksumFieldOffset {
+			ipStart := cs.IPHeaderOffset
+			ipEnd := ipStart + ipv4HeaderSize
+			return diffStart < ipEnd && diffEnd > ipStart
+		}
+		var proto uint8
+		if ipOff+ipv4ProtocolOffset+1 <= len(pktData) {
+			proto = pktData[ipOff+ipv4ProtocolOffset]
+		}
+		if proto != syscall.IPPROTO_ICMP {
+			srcIP := cs.IPHeaderOffset + ipv4SaddrOffset
+			dstIPEnd := cs.IPHeaderOffset + ipv4HeaderSize
+			if diffStart < dstIPEnd && diffEnd > srcIP {
+				return true
+			}
+		}
+	} else if ipVersion == 6 {
+		srcIP := cs.IPHeaderOffset + ipv6SaddrOffset
+		dstIPEnd := cs.IPHeaderOffset + ipv6HeaderSize
+		if diffStart < dstIPEnd && diffEnd > srcIP {
+			return true
+		}
+	}
+
+	return diffStart < pktLen && diffEnd > cs.HeaderStart
+}
+
 // initDiffMap initializes the diff map with pre-computed diff entries
-func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus int) error {
+func (x *Xdperf) initDiffMap(entries []DiffEntry, bases []BasePacketInfo, countsPerCPU []uint32, numCpus int) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("no diff entries")
 	}
 
 	maxDiffsPerPacket := x.getBpfConstant("max_diffs_per_packet")
+	maxChecksumEntriesPerBase := x.getBpfConstant("max_checksum_entries")
 
 	// Check if any entry exceeds max diffs
 	for i, e := range entries {
@@ -143,6 +203,8 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 				}
 
 				// Copy diff values (up to maxDiffsPerPacket)
+				// Pre-compute affects_csum bitmask for each diff
+				baseInfo := bases[e.BaseIdx]
 				for i, dv := range e.Diffs {
 					if i >= maxDiffsPerPacket {
 						break
@@ -151,6 +213,18 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, countsPerCPU []uint32, numCpus
 					entrylist[cpu].Diffs[i].Size = dv.Size
 					entrylist[cpu].Diffs[i].OldValue = dv.OldValue
 					entrylist[cpu].Diffs[i].NewValue = dv.NewValue
+
+					// Compute which checksums this diff affects
+					var affectsCsum uint8
+					for csIdx, cs := range baseInfo.Checksums {
+						if csIdx >= maxChecksumEntriesPerBase {
+							break
+						}
+						if diffAffectsChecksum(dv, cs, baseInfo.Base.Data, e.PacketLen) {
+							affectsCsum |= 1 << csIdx
+						}
+					}
+					entrylist[cpu].Diffs[i].AffectsCsum = affectsCsum
 				}
 			}
 			// else: CPU not using this index, leave as zero value
@@ -192,11 +266,28 @@ func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo, numCpus int) error
 			}
 
 			key := uint32(baseIdx*maxChecksumEntriesPerBase + csIdx)
+
+			// Cache IP version and protocol from base packet to avoid
+			// per-packet bpf_xdp_load_bytes in checksum functions.
+			var ipVersion, ipProtocol uint8
+			pktData := info.Base.Data
+			ipOff := int(cs.IPHeaderOffset)
+			if ipOff < len(pktData) {
+				ipVersion = (pktData[ipOff] >> 4) & 0x0F
+				if ipVersion == 4 && ipOff+ipv4ProtocolOffset+1 <= len(pktData) {
+					ipProtocol = pktData[ipOff+ipv4ProtocolOffset]
+				} else if ipVersion == 6 && ipOff+ipv6NextHeaderOffset+1 <= len(pktData) {
+					ipProtocol = pktData[ipOff+ipv6NextHeaderOffset]
+				}
+			}
+
 			meta := coreelf.BpfChecksumMeta{
 				CsumOffset:     cs.ChecksumOffset,
 				HeaderStart:    cs.HeaderStart,
 				HeaderLen:      cs.HeaderLen,
 				IpHeaderOffset: cs.IPHeaderOffset,
+				IpVersion:      ipVersion,
+				IpProtocol:     ipProtocol,
 			}
 
 			// Replicate to all CPUs (all CPUs get the same checksum metadata)
@@ -225,7 +316,7 @@ func (x *Xdperf) initPktStateMap(countsPerCPU []uint32) error {
 	key := uint32(0)
 	states := make([]coreelf.BpfPktState, len(countsPerCPU))
 	for i, count := range countsPerCPU {
-		states[i] = coreelf.BpfPktState{Count: count, Idx: 0}
+		states[i] = coreelf.BpfPktState{Count: count, Idx: 0, LastBaseIdx: lastBaseIdxSentinel}
 	}
 	if err := x.bpfobjs.BpfMaps.PktStateMap.Put(&key, states); err != nil {
 		return fmt.Errorf("failed to put pkt state map: %w", err)
@@ -283,7 +374,7 @@ func (x *Xdperf) initBpfMaps(bases []BasePacketInfo, diffEntries []DiffEntry) er
 		fn   func() error
 	}{
 		{"base_packet_maps", func() error { return x.initBasePacketMaps(bases, numCpus) }},
-		{"diff_map", func() error { return x.initDiffMap(diffEntries, countsPerCPU, numCpus) }},
+		{"diff_map", func() error { return x.initDiffMap(diffEntries, bases, countsPerCPU, numCpus) }},
 		{"checksum_meta_maps", func() error { return x.initChecksumMetaMaps(bases, numCpus) }},
 		{"pkt_state_map", func() error { return x.initPktStateMap(countsPerCPU) }},
 	}
