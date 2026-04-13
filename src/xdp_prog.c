@@ -996,64 +996,36 @@ int xdp_tx(struct xdp_md *ctx)
 // Cache computed checksum (and length) values back into diff_entry as additional diffs.
 // Called once after the first checksum computation; subsequent iterations skip checksum entirely.
 // Also caches length field values when len_changed, so update_packet_lengths is also skipped.
-// Helper: store a single cached diff at slot 'dc' (verifier-safe bounded access)
+
+// Helper macro: generate a switch case that writes a cached diff at constant index N.
+// Using constant indices in each case satisfies verifier bounds checking
+// (variable indexing into map_value arrays fails on kernel 6.1).
+#define CACHE_DIFF_CASE(N)                                     \
+    case N:                                                    \
+        diff->diffs[N].offset = offset;                        \
+        diff->diffs[N].size = 2;                               \
+        diff->diffs[N].affects_csum = 0;                       \
+        __builtin_memcpy(diff->diffs[N].new_value, value, 2);  \
+        return true;
+
+// Store a single cached diff at slot 'dc' (verifier-safe bounded access)
 static __noinline bool cache_one_diff(struct diff_entry *diff, __u8 dc, __u16 offset, __u8 *value)
 {
-    // Use switch with constant indices to satisfy verifier bounds checking.
-    // Variable indexing into map_value arrays fails on kernel 6.1.
     switch (dc) {
-    case 0:
-        diff->diffs[0].offset = offset;
-        diff->diffs[0].size = 2;
-        diff->diffs[0].affects_csum = 0;
-        __builtin_memcpy(diff->diffs[0].new_value, value, 2);
-        return true;
-    case 1:
-        diff->diffs[1].offset = offset;
-        diff->diffs[1].size = 2;
-        diff->diffs[1].affects_csum = 0;
-        __builtin_memcpy(diff->diffs[1].new_value, value, 2);
-        return true;
-    case 2:
-        diff->diffs[2].offset = offset;
-        diff->diffs[2].size = 2;
-        diff->diffs[2].affects_csum = 0;
-        __builtin_memcpy(diff->diffs[2].new_value, value, 2);
-        return true;
-    case 3:
-        diff->diffs[3].offset = offset;
-        diff->diffs[3].size = 2;
-        diff->diffs[3].affects_csum = 0;
-        __builtin_memcpy(diff->diffs[3].new_value, value, 2);
-        return true;
-    case 4:
-        diff->diffs[4].offset = offset;
-        diff->diffs[4].size = 2;
-        diff->diffs[4].affects_csum = 0;
-        __builtin_memcpy(diff->diffs[4].new_value, value, 2);
-        return true;
-    case 5:
-        diff->diffs[5].offset = offset;
-        diff->diffs[5].size = 2;
-        diff->diffs[5].affects_csum = 0;
-        __builtin_memcpy(diff->diffs[5].new_value, value, 2);
-        return true;
-    case 6:
-        diff->diffs[6].offset = offset;
-        diff->diffs[6].size = 2;
-        diff->diffs[6].affects_csum = 0;
-        __builtin_memcpy(diff->diffs[6].new_value, value, 2);
-        return true;
-    case 7:
-        diff->diffs[7].offset = offset;
-        diff->diffs[7].size = 2;
-        diff->diffs[7].affects_csum = 0;
-        __builtin_memcpy(diff->diffs[7].new_value, value, 2);
-        return true;
+    CACHE_DIFF_CASE(0)
+    CACHE_DIFF_CASE(1)
+    CACHE_DIFF_CASE(2)
+    CACHE_DIFF_CASE(3)
+    CACHE_DIFF_CASE(4)
+    CACHE_DIFF_CASE(5)
+    CACHE_DIFF_CASE(6)
+    CACHE_DIFF_CASE(7)
     default:
         return false;
     }
 }
+
+#undef CACHE_DIFF_CASE
 
 // Cache computed length field values and checksum values into diff_entry as additional diffs.
 // After the first pass (update_packet_lengths + recalc_checksum), all values in the packet are
