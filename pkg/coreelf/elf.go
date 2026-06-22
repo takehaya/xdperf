@@ -9,10 +9,11 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-// MaxPacketEntry is the maximum number of entries for tx_override_map.
-// This must match MAX_PACKET_ENTRY in src/xdp_prog.h.
-const MaxPacketEntry uint32 = 1 << 25 // 33554432
-const MinPacketEntry uint32 = 1
+// MaxDiffEntries is the maximum number of diff entries per CPU. This MUST match
+// MAX_DIFF_ENTRIES in src/xdp_packet.h: the data plane hard-caps the per-CPU
+// round-robin pool to this value (see the clamp in src/xdp_prog.c), so sizing
+// diff_map beyond it would silently waste entries the kernel never reads.
+const MaxDiffEntries uint32 = 131072
 
 // XdpMd is the XDP metadata structure for BPF_PROG_RUN.
 // This structure must match the kernel's xdp_md structure.
@@ -28,7 +29,7 @@ type XdpMd struct {
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -I ./src -I /usr/include/x86_64-linux-gnu
 
-func ReadCollection(constants map[string]any, mapSize uint32, diffMapSize uint32, debug ...bool) (*BpfObjects, *ebpf.CollectionSpec, error) {
+func ReadCollection(constants map[string]any, diffMapSize uint32, debug ...bool) (*BpfObjects, *ebpf.CollectionSpec, error) {
 	debugMode := len(debug) > 0 && debug[0]
 	// Remove memory limit for BPF
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -42,15 +43,13 @@ func ReadCollection(constants map[string]any, mapSize uint32, diffMapSize uint32
 		return nil, nil, fmt.Errorf("fail to load bpf spec: %w", err)
 	}
 
-	// Dynamically set tx_override_map size before loading
-	if mapSpec, ok := spec.Maps["tx_override_map"]; ok {
-		if mapSize > 0 && mapSize <= MaxPacketEntry {
-			mapSpec.MaxEntries = mapSize
-		}
-	}
-
-	// Dynamically set diff_map size before loading
+	// Dynamically set diff_map size before loading. Clamp to the data-plane cap
+	// (MaxDiffEntries) so the control plane never sizes the map beyond what the
+	// kernel round-robin will actually read.
 	if mapSpec, ok := spec.Maps["diff_map"]; ok {
+		if diffMapSize > MaxDiffEntries {
+			diffMapSize = MaxDiffEntries
+		}
 		if diffMapSize > 0 {
 			mapSpec.MaxEntries = diffMapSize
 		}

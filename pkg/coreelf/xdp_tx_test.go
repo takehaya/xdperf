@@ -17,7 +17,7 @@ const (
 
 func loadWithDiffMap(t *testing.T, diffMapSize uint32) *BpfObjects {
 	t.Helper()
-	objs, _, err := ReadCollection(defaultConsts(), 1, diffMapSize)
+	objs, _, err := ReadCollection(defaultConsts(), diffMapSize)
 	if err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {

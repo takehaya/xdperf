@@ -265,3 +265,31 @@ func TestTopology_NodeByID(t *testing.T) {
 		t.Errorf("NodeByID(99) = %v, want nil", node)
 	}
 }
+
+func TestValidateCPUsInTopology(t *testing.T) {
+	topo := twoNodeTopology() // CPUs 0-15 across two nodes
+
+	tests := []struct {
+		name    string
+		cpus    []int
+		wantErr bool
+	}{
+		{"all_valid_node0", []int{0, 1, 2, 3}, false},
+		{"all_valid_spanning_nodes", []int{0, 8, 15}, false},
+		{"single_valid", []int{7}, false},
+		{"empty", nil, false},
+		{"out_of_range_high", []int{4096}, true},
+		{"just_past_end", []int{16}, true},
+		{"one_invalid_among_valid", []int{0, 1, 99}, true},
+		{"negative", []int{-1}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCPUsInTopology(tt.cpus, topo)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateCPUsInTopology(%v) error = %v, wantErr %v", tt.cpus, err, tt.wantErr)
+			}
+		})
+	}
+}

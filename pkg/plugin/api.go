@@ -2,41 +2,65 @@ package plugin
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"os/exec"
 	"time"
 
 	"github.com/tetratelabs/wazero/api"
 	"github.com/vishvananda/netlink"
+	"go.uber.org/zap"
 )
 
-func logFunc(ctx context.Context, mod api.Module, level uint32, msgPtr, msgLen uint32) {
-	data, ok := mod.Memory().Read(msgPtr, msgLen)
-	if !ok {
-		return
+// maxPluginLogBytes bounds how much plugin-controlled text is logged per call,
+// so a misbehaving plugin cannot flood the host log.
+const maxPluginLogBytes = 4096
+
+// makeLogFunc builds the host_log host function bound to lg. Plugin output is
+// untrusted, so it is carried as a quoted zap field (escapes/control chars are
+// neutralized by the encoder) and routed through the structured logger rather
+// than printed raw to stdout — keeping --json output and level filtering intact.
+func makeLogFunc(lg *zap.Logger) func(context.Context, api.Module, uint32, uint32, uint32) {
+	return func(ctx context.Context, mod api.Module, level uint32, msgPtr, msgLen uint32) {
+		data, ok := mod.Memory().Read(msgPtr, msgLen)
+		if !ok {
+			return
+		}
+		msg := string(data)
+		if len(msg) > maxPluginLogBytes {
+			msg = msg[:maxPluginLogBytes]
+		}
+		fields := []zap.Field{zap.Uint32("plugin_level", level), zap.String("msg", msg)}
+		// Convention: 0=debug, 1=info, 2=warn, >=3=error.
+		switch level {
+		case 0:
+			lg.Debug("plugin log", fields...)
+		case 1:
+			lg.Info("plugin log", fields...)
+		case 2:
+			lg.Warn("plugin log", fields...)
+		default:
+			lg.Error("plugin log", fields...)
+		}
 	}
-	logFuncImpl(level, string(data))
-}
-func logFuncImpl(level uint32, msg string) {
-	fmt.Printf("[PLUGIN] [%d] %s\n", level, msg)
 }
 
-func metricFunc(ctx context.Context, mod api.Module, namePtr, nameLen uint32, value float64, timestamp int64) {
-	data, ok := mod.Memory().Read(namePtr, nameLen)
-	if !ok {
-		return
+// makeMetricFunc builds the host_report_metric host function bound to lg.
+func makeMetricFunc(lg *zap.Logger) func(context.Context, api.Module, uint32, uint32, float64, int64) {
+	return func(ctx context.Context, mod api.Module, namePtr, nameLen uint32, value float64, timestamp int64) {
+		data, ok := mod.Memory().Read(namePtr, nameLen)
+		if !ok {
+			return
+		}
+		name := string(data)
+		if len(name) > maxPluginLogBytes {
+			name = name[:maxPluginLogBytes]
+		}
+		lg.Info("plugin metric",
+			zap.String("name", name),
+			zap.Float64("value", value),
+			zap.Time("time", parseTimestamp(uint64(timestamp))),
+		)
 	}
-	metricFuncImpl(string(data), value, timestamp)
-}
-
-func metricFuncImpl(name string, value float64, timestamp int64) {
-	t := parseTimestamp(uint64(timestamp))
-	fmt.Printf("[METRIC] %s %.6f time=%s \n",
-		name,
-		value,
-		t.Format(time.RFC3339Nano),
-	)
 }
 func parseTimestamp(ts uint64) time.Time {
 	nowNs := time.Now().UnixNano()

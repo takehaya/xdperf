@@ -15,6 +15,7 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+	"go.uber.org/zap"
 )
 
 // ManagerOption is a functional option for NewManager
@@ -22,12 +23,21 @@ type ManagerOption func(*managerOptions)
 
 type managerOptions struct {
 	cacheDir string
+	logger   *zap.Logger
 }
 
 // WithCacheDir sets the directory for WASM compilation cache
 func WithCacheDir(dir string) ManagerOption {
 	return func(o *managerOptions) {
 		o.cacheDir = dir
+	}
+}
+
+// WithLogger sets the structured logger used to surface plugin host calls
+// (host_log / host_report_metric) instead of writing them to stdout.
+func WithLogger(lg *zap.Logger) ManagerOption {
+	return func(o *managerOptions) {
+		o.logger = lg
 	}
 }
 
@@ -41,6 +51,7 @@ type Manager struct {
 	wasiP1HostModule *wasi_snapshot_preview1.Module
 	wasiSys          *wasi.System
 	pluginLang       string
+	logger           *zap.Logger
 
 	pluginCfg string
 }
@@ -100,6 +111,10 @@ func NewManager(pluginDir string, pluginCfg string, pluginLang string, opts ...M
 		return nil, fmt.Errorf("wasm: error retrieving wasi host module instance")
 	}
 
+	lg := options.logger
+	if lg == nil {
+		lg = zap.NewNop()
+	}
 	m := &Manager{
 		runtime:          runtime,
 		cache:            cache,
@@ -108,6 +123,7 @@ func NewManager(pluginDir string, pluginCfg string, pluginLang string, opts ...M
 		wasiP1HostModule: wasiP1HostModule,
 		wasiSys:          &sys,
 		pluginLang:       pluginLang,
+		logger:           lg,
 		pluginCfg:        pluginCfg,
 	}
 	if err := m.registerHostAPIFunctions(ctx); err != nil {
@@ -127,8 +143,8 @@ func NewManager(pluginDir string, pluginCfg string, pluginLang string, opts ...M
 func (m *Manager) registerHostAPIFunctions(ctx context.Context) error {
 	hostModule := m.runtime.NewHostModuleBuilder("env")
 
-	hostModule.NewFunctionBuilder().WithFunc(logFunc).Export("host_log")
-	hostModule.NewFunctionBuilder().WithFunc(metricFunc).Export("host_report_metric")
+	hostModule.NewFunctionBuilder().WithFunc(makeLogFunc(m.logger)).Export("host_log")
+	hostModule.NewFunctionBuilder().WithFunc(makeMetricFunc(m.logger)).Export("host_report_metric")
 	hostModule.NewFunctionBuilder().WithFunc(neighborResolveFunc).Export("host_neighbor_resolve")
 
 	_, err := hostModule.Instantiate(ctx)
@@ -247,36 +263,6 @@ func (m *Manager) GetPlugin(name string) (*wasmPlugin, error) {
 	return plugin, nil
 }
 
-// CallPlugin is a function to call a plugin's process function
-func (m *Manager) CallPlugin(ctx context.Context, name string, input []byte) ([]byte, error) {
-	plugin, err := m.GetPlugin(name)
-	if err != nil {
-		return nil, err
-	}
-	return plugin.CallProcess(ctx, input)
-}
-
-// InitPlugin はプラグインを初期化する
-func (m *Manager) InitPlugin(ctx context.Context, name string, config []byte) ([]byte, error) {
-	plugin, err := m.GetPlugin(name)
-	if err != nil {
-		return nil, err
-	}
-	return plugin.CallInit(ctx, config)
-}
-
-// ListPlugins is the list of loaded plugins
-func (m *Manager) ListPlugins() []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	names := make([]string, 0, len(m.plugins))
-	for name := range m.plugins {
-		names = append(names, name)
-	}
-	return names
-}
-
 // Close is the cleanup function for Manager
 func (m *Manager) Close(ctx context.Context) error {
 	m.mu.RLock()
@@ -357,9 +343,10 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 		return nil, err
 	}
 	defer func() {
-		// free input memory
+		// free input memory; a failure here must not crash the host process
+		// (a misbehaving plugin's free could trap), so log and continue.
 		if _, err := p.functions.free.Call(ctx, uint64(inPtr)); err != nil {
-			panic(fmt.Sprintf("Warning: failed to free input memory: %v\n", err))
+			fmt.Fprintf(os.Stderr, "warning: failed to free plugin input memory: %v\n", err)
 		}
 	}()
 
@@ -371,9 +358,9 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	}
 	outPtr := uint32(res[0])
 	defer func() {
-		// free output memory
+		// free output memory; log-and-continue rather than panic (see above).
 		if _, err := p.functions.free.Call(ctx, uint64(outPtr)); err != nil {
-			panic(fmt.Sprintf("Warning: failed to free output memory: %v\n", err))
+			fmt.Fprintf(os.Stderr, "warning: failed to free plugin output memory: %v\n", err)
 		}
 	}()
 
@@ -398,48 +385,6 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 
 	return append([]byte(nil), buf...), nil
 }
-
-// func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller api.Function) ([]byte, error) {
-// 	// 入力データをメモリに書き込む
-// 	inPtr, err := p.writeToMemory(ctx, input)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	defer func() {
-// 		if _, err = p.functions.free.Call(ctx, uint64(inPtr)); err != nil {
-// 			panic(fmt.Sprintf("free input failed: %v", err))
-// 		}
-// 	}()
-
-// 	// 出力用に十分なサイズを確保
-// 	// TODO: configで指定できるようにする
-// 	cap := uint32(1024 * 1024 * 16) // 16MB
-// 	res, err := p.functions.malloc.Call(ctx, uint64(cap))
-// 	if err != nil || len(res) == 0 {
-// 		return nil, fmt.Errorf("alloc out failed")
-// 	}
-// 	outPtr := uint32(res[0])
-// 	defer func() {
-// 		if _, err = p.functions.free.Call(ctx, uint64(outPtr)); err != nil {
-// 			panic(fmt.Sprintf("free output failed: %v", err))
-// 		}
-// 	}()
-
-// 	r, err := caller.Call(ctx, uint64(inPtr), uint64(len(input)), uint64(outPtr), uint64(cap))
-// 	if err != nil {
-// 		return nil, fmt.Errorf("plugin_process failed: %w", err)
-// 	}
-// 	if len(r) == 0 {
-// 		return nil, fmt.Errorf("no return value")
-// 	}
-
-// 	outLen := uint32(r[0])
-// 	buf, ok := p.memory.Read(outPtr, outLen)
-// 	if !ok {
-// 		return nil, fmt.Errorf("read output failed")
-// 	}
-// 	return append([]byte(nil), buf...), nil
-// }
 
 func (p *wasmPlugin) writeToMemory(ctx context.Context, data []byte) (uint32, error) {
 	res, err := p.functions.malloc.Call(ctx, uint64(len(data)))

@@ -133,6 +133,17 @@ func SelectCPUs(mode string, parallelism int, deviceName string) ([]int, error) 
 	}
 
 	if parsedMode == "list" {
+		// An explicit CPU list is the only mode whose values are not derived from
+		// the detected topology, so it must be validated: an out-of-range CPU id
+		// would later index a PossibleCPU()-sized slice and panic the process
+		// (see pkg/xdperf/bpf.go countsPerCPU and the SchedSetaffinity worker).
+		topo, err := DetectTopology()
+		if err != nil {
+			return nil, fmt.Errorf("failed to detect topology to validate --cpu-mode CPU list: %w", err)
+		}
+		if err := validateCPUsInTopology(explicitCPUs, topo); err != nil {
+			return nil, err
+		}
 		return explicitCPUs, nil
 	}
 
@@ -149,6 +160,23 @@ func SelectCPUs(mode string, parallelism int, deviceName string) ([]int, error) 
 		nicNode = nodeArg
 	}
 	return selectCPUsFromTopology(topo, parsedMode, parallelism, nicNode)
+}
+
+// validateCPUsInTopology returns an error if any CPU is not present in the
+// topology. Topology CPU ids are online CPUs (a subset of the possible CPUs),
+// so a CPU that passes this check is guaranteed to be a valid index into a
+// PossibleCPU()-sized per-CPU map, preventing an out-of-range panic downstream.
+func validateCPUsInTopology(cpus []int, topo *Topology) error {
+	available := make(map[int]bool)
+	for _, c := range topo.AllCPUs() {
+		available[c] = true
+	}
+	for _, c := range cpus {
+		if !available[c] {
+			return fmt.Errorf("CPU %d in --cpu-mode list is not available on this system (available CPUs: %v)", c, topo.AllCPUs())
+		}
+	}
+	return nil
 }
 
 func selectCPUsFromTopology(topo *Topology, mode string, parallelism int, nicNode int) ([]int, error) {
@@ -213,17 +241,8 @@ func selectLocal(topo *Topology, parallelism int, nicNode int) ([]int, error) {
 	if nicNode < 0 {
 		return firstNCPUs(topo, parallelism)
 	}
-
-	node := topo.NodeByID(nicNode)
-	if node == nil {
-		return nil, fmt.Errorf("NIC NUMA node %d not found in topology", nicNode)
-	}
-
-	if parallelism > len(node.CPUs) {
-		return nil, fmt.Errorf("requested parallelism (%d) exceeds CPUs on NUMA node %d (%d CPUs available)", parallelism, nicNode, len(node.CPUs))
-	}
-
-	return node.CPUs[:parallelism], nil
+	// With a known NIC node, "local" is "node:<nicNode>".
+	return selectNode(topo, parallelism, nicNode)
 }
 
 func selectNode(topo *Topology, parallelism int, nodeID int) ([]int, error) {

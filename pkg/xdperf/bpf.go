@@ -245,6 +245,21 @@ func (x *Xdperf) initDiffMap(entries []DiffEntry, bases []BasePacketInfo, counts
 	return nil
 }
 
+// validateChecksumSpec ensures a plugin-supplied checksum spec stays within the
+// base packet. The data plane bounds-checks every access, so a bad offset cannot
+// corrupt memory — but it would silently emit wrong checksums and inflate
+// csum_err, so reject it loudly at init instead.
+func validateChecksumSpec(cs guest.ChecksumSpec, dataLen int) error {
+	if int(cs.IPHeaderOffset) >= dataLen ||
+		int(cs.ChecksumOffset)+2 > dataLen ||
+		int(cs.HeaderStart) > dataLen ||
+		int(cs.HeaderStart)+int(cs.HeaderLen) > dataLen {
+		return fmt.Errorf("checksum spec out of range: ip_header_offset=%d checksum_offset=%d header_start=%d header_len=%d (base packet length=%d)",
+			cs.IPHeaderOffset, cs.ChecksumOffset, cs.HeaderStart, cs.HeaderLen, dataLen)
+	}
+	return nil
+}
+
 // initChecksumMetaMaps initializes the checksum metadata map for all bases
 // Key format: base_idx * MAX_CHECKSUM_ENTRIES + checksum_idx
 func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo, numCpus int) error {
@@ -263,6 +278,12 @@ func (x *Xdperf) initChecksumMetaMaps(bases []BasePacketInfo, numCpus int) error
 		for csIdx, cs := range info.Checksums {
 			if csIdx >= maxChecksumEntriesPerBase {
 				break
+			}
+
+			// Validate plugin-supplied checksum offsets against the base packet
+			// before they drive kernel map writes (see validateChecksumSpec).
+			if err := validateChecksumSpec(cs, len(info.Base.Data)); err != nil {
+				return fmt.Errorf("base %d, checksum %d: %w", baseIdx, csIdx, err)
 			}
 
 			key := uint32(baseIdx*maxChecksumEntriesPerBase + csIdx)
@@ -340,23 +361,39 @@ func (x *Xdperf) initBpfMaps(bases []BasePacketInfo, diffEntries []DiffEntry) er
 		parallelism = numCpus
 	}
 
-	// Distribute diff entries across selected CPUs (NUMA-aware)
+	// Cap the diff-entry pool to the data-plane per-CPU limit. The kernel hard-caps
+	// the round-robin pool to coreelf.MaxDiffEntries per CPU (see src/xdp_prog.c);
+	// entries beyond parallelism*MaxDiffEntries are written to the map but never
+	// transmitted. Truncate loudly here instead of letting the variant tail vanish
+	// silently — a measurement tool must not under-report what it actually sends.
 	totalEntries := len(diffEntries)
+	maxPoolEntries := int(coreelf.MaxDiffEntries) * parallelism
+	if totalEntries > maxPoolEntries {
+		x.Logger.Warn("diff entry pool exceeds data-plane capacity, truncating variant pool",
+			zap.Int("requested_entries", totalEntries),
+			zap.Int("max_entries", maxPoolEntries),
+			zap.Uint32("max_per_cpu", coreelf.MaxDiffEntries),
+			zap.Int("parallelism", parallelism),
+		)
+		diffEntries = diffEntries[:maxPoolEntries]
+		totalEntries = maxPoolEntries
+	}
+
+	// Distribute diff entries across selected CPUs (NUMA-aware)
 	entriesPerCPU := totalEntries / parallelism
 	remainder := totalEntries % parallelism
 
+	// countsPerCPU is indexed by CPU number for the BPF per-CPU maps; cpuCounts
+	// is the same data keyed by CPU for logging (the used CPUs may not be 0..N-1).
 	countsPerCPU := make([]uint32, numCpus)
+	cpuCounts := make(map[int]uint32, len(x.cpus))
 	for i, cpu := range x.cpus {
-		count := entriesPerCPU
+		count := uint32(entriesPerCPU)
 		if i < remainder {
 			count++
 		}
-		countsPerCPU[cpu] = uint32(count)
-	}
-
-	cpuCounts := make(map[int]uint32, len(x.cpus))
-	for _, cpu := range x.cpus {
-		cpuCounts[cpu] = countsPerCPU[cpu]
+		countsPerCPU[cpu] = count
+		cpuCounts[cpu] = count
 	}
 	x.Logger.Info("packet distribution calculated",
 		zap.Int("total_entries", totalEntries),
