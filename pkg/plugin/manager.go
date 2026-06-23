@@ -18,6 +18,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// maxPluginOutputBytes is the ceiling for a single plugin response. The host
+// pre-allocates a guest buffer of this size for each plugin call, so it bounds
+// how much memory a plugin can ask the host to reserve per invocation.
+const maxPluginOutputBytes = 32 * 1024 * 1024 // 32 MiB
+
 // ManagerOption is a functional option for NewManager
 type ManagerOption func(*managerOptions)
 
@@ -350,9 +355,9 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 		}
 	}()
 
-	// allocate memory for output
-	cap := uint32(1024 * 1024 * 32) // 32MB
-	res, err := p.functions.malloc.Call(ctx, uint64(cap))
+	// allocate the output buffer the plugin writes its response into
+	outCap := uint32(maxPluginOutputBytes)
+	res, err := p.functions.malloc.Call(ctx, uint64(outCap))
 	if err != nil || len(res) == 0 {
 		return nil, fmt.Errorf("malloc for output failed: %w", err)
 	}
@@ -365,7 +370,7 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	}()
 
 	// call plugin function
-	r, err := caller.Call(ctx, uint64(inPtr), uint64(len(input)), uint64(outPtr), uint64(cap))
+	r, err := caller.Call(ctx, uint64(inPtr), uint64(len(input)), uint64(outPtr), uint64(outCap))
 	if err != nil {
 		return nil, fmt.Errorf("plugin function call failed: %w", err)
 	}
@@ -374,7 +379,7 @@ func (p *wasmPlugin) callReadAndResp(ctx context.Context, input []byte, caller a
 	}
 
 	outLen := uint32(r[0])
-	if outLen > cap {
+	if outLen > outCap {
 		return nil, fmt.Errorf("output size exceeds capacity")
 	}
 

@@ -329,7 +329,10 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	}
 
 	var wg sync.WaitGroup
-	ctx, cancel := context.WithCancel(context.Background())
+	// Derive from the caller's context so a parent cancellation propagates to the
+	// workers and the stats goroutine (previously rooted at context.Background(),
+	// which silently dropped the parent's cancellation).
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	go x.ShowStats(ctx, ttype)

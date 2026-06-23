@@ -79,26 +79,9 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	}
 	maxLen := uint16(len(packetBytes))
 
-	// Checksum specifications for IPv4/UDP packets
-	// Type is auto-detected from packet content at IPHeaderOffset
-	// srcPortOffset is the UDP header offset (Ethernet 14 + IP 20 = 34)
-	ipHeaderOffset := uint16(srcPortOffset) - 20 // IP header starts 20 bytes before UDP
-	checksums := []guest.ChecksumSpec{
-		{
-			// IPv4 header checksum (detected by csum_offset == ip_header_offset + 10)
-			ChecksumOffset: ipHeaderOffset + 10,
-			HeaderStart:    ipHeaderOffset,
-			HeaderLen:      20, // IPv4 header length
-			IPHeaderOffset: ipHeaderOffset,
-		},
-		{
-			// UDP checksum (detected from IP protocol field)
-			ChecksumOffset: uint16(srcPortOffset) + 6, // UDP checksum is at offset 6 from UDP header
-			HeaderStart:    uint16(srcPortOffset),     // Start of UDP header
-			HeaderLen:      0,                         // Computed from IP total length
-			IPHeaderOffset: ipHeaderOffset,
-		},
-	}
+	// Checksum specs for an Ethernet/IPv4/UDP frame. The IPv4 header begins one
+	// IPv4 header before the UDP header (srcPortOffset - IPv4HeaderLen).
+	checksums := guest.IPv4UDPChecksumSpecs(uint16(srcPortOffset) - guest.IPv4HeaderLen)
 
 	// create response
 	// imix pattern with 3 variants

@@ -38,6 +38,19 @@ type Config struct {
 	CPUMode      string // NUMA-aware CPU selection mode (auto/local/balanced/node:N/CPU list)
 }
 
+// Normalize fills in config fields derived from user input (currently
+// PluginLanguage, parsed from a "<name>.<lang>" PluginName). It is idempotent
+// and only mutates the receiver; call it before Validate. Keeping the derivation
+// here — rather than hidden inside Validate — makes Validate side-effect-free.
+func (c *Config) Normalize() {
+	if c.PluginLanguage != "" {
+		return
+	}
+	if sp := strings.Split(c.PluginName, "."); len(sp) == 2 {
+		c.PluginLanguage = strings.ToLower(sp[1])
+	}
+}
+
 func (c *Config) Validate() error {
 	if c.Device == "" {
 		return fmt.Errorf("device is required")
@@ -95,12 +108,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("--duration requires --pps to be specified")
 	}
 
+	// PluginLanguage is derived by Normalize; if it is still empty here, the
+	// PluginName was not in "<name>.<lang>" form (and no language was set).
+	// Validate the invariant without mutating.
 	if c.PluginLanguage == "" {
-		sp := strings.Split(c.PluginName, ".")
-		if len(sp) != 2 {
+		if sp := strings.Split(c.PluginName, "."); len(sp) != 2 {
 			return fmt.Errorf("invalid plugin name format, must be <name>.<lang>")
 		}
-		c.PluginLanguage = strings.ToLower(sp[1])
 	}
 
 	// parallelism and count check (only when count is specified)

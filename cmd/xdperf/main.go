@@ -203,6 +203,9 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 		c.LoggerConfig.Verbose = 1
 	}
 
+	// Derive computed fields (e.g. PluginLanguage) before validating.
+	c.Normalize()
+
 	// Validate config
 	if err := c.Validate(); err != nil {
 		return xdperf.Config{}, fmt.Errorf("config validation failed: %w", err)

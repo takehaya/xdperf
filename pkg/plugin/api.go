@@ -3,12 +3,13 @@ package plugin
 import (
 	"context"
 	"net"
-	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/tetratelabs/wazero/api"
 	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 )
 
 // maxPluginLogBytes bounds how much plugin-controlled text is logged per call,
@@ -172,15 +173,35 @@ func resolveNeighbor(linkIndex int, family int, targetIP net.IP) error {
 	}
 	ifaceName := link.Attrs().Name
 
-	var cmd *exec.Cmd
-	if family == netlink.FAMILY_V4 {
-		// IPv4: ping でARP解決をトリガー
-		cmd = exec.Command("ping", "-c", "1", "-W", "1", "-I", ifaceName, targetIP.String())
-	} else {
-		// IPv6: ping6 でNDP解決をトリガー
-		cmd = exec.Command("ping", "-6", "-c", "1", "-W", "1", "-I", ifaceName, targetIP.String())
+	// Trigger neighbor (ARP/ND) resolution without shelling out to ping: send a
+	// single UDP datagram bound to the egress interface. The kernel must resolve
+	// the destination's L2 address before it can transmit, which populates the
+	// neighbor cache that lookupNeighborCache then reads. Reachability is not
+	// required — failures are best-effort and ignored.
+	dialer := net.Dialer{
+		Timeout: 1 * time.Second,
+		Control: func(_, _ string, c syscall.RawConn) error {
+			var sockErr error
+			if err := c.Control(func(fd uintptr) {
+				sockErr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, ifaceName)
+			}); err != nil {
+				return err
+			}
+			return sockErr
+		},
 	}
 
-	_ = cmd.Run() // エラーは無視（到達不能でもキャッシュに入る）
+	host := targetIP.String()
+	if family == netlink.FAMILY_V6 && targetIP.IsLinkLocalUnicast() {
+		host += "%" + ifaceName // link-local IPv6 needs a zone
+	}
+
+	// Port 9 (discard); the datagram only needs to leave the host to force resolution.
+	conn, err := dialer.Dial("udp", net.JoinHostPort(host, "9"))
+	if err != nil {
+		return nil // best-effort: the cache lookup + retries handle failure
+	}
+	_, _ = conn.Write([]byte{0})
+	_ = conn.Close()
 	return nil
 }
