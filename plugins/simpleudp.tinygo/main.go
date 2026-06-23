@@ -130,12 +130,6 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 							ByteRange:   guest.TemplateRange{Start: 1024, End: 1124},
 							PatternType: guest.ValuePatternTypeSequential,
 						},
-						{
-							ByteStart:   guest.ByteStartPacketLength,
-							ByteSize:    0,
-							ByteRange:   guest.TemplateRange{Start: 64, End: 84},
-							PatternType: guest.ValuePatternTypeSequential,
-						},
 					},
 					Checksums: checksums,
 				},
