@@ -300,6 +300,7 @@ cmd_image() {
 
 ensure_ssh_key() {
   if [[ ! -f "${SSH_KEY}" ]]; then
+    mkdir -p "$(dirname "${SSH_KEY}")"   # 呼び出し順に依存せず鍵置き場を確保する
     log "ラボ用 SSH 鍵を生成: ${SSH_KEY}"
     ssh-keygen -t ed25519 -N "" -f "${SSH_KEY}" -C "xdperf-vmlab" >/dev/null
   fi
@@ -389,6 +390,7 @@ wait_ssh() {
 
 cmd_up() {
   check_tools
+  mkdir -p "${CACHE_DIR}"   # ssh-keygen 等が CACHE_DIR 配下に書くので先に作る（初回 up でも動くように）
   ensure_ssh_key
   [[ -f "${BASE_IMAGE}" ]] || die "ベースイメージがありません。先に 'vmlab.sh image' を実行してください。"
   [[ -x "${SHARE_DIR}/bin/xdperf" ]] || die "${SHARE_DIR}/bin/xdperf がありません。先に 'make build' を実行してください。"
@@ -398,7 +400,6 @@ cmd_up() {
     || die "VMLAB_QUEUE_SIZE は 256 / 512 / 1024 のいずれかにしてください（virtio が受け付ける 2 の冪）。現在: ${QUEUE_SIZE}"
   [[ "${DATA_QUEUES}" =~ ^[1-9][0-9]*$ ]] \
     || die "VMLAB_DATA_QUEUES は正の整数にしてください。現在: ${DATA_QUEUES}"
-  mkdir -p "${CACHE_DIR}"
 
   # 使用するデータリンク方式 / キュー数 / リングサイズを記録し、demo/down が自動追従できるようにする
   echo "${DATA_LINK}"   > "${CACHE_DIR}/datalink"
