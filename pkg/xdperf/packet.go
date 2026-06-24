@@ -39,7 +39,7 @@ func (x *Xdperf) BuildSamplePacket() ([]byte, error) {
 	payloadLen = payloadLen - 14 - 20 - 8
 	payload := make([]byte, payloadLen)
 	for i := range payload {
-		payload[i] = []byte("x")[0]
+		payload[i] = 'x'
 	}
 	err = gopacket.SerializeLayers(buf,
 		gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},

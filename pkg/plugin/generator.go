@@ -8,7 +8,8 @@ import (
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
-// GeneratorAdapter はGeneratorPluginのアダプター
+// GeneratorAdapter wraps a loaded wasmPlugin and adapts its raw call interface
+// to the host-side generator API (guest.GeneratorProcessResponse).
 type GeneratorAdapter struct {
 	name   string
 	plugin *wasmPlugin

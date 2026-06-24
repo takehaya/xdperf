@@ -193,6 +193,10 @@ vimto -kernel :6.1 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBp
 vimto -kernel :6.6 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
 vimto -kernel :6.12 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
 vimto -kernel :6.18 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
+
+# Linux 7.x is not released yet. CI runs :7.0 as an allow-failure entry
+# (see .github/workflows/bpf_load_test.yaml); enable it locally once available.
+# vimto -kernel :7.0 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
 ```
 
 ## Inspired by

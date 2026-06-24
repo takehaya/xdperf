@@ -72,6 +72,15 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 	}
 }
 
+// safeDelta returns cur-prev, or 0 if cur < prev (counter reset/wrap), avoiding
+// unsigned-integer underflow that would otherwise produce a huge bogus delta.
+func safeDelta(cur, prev uint64) uint64 {
+	if cur < prev {
+		return 0
+	}
+	return cur - prev
+}
+
 func (x *Xdperf) getStats(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPackets, prevBytes *uint64) (deltaPackets, deltaBytes uint64) {
 	// Reuse getStatsWithErrors and discard error counts
 	var unusedDiffErrors, unusedChecksumErrors uint64
@@ -93,10 +102,13 @@ func (x *Xdperf) getStatsWithErrors(statMap *ebpf.Map, recs []coreelf.BpfDatarec
 		sumDiffErrors += rec.DiffErrors
 		sumChecksumErrors += rec.ChecksumErrors
 	}
-	deltaPackets = sumPackets - *prevPackets
-	deltaBytes = sumBytes - *prevBytes
-	deltaDiffErrors = sumDiffErrors - *prevDiffErrors
-	deltaChecksumErrors = sumChecksumErrors - *prevChecksumErrors
+	// Guard against unsigned underflow if a counter is reset (e.g. map re-init
+	// or NIC counter wrap) between samples, which would otherwise report a huge
+	// bogus delta.
+	deltaPackets = safeDelta(sumPackets, *prevPackets)
+	deltaBytes = safeDelta(sumBytes, *prevBytes)
+	deltaDiffErrors = safeDelta(sumDiffErrors, *prevDiffErrors)
+	deltaChecksumErrors = safeDelta(sumChecksumErrors, *prevChecksumErrors)
 	*prevPackets = sumPackets
 	*prevBytes = sumBytes
 	*prevDiffErrors = sumDiffErrors
@@ -177,8 +189,8 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 	// NIC statistics (only if flag is set)
 	if x.cfg.ShowNICStats {
 		nicStatsAfter := x.GetNICStats()
-		nicTxDelta := nicStatsAfter.TxXdpPackets - nicStatsBefore.TxXdpPackets
-		nicDropDelta := nicStatsAfter.TxXdpDropped - nicStatsBefore.TxXdpDropped
+		nicTxDelta := safeDelta(nicStatsAfter.TxXdpPackets, nicStatsBefore.TxXdpPackets)
+		nicDropDelta := safeDelta(nicStatsAfter.TxXdpDropped, nicStatsBefore.TxXdpDropped)
 
 		fields := []zap.Field{
 			zap.Uint64("nic_tx_packets", nicTxDelta),

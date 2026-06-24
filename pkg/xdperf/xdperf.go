@@ -17,6 +17,7 @@ import (
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/takehaya/xdperf/pkg/logger"
+	"github.com/takehaya/xdperf/pkg/numa"
 	"github.com/takehaya/xdperf/pkg/plugin"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
@@ -31,6 +32,7 @@ type Xdperf struct {
 	Device        *net.Interface
 	cfg           Config
 	bpfSpec       *ebpf.CollectionSpec
+	cpus          []int // resolved CPU list for workers
 }
 
 func NewXdperf(cfg Config) (*Xdperf, error) {
@@ -42,7 +44,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 	cleanupFnList = append(cleanupFnList, cleanup)
 	var pm *plugin.Manager
 	if cfg.Sender {
-		var managerOpts []plugin.ManagerOption
+		managerOpts := []plugin.ManagerOption{plugin.WithLogger(logger)}
 		if cfg.WasmCacheDir != "" {
 			managerOpts = append(managerOpts, plugin.WithCacheDir(cfg.WasmCacheDir))
 		}
@@ -73,32 +75,26 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		}(),
 	}
 
-	// Calculate map sizes based on mode
-	var mapSize uint32
+	// Calculate diff_map size based on mode. The kernel hard-caps the per-CPU
+	// round-robin pool to coreelf.MaxDiffEntries (= MAX_DIFF_ENTRIES); sizing the
+	// map beyond that just wastes entries the data plane never reads, so clamp here.
 	var diffMapSize uint32
 	if cfg.Sender {
-		// Sender mode: size based on Count / Parallelism
-		sizePerCPU := uint32(cfg.Count/uint64(cfg.Parallelism)) + 1
-		mapSize = sizePerCPU
-		diffMapSize = sizePerCPU
-		// Clamp to valid range [MinPacketEntry, MaxPacketEntry]
-		if mapSize < coreelf.MinPacketEntry {
-			mapSize = coreelf.MinPacketEntry
-		}
-		if mapSize > coreelf.MaxPacketEntry {
-			mapSize = coreelf.MaxPacketEntry
+		// Sender mode: size based on Count / Parallelism, clamped to the cap.
+		diffMapSize = uint32(cfg.Count/uint64(cfg.Parallelism)) + 1
+		if diffMapSize > coreelf.MaxDiffEntries {
+			diffMapSize = coreelf.MaxDiffEntries
 		}
 	} else {
-		// Receiver-only mode: minimal size since tx_override_map and diff_map are not used
-		mapSize = 1
+		// Receiver-only mode: minimal size since diff_map is not used.
 		diffMapSize = 1
 	}
-	logger.Info("calculated map sizes",
-		zap.Uint32("tx_override_map_size", mapSize),
+	logger.Info("calculated diff_map size",
 		zap.Uint32("diff_map_size", diffMapSize),
+		zap.Uint32("max_diff_entries", coreelf.MaxDiffEntries),
 	)
 
-	obj, bpfSpec, err := coreelf.ReadCollection(consts, mapSize, diffMapSize, cfg.DebugMode > 0)
+	obj, bpfSpec, err := coreelf.ReadCollection(consts, diffMapSize, cfg.DebugMode > 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load eBPF objects: %w", err)
 	}
@@ -115,6 +111,20 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		return nil, fmt.Errorf("failed get device %s: %w", cfg.Device, err)
 	}
 
+	// Resolve CPU list based on NUMA topology
+	cpus, err := numa.SelectCPUs(cfg.CPUMode, cfg.Parallelism, cfg.Device)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select CPUs: %w", err)
+	}
+	if len(cpus) != cfg.Parallelism {
+		cfg.Parallelism = len(cpus)
+	}
+	logger.Info("CPU selection",
+		zap.String("mode", cfg.CPUMode),
+		zap.Ints("selected_cpus", cpus),
+		zap.Int("parallelism", cfg.Parallelism),
+	)
+
 	return &Xdperf{
 		Logger:        logger,
 		PluginManager: pm,
@@ -123,6 +133,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		cfg:           cfg,
 		Device:        dev,
 		bpfSpec:       bpfSpec,
+		cpus:          cpus,
 	}, nil
 }
 
@@ -161,14 +172,30 @@ func (x *Xdperf) initPacketGeneration(resp *guest.GeneratorProcessResponse) erro
 
 	maxBasePackets := x.getBpfConstant("max_base_packets")
 
+	// Bound the generated diff-entry pool to what the data plane can transmit
+	// (coreelf.MaxDiffEntries per CPU). Without this, a large --count would
+	// pre-allocate a correspondingly huge []DiffEntry on the host (OOM risk) while
+	// the kernel only round-robins the first MaxDiffEntries/CPU anyway. The total
+	// number of packets sent is governed separately by --count, not the pool size.
+	genCount := int(x.cfg.Count)
+	if maxGen := int(coreelf.MaxDiffEntries) * x.cfg.Parallelism; x.cfg.Parallelism > 0 && genCount > maxGen {
+		x.Logger.Warn("requested count exceeds data-plane pool capacity, capping generated variant pool",
+			zap.Uint64("requested_count", x.cfg.Count),
+			zap.Int("max_pool_entries", maxGen),
+			zap.Uint32("max_per_cpu", coreelf.MaxDiffEntries),
+			zap.Int("parallelism", x.cfg.Parallelism),
+		)
+		genCount = maxGen
+	}
+
 	switch resp.TemplateType {
 	case guest.GeneratorTemplateTypeVariable:
-		bases, diffEntries, err = GenerateVariableEntries(*resp, int(x.cfg.Count), maxBasePackets)
+		bases, diffEntries, err = GenerateVariableEntries(*resp, genCount, maxBasePackets)
 		if err != nil {
 			return fmt.Errorf("failed to generate variable entries: %w", err)
 		}
 	case guest.GeneratorTemplateTypeRaw:
-		bases, diffEntries, err = GenerateRawEntries(resp.RawPacketTemplate, int(x.cfg.Count), maxBasePackets)
+		bases, diffEntries, err = GenerateRawEntries(resp.RawPacketTemplate, genCount, maxBasePackets)
 		if err != nil {
 			return fmt.Errorf("failed to generate raw entries: %w", err)
 		}
@@ -302,7 +329,10 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	}
 
 	var wg sync.WaitGroup
-	ctx, cancel := context.WithCancel(context.Background())
+	// Derive from the caller's context so a parent cancellation propagates to the
+	// workers and the stats goroutine (previously rooted at context.Background(),
+	// which silently dropped the parent's cancellation).
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	go x.ShowStats(ctx, ttype)
@@ -329,7 +359,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	var once sync.Once
 	var firstErr error
 
-	for i := range x.cfg.Parallelism {
+	for _, cpu := range x.cpus {
 		p, err := prog.Clone()
 		if err != nil {
 			return fmt.Errorf("failed to clone XDP program: %w", err)
@@ -346,7 +376,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 					cancel()
 				})
 			}
-		}(i)
+		}(cpu)
 	}
 
 	// Wait for either signal or all goroutines to complete

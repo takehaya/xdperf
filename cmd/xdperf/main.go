@@ -120,6 +120,11 @@ func newApp(version string) *cli.App {
 			Name:  "wasm-cache-dir",
 			Usage: "directory for WASM compilation cache (default: ~/.cache/xdperf/wasm/)",
 		},
+		cli.StringFlag{
+			Name:  "cpu-mode",
+			Value: "auto",
+			Usage: "NUMA-aware CPU selection: auto, local, balanced, node:<N>, or CPU list (e.g., 0,2,4,6)",
+		},
 	}
 
 	app.Commands = []cli.Command{
@@ -175,6 +180,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.BatchSize = uint32(ctx.Int("batch-size"))
 	c.EnableXdpcap = ctx.Bool("enable-xdpcap")
 	c.WasmCacheDir = ctx.String("wasm-cache-dir")
+	c.CPUMode = ctx.String("cpu-mode")
 
 	// Parse count
 	countStr := ctx.String("count")
@@ -196,6 +202,9 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 		// set verbose logging
 		c.LoggerConfig.Verbose = 1
 	}
+
+	// Derive computed fields (e.g. PluginLanguage) before validating.
+	c.Normalize()
 
 	// Validate config
 	if err := c.Validate(); err != nil {

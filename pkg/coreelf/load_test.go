@@ -16,7 +16,7 @@ func defaultConsts() map[string]any {
 
 func loadOrFail(t *testing.T, consts map[string]any) (*BpfObjects, *ebpf.CollectionSpec) {
 	t.Helper()
-	objs, spec, err := ReadCollection(consts, 1, 1)
+	objs, spec, err := ReadCollection(consts, 1)
 	if err != nil {
 		// Print the full verifier log (branch-level, captured by cilium/ebpf on error).
 		// %+v avoids the default truncation so CI output is actionable.

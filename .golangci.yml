@@ -1,0 +1,27 @@
+version: "2"
+
+# Pin the linter behaviour so CI does not drift with golangci-lint releases.
+# Without this, the unpinned `golangci-lint@latest` (now v2) flags pre-existing
+# best-effort error handling and stylistic quickfix suggestions, breaking lint
+# project-wide. We keep the standard linter set and opt out of a few noisy rules.
+linters:
+  default: standard
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -QF1003 # "could use tagged switch" — stylistic quickfix, opt-out
+        - -QF1008 # "could remove embedded field from selector" — stylistic, opt-out
+        - -ST1003 # underscores in names — the project uses Test_Subcase naming
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+    rules:
+      # Best-effort calls whose error is intentionally ignored: deferred Close,
+      # console/stat printing, and gopacket test setup.
+      - linters:
+          - errcheck
+        text: "Error return value of .*(Close|Printf|SetNetworkLayerForChecksum). is not checked"
