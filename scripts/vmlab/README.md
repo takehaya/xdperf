@@ -65,6 +65,7 @@ VM 内では `out/` が `/mnt/xdperf` に read-only マウントされる。xdpe
 | `VMLAB_BRIDGE` | `xdpbr0` | `tap` 時の host bridge 名 |
 | `VMLAB_OVS_BRIDGE` | `xdpovs0` | `vhostuser` 時の OVS-DPDK ブリッジ名 |
 | `VMLAB_PMD_CPU_MASK` | `0x3c` | `vhostuser` 時の OVS-DPDK PMD コアマスク（0x3c = core 2-5 を busy-poll） |
+| `VMLAB_HUGEPAGES_FORCE` | `0` | `vhostuser` で hugepage 不足時に `drop_caches`+自動確保（ホスト破壊的）を許可。既定は停止 |
 | `VMLAB_SSH_PORT_TX` / `_RX` | `2222` / `2223` | host 側 ssh 転送ポート |
 | `VMLAB_DATA_PORT` | `12345` | `socket` 時のデータ NIC 直結用 host TCP ポート |
 | `VMLAB_PLUGIN` | `simpleudp.tinygo` | 送信に使う WASM プラグイン |
@@ -89,7 +90,8 @@ VMLAB_PARALLELISM=8 VMLAB_DEMO_SECONDS=10 make vmlab-demo
 make vmlab-down   # host bridge/tap も自動撤去
 
 # vhostuser（OVS-DPDK）で更に速く（hugepage を食うので VM mem は小さめ推奨）
-VMLAB_DATA_LINK=vhostuser VMLAB_CPUS=8 VMLAB_MEM=2G scripts/vmlab/vmlab.sh up
+# hugepage が未確保なら VMLAB_HUGEPAGES_FORCE=1 で drop_caches+自動確保を許可（ホスト破壊的・任意）
+VMLAB_DATA_LINK=vhostuser VMLAB_CPUS=8 VMLAB_MEM=2G VMLAB_HUGEPAGES_FORCE=1 scripts/vmlab/vmlab.sh up
 VMLAB_PARALLELISM=8 VMLAB_DEMO_SECONDS=10 scripts/vmlab/vmlab.sh demo
 scripts/vmlab/vmlab.sh down   # OVS bridge / hugepage subdir も自動撤去
 ```
@@ -110,7 +112,7 @@ scripts/vmlab/vmlab.sh down   # OVS bridge / hugepage subdir も自動撤去
 ### vhostuser（OVS-DPDK）の前提
 
 - `openvswitch-switch-dpdk` 導入済み＋ `ovs-vsctl get Open_vSwitch . dpdk_initialized` が `true`（= `other_config:dpdk-init=true`）。
-- hugepages: ゲストメモリ全体を共有 hugepage に載せる。`up` 時に `drop_caches`+`compaction` してから必要数を確保する（長期稼働ホストの断片化対策）。VM mem は 2G など小さめ推奨。
+- hugepages: ゲストメモリ全体を共有 hugepage に載せる。VM mem は 2G など小さめ推奨。事前に必要数を確保しておくこと。不足している場合、`VMLAB_HUGEPAGES_FORCE=1` を指定したときだけ `up` が `drop_caches`+`compaction`+自動確保を行う（ホスト全体のページキャッシュを捨てる破壊的操作のため既定では停止する）。
 - QEMU が vhost-user の **server**（ソケットは `.cache/vmlab/` に user 所有で作成）、OVS が `dpdkvhostuserclient` で接続。これで root 所有ソケットの権限問題を回避。
 - QEMU は `/dev/hugepages/xdperf`（user 所有サブディレクトリ）から hugepage を確保。
 - PMD スレッドは指定コアを 100% busy-poll する。

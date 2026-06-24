@@ -44,6 +44,7 @@ SSH_PORT_TX="${VMLAB_SSH_PORT_TX:-2222}"
 SSH_PORT_RX="${VMLAB_SSH_PORT_RX:-2223}"
 SSH_KEY="${CACHE_DIR}/id_vmlab"
 GUEST_USER="${VMLAB_GUEST_USER:-ubuntu}"
+RUN_USER="${USER:-$(id -un)}"   # set -u 下で $USER 未定義(cron/CI)でも動くようフォールバック
 
 # データ経路の設定（cloud-init の network-config と揃える）
 DATA_IF="data"                 # set-name で固定する guest 内 NIC 名
@@ -72,6 +73,9 @@ PMD_CPU_MASK="${VMLAB_PMD_CPU_MASK:-0x3c}"   # OVS-DPDK PMD コアマスク (0x3
 VHOST_SOCK_TX="${CACHE_DIR}/vhost-tx.sock"   # QEMU(server)が作る vhost-user ソケット (user所有)
 VHOST_SOCK_RX="${CACHE_DIR}/vhost-rx.sock"
 HUGE_DIR="${VMLAB_HUGE_DIR:-/dev/hugepages/xdperf}"  # QEMU が hugepage を使う user 所有サブディレクトリ
+# hugepage 不足時に drop_caches + compaction + 自動確保（ホスト全体に影響する破壊的操作）を行うか。
+# 既定は無効。不足時は警告して停止する。明示的に許可する場合のみ 1 にする。
+HUGEPAGES_FORCE="${VMLAB_HUGEPAGES_FORCE:-0}"
 
 # 固定 MAC（network-config の match と一致させる）
 MAC_TX_MGMT="52:54:00:00:00:11"
@@ -126,13 +130,14 @@ setup_tap_link() {
     log "host bridge 作成: ${BRIDGE}"
     sudo ip link add "${BRIDGE}" type bridge
     sudo ip link set "${BRIDGE}" up
+    touch "${CACHE_DIR}/bridge-created"   # 自分で作った印。既存の同名 bridge は teardown で消さない
   fi
   local role tap
   for role in tx rx; do
     tap="$(tap_name_for "${role}")"
     if ! ip link show "${tap}" >/dev/null 2>&1; then
-      log "host tap 作成: ${tap} (multi_queue, owner=${USER})"
-      sudo ip tuntap add dev "${tap}" mode tap multi_queue user "${USER}"
+      log "host tap 作成: ${tap} (multi_queue, owner=${RUN_USER})"
+      sudo ip tuntap add dev "${tap}" mode tap multi_queue user "${RUN_USER}"
       sudo ip link set "${tap}" master "${BRIDGE}"
       sudo ip link set "${tap}" up
     fi
@@ -148,9 +153,13 @@ teardown_tap_link() {
       sudo ip link del "${tap}" 2>/dev/null || true
     fi
   done
-  if ip link show "${BRIDGE}" >/dev/null 2>&1; then
-    log "host bridge 削除: ${BRIDGE}"
-    sudo ip link del "${BRIDGE}" 2>/dev/null || true
+  # bridge は自分で作った場合のみ削除する（既存の同名 bridge を破壊しない）
+  if [[ -f "${CACHE_DIR}/bridge-created" ]]; then
+    if ip link show "${BRIDGE}" >/dev/null 2>&1; then
+      log "host bridge 削除: ${BRIDGE}"
+      sudo ip link del "${BRIDGE}" 2>/dev/null || true
+    fi
+    rm -f "${CACHE_DIR}/bridge-created"
   fi
 }
 
@@ -174,7 +183,9 @@ setup_vhostuser_link() {
   pages_needed=$(( mem_gb * 512 * 2 + 2048 ))   # 2MB ページ数
   nr="$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages)"
   if [[ "${nr}" -lt "${pages_needed}" ]]; then
-    log "hugepages 確保: drop_caches + compaction -> ${pages_needed} (2MB pages)"
+    [[ "${HUGEPAGES_FORCE}" == "1" ]] \
+      || die "hugepages が不足しています (現在 ${nr}, 必要 ${pages_needed})。事前に確保するか、ホスト全体に影響する drop_caches+自動確保を許可する場合のみ VMLAB_HUGEPAGES_FORCE=1 を指定してください。"
+    log "hugepages 確保(FORCE): drop_caches + compaction -> ${pages_needed} (2MB pages)"
     sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches; echo 1 > /proc/sys/vm/compact_memory'
     sudo sh -c "echo ${pages_needed} > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
   fi
@@ -185,9 +196,12 @@ setup_vhostuser_link() {
 
   # QEMU(非特権) が hugepage を使えるよう user 所有のサブディレクトリを用意
   sudo mkdir -p "${HUGE_DIR}"
-  sudo chown "${USER}" "${HUGE_DIR}"
+  sudo chown "${RUN_USER}" "${HUGE_DIR}"
 
   log "OVS PMD cpu mask=${PMD_CPU_MASK}"
+  # 既存の pmd-cpu-mask を退避し（teardown で復元）、既存 OVS-DPDK 設定を壊さない。未設定なら空ファイル。
+  sudo ovs-vsctl get Open_vSwitch . other_config:pmd-cpu-mask 2>/dev/null \
+    | tr -d '"' > "${CACHE_DIR}/pmd-cpu-mask.prev" || true
   sudo ovs-vsctl set Open_vSwitch . other_config:pmd-cpu-mask="${PMD_CPU_MASK}"
 
   log "OVS bridge 作成: ${OVS_BRIDGE} (datapath_type=netdev) + dpdkvhostuserclient x2"
@@ -206,7 +220,13 @@ teardown_vhostuser_link() {
     log "OVS bridge 削除: ${OVS_BRIDGE}"
     sudo ovs-vsctl --if-exists del-br "${OVS_BRIDGE}"
   fi
-  sudo ovs-vsctl remove Open_vSwitch . other_config pmd-cpu-mask 2>/dev/null || true
+  # pmd-cpu-mask は退避値があれば復元、無ければ（元々未設定なら）remove する
+  if [[ -s "${CACHE_DIR}/pmd-cpu-mask.prev" ]]; then
+    sudo ovs-vsctl set Open_vSwitch . other_config:pmd-cpu-mask="$(cat "${CACHE_DIR}/pmd-cpu-mask.prev")"
+  else
+    sudo ovs-vsctl remove Open_vSwitch . other_config pmd-cpu-mask 2>/dev/null || true
+  fi
+  rm -f "${CACHE_DIR}/pmd-cpu-mask.prev"
   rm -f "${VHOST_SOCK_TX}" "${VHOST_SOCK_RX}"
   [[ "${HUGE_DIR}" == /dev/hugepages/* ]] && sudo rm -rf "${HUGE_DIR}" 2>/dev/null || true
 }
@@ -483,7 +503,8 @@ cmd_clean() {
   cmd_down || true
   log "overlay / seed / serial ログ / 状態ファイルを削除（ベースイメージは保持）"
   rm -f "${CACHE_DIR}"/*-overlay.qcow2 "${CACHE_DIR}"/*-seed.iso "${CACHE_DIR}"/*-serial.log "${CACHE_DIR}"/*.pid \
-        "${CACHE_DIR}/datalink" "${CACHE_DIR}/dataqueues" "${CACHE_DIR}/queuesize"
+        "${CACHE_DIR}/datalink" "${CACHE_DIR}/dataqueues" "${CACHE_DIR}/queuesize" \
+        "${CACHE_DIR}/bridge-created" "${CACHE_DIR}/pmd-cpu-mask.prev"
 }
 
 usage() {
