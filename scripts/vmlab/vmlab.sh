@@ -489,13 +489,20 @@ cmd_demo() {
   sleep 2
 
   log "tx: 送信（${DEMO_SECONDS}秒）"
+  # timeout(124) は「指定秒で打ち切った」正常終了。それ以外の非0（プラグインロード失敗等）は本物の失敗。
+  local tx_rc=0
   vm_ssh tx "sudo pkill -x xdperf || true; \
     timeout ${DEMO_SECONDS} ${xdperf} run --device ${DATA_IF} ${plugin_args} \
     --count ${DEMO_COUNT} --parallelism ${DEMO_PARALLELISM} --infinite \
-    --batch-size 64 --show-nic-stats --cfg '${cfg}' || true"
+    --batch-size 64 --show-nic-stats --cfg '${cfg}'; rc=\$?; [ \$rc -eq 124 ] && exit 0; exit \$rc" \
+    || tx_rc=$?
 
   sleep 1
   vm_ssh rx "sudo pkill -x xdperf || true"
+
+  if [[ "${tx_rc}" -ne 0 ]]; then
+    die "tx 送信が失敗しました (rc=${tx_rc})。プラグインや --cfg を確認してください（rx ログ: 'vmlab.sh ssh rx' から /tmp/xdperf-rx.log）。"
+  fi
 
   echo
   log "==== 送信側(tx) NIC カウンタ ===="
