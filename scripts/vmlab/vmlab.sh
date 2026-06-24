@@ -510,7 +510,7 @@ cmd_demo() {
 
   echo
   log "==== 送信側(tx) NIC カウンタ ===="
-  report_nic tx 'xdp|tx_packets' 'tx_queue_[0-9]+_xdp_tx:' 'tx xdp_tx 合計'
+  report_nic tx 'xdp|tx_packets' '(tx|rx)_queue_[0-9]+_xdp_tx:' 'tx xdp_tx 合計'
   echo
   log "==== 受信側(rx) 受信ログ（末尾） ===="
   vm_ssh rx "tail -n 15 /tmp/xdperf-rx.log 2>/dev/null || echo '(ログなし)'"
