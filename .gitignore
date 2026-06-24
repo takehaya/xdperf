@@ -156,3 +156,6 @@ out/
 dist/
 
 *.dat
+
+# VM-to-VM lab artifacts (scripts/vmlab)
+.cache/

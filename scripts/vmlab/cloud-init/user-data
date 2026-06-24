@@ -1,0 +1,13 @@
+#cloud-config
+# vmlab の tx/rx 共通テンプレート。__SSH_PUBKEY__ は vmlab.sh が実鍵に差し替える。
+ssh_authorized_keys:
+  - __SSH_PUBKEY__
+package_update: false
+package_upgrade: false
+bootcmd:
+  - [ sh, -c, "modprobe 9pnet_virtio || true" ]
+mounts:
+  # host の out/ を read-only で /mnt/xdperf にマウント（xdperf バイナリ + wasm 投入）
+  - [ "xdperfout", "/mnt/xdperf", "9p", "trans=virtio,version=9p2000.L,ro,_netdev,nofail", "0", "0" ]
+runcmd:
+  - [ sh, -c, "mkdir -p /mnt/xdperf && mount -a" ]
