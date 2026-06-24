@@ -176,11 +176,12 @@ setup_vhostuser_link() {
 
   # ゲストメモリは共有 hugepage に載せる必要がある。2VM分 + OVS mempool/slack を確保。
   # 長期稼働ホストは断片化で runtime 確保が失敗するので drop_caches + compaction してから割当。
-  local mem_gb pages_needed got nr
+  local mem_gb pages_needed need_vms nr free
   [[ "${VM_MEM}" =~ ^[0-9]+[Gg]$ ]] \
     || die "vhostuser モードでは VMLAB_MEM を G 単位で指定してください（例: 4G）。現在: ${VM_MEM}"
   mem_gb="${VM_MEM%[Gg]}"
-  pages_needed=$(( mem_gb * 512 * 2 + 2048 ))   # 2MB ページ数
+  need_vms=$(( mem_gb * 512 * 2 ))              # 2VM分の 2MB ページ数
+  pages_needed=$(( need_vms + 2048 ))           # + OVS mempool/slack
   nr="$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages)"
   if [[ "${nr}" -lt "${pages_needed}" ]]; then
     [[ "${HUGEPAGES_FORCE}" == "1" ]] \
@@ -189,10 +190,11 @@ setup_vhostuser_link() {
     sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches; echo 1 > /proc/sys/vm/compact_memory'
     sudo sh -c "echo ${pages_needed} > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
   fi
-  got="$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages)"
-  log "hugepages nr=${got} free=$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/free_hugepages) (2VM必要≈$(( mem_gb * 512 * 2 )))"
-  [[ "${got}" -ge "$(( mem_gb * 512 * 2 ))" ]] \
-    || warn "hugepages が要求量に届きません (nr=${got})。VMLAB_MEM を下げてください。"
+  # 総数ではなく「空き」で判定する（他プロセスが使用中だと QEMU 起動が後で失敗するため）
+  free="$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/free_hugepages)"
+  log "hugepages nr=$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) free=${free} (2VM必要≈${need_vms})"
+  [[ "${free}" -ge "${need_vms}" ]] \
+    || die "空き hugepage が不足しています (free=${free}, 必要=${need_vms})。他プロセスの hugepage 使用状況か VMLAB_MEM を確認してください。"
 
   # QEMU(非特権) が hugepage を使えるよう user 所有のサブディレクトリを用意
   sudo mkdir -p "${HUGE_DIR}"
@@ -370,6 +372,10 @@ cmd_up() {
   echo "${DATA_QUEUES}" > "${CACHE_DIR}/dataqueues"
   echo "${QUEUE_SIZE}"  > "${CACHE_DIR}/queuesize"
 
+  # 途中失敗（setup / start_vm / wait_ssh）時は作りかけの host リソース・VM を撤去する
+  local up_ok=0
+  trap '[[ "${up_ok}" == 1 ]] || { warn "up に失敗しました。作りかけのリソースを撤去します"; cmd_down || true; }' EXIT
+
   case "${DATA_LINK}" in
     tap)
       log "データリンク: tap+vhost マルチキュー (queues=${DATA_QUEUES}, bridge=${BRIDGE})"
@@ -387,6 +393,8 @@ cmd_up() {
 
   wait_ssh tx
   wait_ssh rx
+  up_ok=1
+  trap - EXIT        # ここまで来たら成功。撤去トラップを解除する
   cmd_status
   log "準備完了。'vmlab.sh demo' で送受信デモを実行できます。"
 }
@@ -489,15 +497,23 @@ cmd_ssh() {
 }
 
 cmd_down() {
+  local role p w
   for role in tx rx; do
-    local p; p="$(pid_of "${role}")"
+    p="$(pid_of "${role}")"
     if [[ -n "${p}" ]] && kill -0 "${p}" 2>/dev/null; then
       log "停止: ${role} (pid ${p})"
       kill "${p}" 2>/dev/null || true
+      # 終了を待ち、残れば SIGKILL（残留 VM のまま teardown してデバイスを壊さない）
+      for w in $(seq 1 10); do kill -0 "${p}" 2>/dev/null || break; sleep 1; done
+      if kill -0 "${p}" 2>/dev/null; then
+        warn "${role} (pid ${p}) が終了しないため SIGKILL します"
+        kill -9 "${p}" 2>/dev/null || true
+        sleep 1
+      fi
     fi
     rm -f "${CACHE_DIR}/${role}.pid"
   done
-  # 作った host 側リソースを撤去（socket モードでは no-op）
+  # VM が確実に止まってから host 側リソースを撤去（socket モードでは no-op）
   case "${DATA_LINK}" in
     tap)       teardown_tap_link ;;
     vhostuser) teardown_vhostuser_link ;;

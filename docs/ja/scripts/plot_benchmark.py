@@ -10,7 +10,7 @@
 
 データは benchmark_realnic.md の実測値（実機100G, Intel E810-C, 送受信とも xdperf/XDP）。
 受信側カウンタ実測。Gbps は pps から別途算出（本図は pps）。
-依存: matplotlib
+依存: matplotlib, numpy
 """
 import os
 import matplotlib

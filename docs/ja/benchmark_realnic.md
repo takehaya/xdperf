@@ -139,7 +139,7 @@ sudo ./out/bin/xdperf run --device enp138s0f0np0 \
 
 ## グラフの再生成
 
-本ドキュメントの図は、計測値を内蔵した `docs/ja/scripts/plot_benchmark.py` で生成する（要 matplotlib）。
+本ドキュメントの図は、計測値を内蔵した `docs/ja/scripts/plot_benchmark.py` で生成する（要 matplotlib, numpy）。
 
 ```bash
 python3 docs/ja/scripts/plot_benchmark.py   # docs/ja/imgs/ に PNG を出力
