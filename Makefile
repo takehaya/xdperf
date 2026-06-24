@@ -123,6 +123,24 @@ remove-ebpfmap: ## remove all ebpf maps
 show-trace_pipe: ## show trace_pipe
 	sudo cat /sys/kernel/debug/tracing/trace_pipe
 
+## VM Lab:
+.PHONY: vmlab-image vmlab-up vmlab-demo vmlab-down vmlab-clean
+VMLAB := ./scripts/vmlab/vmlab.sh
+vmlab-image: ## Fetch base cloud image for the VM-to-VM lab (first run only)
+	$(VMLAB) image
+
+vmlab-up: build ## Boot the 2-VM (tx/rx) back-to-back lab
+	$(VMLAB) up
+
+vmlab-demo: ## Run send/recv demo and print real NIC/recv counters
+	$(VMLAB) demo
+
+vmlab-down: ## Stop the VM-to-VM lab
+	$(VMLAB) down
+
+vmlab-clean: ## Remove lab overlays/seeds/logs (keeps base image)
+	$(VMLAB) clean
+
 ## Help:
 .PHONY: show-buildtags
 show-buildtags: ## Show build tags

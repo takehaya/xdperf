@@ -1,0 +1,17 @@
+# cloud-init network-config v2（tx/rx 共通テンプレート）
+# MAC で照合し、管理 NIC=mgmt(DHCP) / データ NIC=data(静的IP) に固定名で割り当てる。
+# 各値（mgmt MAC / data MAC / data IP）は vmlab.sh が role 別に差し替える。
+version: 2
+ethernets:
+  mgmt:
+    match:
+      macaddress: "__MGMT_MAC__"
+    set-name: mgmt
+    dhcp4: true
+  data:
+    match:
+      macaddress: "__DATA_MAC__"
+    set-name: data
+    dhcp4: false
+    addresses:
+      - __DATA_IP__/24
