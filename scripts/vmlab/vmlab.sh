@@ -201,9 +201,14 @@ setup_vhostuser_link() {
   [[ "${free}" -ge "${need_vms}" ]] \
     || die "空き hugepage が不足しています (free=${free}, 必要=${need_vms})。他プロセスの hugepage 使用状況か VMLAB_MEM を確認してください。"
 
-  # QEMU(非特権) が hugepage を使えるよう user 所有のサブディレクトリを用意
-  sudo mkdir -p "${HUGE_DIR}"
-  sudo chown "${RUN_USER}" "${HUGE_DIR}"
+  # QEMU(非特権) が hugepage を使えるよう user 所有のサブディレクトリを用意（既存ディレクトリは壊さない）
+  if [[ ! -d "${HUGE_DIR}" ]]; then
+    sudo mkdir -p "${HUGE_DIR}"
+    sudo chown "${RUN_USER}" "${HUGE_DIR}"
+    touch "${CACHE_DIR}/hugedir-created"   # 自分で作った場合のみ teardown で削除する
+  elif [[ ! -f "${CACHE_DIR}/hugedir-created" && "$(stat -c %U "${HUGE_DIR}")" != "${RUN_USER}" ]]; then
+    die "${HUGE_DIR} が既に存在し所有者が ${RUN_USER} ではありません。他用途の可能性があるため VMLAB_HUGE_DIR を変更してください。"
+  fi
 
   log "OVS PMD cpu mask=${PMD_CPU_MASK}"
   # 既存の pmd-cpu-mask を退避し（teardown で復元）、既存 OVS-DPDK 設定を壊さない。
@@ -215,7 +220,11 @@ setup_vhostuser_link() {
   sudo ovs-vsctl set Open_vSwitch . other_config:pmd-cpu-mask="${PMD_CPU_MASK}"
 
   log "OVS bridge 作成: ${OVS_BRIDGE} (datapath_type=netdev) + dpdkvhostuserclient x2"
+  if sudo ovs-vsctl br-exists "${OVS_BRIDGE}" 2>/dev/null && [[ ! -f "${CACHE_DIR}/ovsbr-created" ]]; then
+    die "OVS bridge ${OVS_BRIDGE} が既に存在します（このスクリプト作成ではない）。VMLAB_OVS_BRIDGE を変えるか手動で削除してください。"
+  fi
   sudo ovs-vsctl --may-exist add-br "${OVS_BRIDGE}" -- set bridge "${OVS_BRIDGE}" datapath_type=netdev
+  touch "${CACHE_DIR}/ovsbr-created"
   sudo ovs-vsctl --may-exist add-port "${OVS_BRIDGE}" vhu-tx \
     -- set Interface vhu-tx type=dpdkvhostuserclient options:vhost-server-path="${VHOST_SOCK_TX}"
   sudo ovs-vsctl --may-exist add-port "${OVS_BRIDGE}" vhu-rx \
@@ -226,9 +235,13 @@ setup_vhostuser_link() {
 
 teardown_vhostuser_link() {
   command -v ovs-vsctl >/dev/null || return 0
-  if sudo ovs-vsctl br-exists "${OVS_BRIDGE}" 2>/dev/null; then
-    log "OVS bridge 削除: ${OVS_BRIDGE}"
-    sudo ovs-vsctl --if-exists del-br "${OVS_BRIDGE}"
+  # OVS bridge は自分で作った場合のみ削除する（既存の同名 bridge を破壊しない）
+  if [[ -f "${CACHE_DIR}/ovsbr-created" ]]; then
+    if sudo ovs-vsctl br-exists "${OVS_BRIDGE}" 2>/dev/null; then
+      log "OVS bridge 削除: ${OVS_BRIDGE}"
+      sudo ovs-vsctl --if-exists del-br "${OVS_BRIDGE}"
+    fi
+    rm -f "${CACHE_DIR}/ovsbr-created"
   fi
   # pmd-cpu-mask は退避値があれば復元、無ければ（元々未設定なら）remove する
   if [[ -s "${CACHE_DIR}/pmd-cpu-mask.prev" ]]; then
@@ -238,7 +251,11 @@ teardown_vhostuser_link() {
   fi
   rm -f "${CACHE_DIR}/pmd-cpu-mask.prev"
   rm -f "${VHOST_SOCK_TX}" "${VHOST_SOCK_RX}"
-  [[ "${HUGE_DIR}" == /dev/hugepages/* ]] && sudo rm -rf "${HUGE_DIR}" 2>/dev/null || true
+  # HUGE_DIR も自分で作った場合のみ削除する
+  if [[ -f "${CACHE_DIR}/hugedir-created" ]]; then
+    [[ "${HUGE_DIR}" == /dev/hugepages/* ]] && sudo rm -rf "${HUGE_DIR}" 2>/dev/null || true
+    rm -f "${CACHE_DIR}/hugedir-created"
+  fi
 }
 
 # role に応じた qemu のデータ NIC 引数を配列で標準出力に出す
@@ -508,7 +525,9 @@ cmd_down() {
   local role p w
   for role in tx rx; do
     p="$(pid_of "${role}")"
-    if [[ -n "${p}" ]] && kill -0 "${p}" 2>/dev/null; then
+    # PID 再利用で無関係なプロセスを kill しないよう、qemu の xdperf-<role> であることを確認する
+    if [[ -n "${p}" ]] && kill -0 "${p}" 2>/dev/null \
+       && ps -p "${p}" -o args= 2>/dev/null | grep -q "xdperf-${role}"; then
       log "停止: ${role} (pid ${p})"
       kill "${p}" 2>/dev/null || true
       # 終了を待ち、残れば SIGKILL（残留 VM のまま teardown してデバイスを壊さない）
@@ -533,7 +552,8 @@ cmd_clean() {
   log "overlay / seed / serial ログ / 状態ファイルを削除（ベースイメージは保持）"
   rm -f "${CACHE_DIR}"/*-overlay.qcow2 "${CACHE_DIR}"/*-seed.iso "${CACHE_DIR}"/*-serial.log "${CACHE_DIR}"/*.pid \
         "${CACHE_DIR}/datalink" "${CACHE_DIR}/dataqueues" "${CACHE_DIR}/queuesize" \
-        "${CACHE_DIR}/bridge-created" "${CACHE_DIR}"/tap-*-created "${CACHE_DIR}/pmd-cpu-mask.prev"
+        "${CACHE_DIR}/bridge-created" "${CACHE_DIR}"/tap-*-created \
+        "${CACHE_DIR}/ovsbr-created" "${CACHE_DIR}/hugedir-created" "${CACHE_DIR}/pmd-cpu-mask.prev"
 }
 
 usage() {
