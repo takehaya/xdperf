@@ -446,8 +446,13 @@ report_nic() {  # role  human_grep_re  queue_grep_re  sum_label
     return
   fi
   grep -Ei "${human}" <<<"${stats}" || echo '(該当カウンタなし)'
-  printf '  -> %s: ' "${label}"
-  { grep -E "${qre}" <<<"${stats}" || true; } | awk "${SUM_AWK}"; echo
+  local sum_lines; sum_lines="$(grep -E "${qre}" <<<"${stats}" || true)"
+  if [[ -z "${sum_lines}" ]]; then   # 合算対象なし（regex 不一致）と「合算=0」を区別する
+    printf '  -> %s: (該当カウンタなし)\n' "${label}"
+  else
+    printf '  -> %s: ' "${label}"
+    awk "${SUM_AWK}" <<<"${sum_lines}"; echo
+  fi
 }
 
 cmd_demo() {

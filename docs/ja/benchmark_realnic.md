@@ -104,7 +104,7 @@ flowchart LR
 
 - 往復では送信の宛先 MAC を**対向のユニキャスト MAC** にする（`--cfg` の `dst_mac`）。ブロードキャスト宛だと、エコーの MAC スワップで送信元 MAC がブロードキャストになり、戻りが受信側 NIC で落ちて RX=0 になる。
 - 受信側 xdperf は kernel 5.18 以上が必須である（`bpf_xdp_load_bytes` = BPF helper #190。5.15 では `invalid func unknown#190` でロードできない）。
-- ice と XDP の実用フレーム域は on-wire 1500B 以下である。on-wire 1504B（built 1500B）は受信 XDP バッファで NIC ドロップし、MTU を上げると送信 XDP-TX がアタッチできない。
+- ice と XDP の実用フレーム域は on-wire 1500B 以下である。フレーム 1500B に FCS 4B が付いた on-wire 1504B は受信 XDP バッファで NIC ドロップし、MTU を上げると送信 XDP-TX がアタッチできない。
 - 送信前に `xdperf probe` を挟まない（dummy XDP の付け外しで XDP-TX が空回りし、NIC 送出が 0 になることがある）。
 - xdperf の最小フレームは 64B である（payload が 22 未満だと `base packet too small` で拒否される）。
 - 64B の Gbps は小さく見えるので pps で評価する。
