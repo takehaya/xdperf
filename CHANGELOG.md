@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.12.0](https://github.com/takehaya/xdperf/compare/v0.11.3...v0.12.0) (2026-06-24)
+
+
+### 🎉 Features
+
+* add NUMA-aware CPU selection ([df67635](https://github.com/takehaya/xdperf/commit/df6763538b56c37ab32d5a6425f6e0c98f60272e))
+* add NUMA-aware CPU selection for worker threads ([443e4f9](https://github.com/takehaya/xdperf/commit/443e4f95650282c6ffb211c2e7a19bb1d1df64f2))
+
+
+### 🐛 Bug Fixes
+
+* address code review findings (cpu-mode validation, diff_map cap, plugin safety) ([b781696](https://github.com/takehaya/xdperf/commit/b7816966d11a8788e5ef6428fa6dddbc1db5ab78))
+* honor payload_size in simpleudp.tinygo plugin ([c8c28bc](https://github.com/takehaya/xdperf/commit/c8c28bc8797d277a927e88c6d07432dc177d4a93))
+* split len_changed checksum path to fit BPF verifier limit on Linux 7.x ([5e095f6](https://github.com/takehaya/xdperf/commit/5e095f6516422c4008a3bcfb48dad3708b5e442d))
+* split len_changed checksum path to fit BPF verifier limit on Linux 7.x ([a52af4c](https://github.com/takehaya/xdperf/commit/a52af4cc7c19d21d616c5fce87efaa7e63eabff8))
+
+
+### 📝 Documentation
+
+* fix inaccurate comments flagged in Copilot review ([93e2b3a](https://github.com/takehaya/xdperf/commit/93e2b3ac5a315888a5849363600ef51d2058d72c))
+
+
+### ♻️ Code Refactoring
+
+* address code review suggestions (shared checksum helper, ctx, plugin cleanups) ([3f08caa](https://github.com/takehaya/xdperf/commit/3f08caab1a36a2c248428194ebc429dcdef7bdb7))
+
 ## [0.11.3](https://github.com/takehaya/xdperf/compare/v0.11.2...v0.11.3) (2026-04-13)
 
 
