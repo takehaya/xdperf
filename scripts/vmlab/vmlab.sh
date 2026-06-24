@@ -375,8 +375,10 @@ start_vm() {
 wait_ssh() {
   local role="$1"
   log "${role} の ssh / cloud-init 完了待ち..."
+  # cloud-init status --wait はハングするとブロックし続けるため、1 試行を timeout で有限化して
+  # ループ（=全体タイムアウト）が確実に回るようにする。
   for _ in $(seq 1 60); do
-    if vm_ssh "${role}" "cloud-init status --wait >/dev/null 2>&1; test -x /mnt/xdperf/bin/xdperf" 2>/dev/null; then
+    if vm_ssh "${role}" "timeout 20 cloud-init status --wait >/dev/null 2>&1; test -x /mnt/xdperf/bin/xdperf" 2>/dev/null; then
       log "${role} 準備完了"
       return 0
     fi
@@ -390,6 +392,10 @@ cmd_up() {
   ensure_ssh_key
   [[ -f "${BASE_IMAGE}" ]] || die "ベースイメージがありません。先に 'vmlab.sh image' を実行してください。"
   [[ -x "${SHARE_DIR}/bin/xdperf" ]] || die "${SHARE_DIR}/bin/xdperf がありません。先に 'make build' を実行してください。"
+  [[ "${QUEUE_SIZE}" =~ ^(256|512|1024)$ ]] \
+    || die "VMLAB_QUEUE_SIZE は 256 / 512 / 1024 のいずれかにしてください（virtio が受け付ける 2 の冪）。現在: ${QUEUE_SIZE}"
+  [[ "${DATA_QUEUES}" =~ ^[1-9][0-9]*$ ]] \
+    || die "VMLAB_DATA_QUEUES は正の整数にしてください。現在: ${DATA_QUEUES}"
   mkdir -p "${CACHE_DIR}"
 
   # 使用するデータリンク方式 / キュー数 / リングサイズを記録し、demo/down が自動追従できるようにする
