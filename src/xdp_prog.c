@@ -1268,7 +1268,8 @@ int xdp_tx_csum_recalc(struct xdp_md *ctx)
     __u8 diff_errors = tc_ctx->diff_errors;
     __u8 checksum_errors = tc_ctx->checksum_errors;
 
-    // Bounds check (the parent clamped only local copies, not tc_ctx)
+    // Defensive bounds check on indices carried in tc_ctx (xdp_tx writes them
+    // unclamped); mirrors the clamp in xdp_tx_csum_diff.
     if (checksum_count > MAX_CHECKSUM_ENTRIES)
         checksum_count = MAX_CHECKSUM_ENTRIES;
     if (base_idx >= MAX_BASE_PACKETS)

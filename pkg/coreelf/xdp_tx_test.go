@@ -410,8 +410,8 @@ func TestXdpTxCopyOnBaseChange(t *testing.T) {
 	}
 }
 
-// setupSingleBase is a helper that sets up BPF maps for a single base packet with checksums.
-// Returns numCPUs and the base packet bytes.
+// setupSingleBase sets up BPF maps for a single base packet with the default
+// IPv4/UDP checksum metas.
 func setupSingleBase(t *testing.T, objs *BpfObjects, basePkt []byte, diffEntries []BpfDiffEntry) {
 	t.Helper()
 	// Default IPv4/UDP checksum metas (IPv4 header csum + UDP csum).
