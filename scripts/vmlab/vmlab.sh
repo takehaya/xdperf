@@ -168,6 +168,8 @@ setup_vhostuser_link() {
   # ゲストメモリは共有 hugepage に載せる必要がある。2VM分 + OVS mempool/slack を確保。
   # 長期稼働ホストは断片化で runtime 確保が失敗するので drop_caches + compaction してから割当。
   local mem_gb pages_needed got nr
+  [[ "${VM_MEM}" =~ ^[0-9]+[Gg]$ ]] \
+    || die "vhostuser モードでは VMLAB_MEM を G 単位で指定してください（例: 4G）。現在: ${VM_MEM}"
   mem_gb="${VM_MEM%[Gg]}"
   pages_needed=$(( mem_gb * 512 * 2 + 2048 ))   # 2MB ページ数
   nr="$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages)"
@@ -194,6 +196,7 @@ setup_vhostuser_link() {
     -- set Interface vhu-tx type=dpdkvhostuserclient options:vhost-server-path="${VHOST_SOCK_TX}"
   sudo ovs-vsctl --may-exist add-port "${OVS_BRIDGE}" vhu-rx \
     -- set Interface vhu-rx type=dpdkvhostuserclient options:vhost-server-path="${VHOST_SOCK_RX}"
+  sudo ovs-ofctl del-flows "${OVS_BRIDGE}"   # 再実行時に同一フローを重複させない
   sudo ovs-ofctl add-flow "${OVS_BRIDGE}" actions=NORMAL
 }
 
@@ -260,7 +263,6 @@ build_seed() {
   local role="$1"
   local pubkey; pubkey="$(cat "${SSH_KEY}.pub")"
   local work; work="$(mktemp -d)"
-  trap 'rm -rf "${work}"' RETURN
 
   # 共通テンプレートに鍵 / role 別 MAC / IP を差し込む（network-config と MAC を二重管理しない）
   sed "s|__SSH_PUBKEY__|${pubkey}|" "${CI_DIR}/user-data" > "${work}/user-data"
@@ -276,6 +278,7 @@ EOF
   genisoimage -quiet -output "${CACHE_DIR}/${role}-seed.iso" \
     -volid cidata -joliet -rock \
     "${work}/user-data" "${work}/meta-data" "${work}/network-config"
+  rm -rf "${work}"
 }
 
 build_overlay() {
@@ -324,7 +327,6 @@ start_vm() {
 
 wait_ssh() {
   local role="$1"
-  local port; port="$(ssh_port_for "${role}")"
   log "${role} の ssh / cloud-init 完了待ち..."
   for _ in $(seq 1 60); do
     if vm_ssh "${role}" "cloud-init status --wait >/dev/null 2>&1; test -x /mnt/xdperf/bin/xdperf" 2>/dev/null; then

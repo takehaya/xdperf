@@ -75,7 +75,7 @@ def plot_core_sweep():
     fig, ax = plt.subplots(figsize=(7.5, 4.6))
     ax.plot(ci, rt, "s-", **RT_STYLE)
     ax.axhline(116, ls="--", color=OW_COLOR, alpha=0.6, label="one-way 64B RX ~116 (exp A)")
-    ax.axhline(148.8, ls=":", color="gray", label="64B 100G wire rate 148.8")
+    ax.axhline(142.0, ls=":", color="gray", label="64B wire rate 142 (on-wire 68B)")
     _save(fig, ax, xticks=ci, xticklabels=cores,
           xlabel="sender cores (parallelism)",
           title="64B round-trip: sender cores vs round-trip RX (XDP only)",
