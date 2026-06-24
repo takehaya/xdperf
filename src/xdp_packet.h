@@ -46,11 +46,11 @@ struct diff_value {
 // Diff entry for one packet (contains all diffs for that packet)
 struct diff_entry {
     struct diff_value diffs[MAX_DIFFS_PER_PACKET];
-    __u16 pkt_len;     // Packet length (for variable length)
-    __u8 base_idx;     // Index into base_packet_map (which base to use)
-    __u8 diff_count;   // Actual number of diffs (grows after csum caching)
-    __u8 len_changed;  // 1 if pkt_len differs from base, 0 otherwise
-    __u8 csum_cached;  // 1 = checksum values cached as additional diffs, skip computation
+    __u16 pkt_len;    // Packet length (for variable length)
+    __u8 base_idx;    // Index into base_packet_map (which base to use)
+    __u8 diff_count;  // Actual number of diffs (grows after csum caching)
+    __u8 len_changed; // 1 if pkt_len differs from base, 0 otherwise
+    __u8 csum_cached; // 1 = checksum values cached as additional diffs, skip computation
 };
 
 // Checksum metadata (how to recalculate checksums)
@@ -116,14 +116,15 @@ struct {
 // Tail call context - passed between xdp_tx and xdp_tx_checksum
 // This allows splitting the program to avoid verifier instruction limit
 struct tail_call_ctx {
-    __u32 base_idx;      // Index into base_packet_map
-    __u32 local_idx;     // Current diff index for round-robin update
-    __u16 target_len;    // Target packet length
-    __u8 diff_count;     // Number of diffs applied
-    __u8 checksum_count; // Number of checksums to process
-    __u8 len_changed;    // Whether packet length changed from base
-    __u8 diff_errors;    // Count of diff application errors
-    __u8 _pad[2];        // Padding for alignment
+    __u32 base_idx;       // Index into base_packet_map
+    __u32 local_idx;      // Current diff index for round-robin update
+    __u16 target_len;     // Target packet length
+    __u8 diff_count;      // Number of diffs applied
+    __u8 checksum_count;  // Number of checksums to process
+    __u8 len_changed;     // Whether packet length changed from base
+    __u8 diff_errors;     // Count of diff application errors
+    __u8 checksum_errors; // Errors carried from update_packet_lengths into the recalc tail call
+    __u8 _pad[1];         // Padding for alignment
 };
 
 // Tail call context map (per-CPU) - passes data between tail-called programs
@@ -135,16 +136,18 @@ struct {
 } tail_call_ctx_map SEC(".maps");
 
 // Program array for tail calls
-// Index 0: xdp_tx_checksum (len_changed path)
-// Index 1: xdp_tx_csum_diff (incremental checksum path)
+// Index 0: xdp_tx_checksum (len_changed dispatch + packet length update)
+// Index 1: xdp_tx_csum_diff (incremental checksum path, !len_changed)
+// Index 2: xdp_tx_csum_recalc (full checksum recalculation, len_changed)
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 2);
+    __uint(max_entries, 3);
     __type(key, __u32);
     __type(value, __u32);
 } xdp_progs SEC(".maps");
 
 #define XDP_PROG_CHECKSUM 0
 #define XDP_PROG_CSUM_DIFF 1
+#define XDP_PROG_CSUM_RECALC 2
 
 #endif // XDP_PACKET_H

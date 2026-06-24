@@ -414,12 +414,18 @@ func TestXdpTxCopyOnBaseChange(t *testing.T) {
 // Returns numCPUs and the base packet bytes.
 func setupSingleBase(t *testing.T, objs *BpfObjects, basePkt []byte, diffEntries []BpfDiffEntry) {
 	t.Helper()
-	numCPUs := ebpf.MustPossibleCPU()
-
-	csumMeta := []BpfChecksumMeta{
+	// Default IPv4/UDP checksum metas (IPv4 header csum + UDP csum).
+	setupSingleBaseWithMeta(t, objs, basePkt, diffEntries, []BpfChecksumMeta{
 		{CsumOffset: 24, HeaderStart: 14, IpHeaderOffset: 14, IpVersion: 4, IpProtocol: 0},
 		{CsumOffset: 40, HeaderStart: 34, IpHeaderOffset: 14, IpVersion: 4, IpProtocol: 17},
-	}
+	})
+}
+
+// setupSingleBaseWithMeta is setupSingleBase with caller-supplied checksum metas
+// (e.g. an IPv6/UDP single-checksum layout).
+func setupSingleBaseWithMeta(t *testing.T, objs *BpfObjects, basePkt []byte, diffEntries []BpfDiffEntry, csumMeta []BpfChecksumMeta) {
+	t.Helper()
+	numCPUs := ebpf.MustPossibleCPU()
 
 	// Base packet
 	base := BpfBasePacket{Len: uint16(len(basePkt)), ChecksumCount: uint8(len(csumMeta))}
@@ -577,6 +583,103 @@ func TestXdpTxLenChanged(t *testing.T) {
 	if gotPort != 8080 {
 		t.Errorf("run 2: dst port = %d, want 8080", gotPort)
 	}
+}
+
+// buildUDPv6PacketSized creates an Ethernet/IPv6/UDP packet of the given size.
+func buildUDPv6PacketSized(t *testing.T, dstPort uint16, totalSize int) []byte {
+	t.Helper()
+	headerSize := 14 + 40 + 8 // eth + ipv6 + udp
+	if totalSize < headerSize {
+		t.Fatalf("totalSize %d < minimum header size %d", totalSize, headerSize)
+	}
+	eth := &layers.Ethernet{
+		SrcMAC:       []byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01},
+		DstMAC:       []byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x02},
+		EthernetType: layers.EthernetTypeIPv6,
+	}
+	ip6 := &layers.IPv6{
+		Version:    6,
+		NextHeader: layers.IPProtocolUDP,
+		HopLimit:   64,
+		SrcIP:      []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01},
+		DstIP:      []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02},
+	}
+	udp := &layers.UDP{SrcPort: 12345, DstPort: layers.UDPPort(dstPort)}
+	if err := udp.SetNetworkLayerForChecksum(ip6); err != nil {
+		t.Fatalf("SetNetworkLayerForChecksum: %v", err)
+	}
+	payload := make([]byte, totalSize-headerSize)
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	if err := gopacket.SerializeLayers(buf, opts, eth, ip6, udp, gopacket.Payload(payload)); err != nil {
+		t.Fatalf("SerializeLayers: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// makeDiffEntryV6 changes the UDP dst port of an IPv6/UDP packet (dst port at
+// offset 56 = 14 eth + 40 ipv6 + 2), optionally marking the length as changed.
+func makeDiffEntryV6(basePkt []byte, pktLen uint16, newPort uint16, lenChanged bool) BpfDiffEntry {
+	const udpDstPortOffset = 56
+	var oldPort, newPortBytes [8]uint8
+	oldPort[0] = basePkt[udpDstPortOffset]
+	oldPort[1] = basePkt[udpDstPortOffset+1]
+	binary.BigEndian.PutUint16(newPortBytes[:], newPort)
+
+	var lc uint8
+	if lenChanged {
+		lc = 1
+	}
+	entry := BpfDiffEntry{PktLen: pktLen, BaseIdx: 0, DiffCount: 1, LenChanged: lc}
+	entry.Diffs[0].Offset = udpDstPortOffset
+	entry.Diffs[0].Size = 2
+	entry.Diffs[0].OldValue = oldPort
+	entry.Diffs[0].NewValue = newPortBytes
+	entry.Diffs[0].AffectsCsum = 0x01 // affects the single UDP checksum meta (index 0)
+	return entry
+}
+
+// TestXdpTxLenChangedIPv6 exercises the new xdp_tx_csum_recalc program on the
+// IPv6 transport-checksum path — the exact path whose verifier complexity
+// exceeded the limit on Linux 7.x before the tail-call split. The IPv6 UDP
+// checksum (offset 60 = 14 + 40 + 6) must match a freshly-built reference packet.
+func TestXdpTxLenChangedIPv6(t *testing.T) {
+	objs := loadWithDiffMap(t, 1)
+
+	basePkt := buildUDPv6PacketSized(t, 80, 128) // base is 128B
+	targetLen := 192                             // target is 192B (len_changed=1)
+
+	entry := makeDiffEntryV6(basePkt, uint16(targetLen), 8080, true)
+	setupSingleBaseWithMeta(t, objs, basePkt, []BpfDiffEntry{entry}, []BpfChecksumMeta{
+		{CsumOffset: 60, HeaderStart: 54, IpHeaderOffset: 14, IpVersion: 6, IpProtocol: 17},
+	})
+
+	expected := buildUDPv6PacketSized(t, 8080, targetLen)
+
+	verifyUDPv6Csum := func(label string, actual []byte) {
+		t.Helper()
+		got := binary.BigEndian.Uint16(actual[60:62])
+		want := binary.BigEndian.Uint16(expected[60:62])
+		if got != want {
+			t.Errorf("%s: IPv6 UDP checksum = 0x%04x, want 0x%04x", label, got, want)
+		}
+		gotPort := binary.BigEndian.Uint16(actual[56:58])
+		if gotPort != 8080 {
+			t.Errorf("%s: dst port = %d, want 8080", label, gotPort)
+		}
+	}
+
+	// Run 1: len_changed → update_packet_lengths (xdp_tx_checksum) then
+	// recalc + cache (xdp_tx_csum_recalc, the new program).
+	_, out1 := runXdpTxExpectLen(t, objs.XdpTx, basePkt, targetLen)
+	if len(out1) != targetLen {
+		t.Fatalf("run 1: output len = %d, want %d", len(out1), targetLen)
+	}
+	verifyUDPv6Csum("ipv6 run 1 (len_changed)", out1)
+
+	// Run 2: cached fast path (no recomputation).
+	_, out2 := runXdpTxExpectLen(t, objs.XdpTx, out1, targetLen)
+	verifyUDPv6Csum("ipv6 run 2 (cached)", out2)
 }
 
 // TestXdpTxMixedBaseWithCsum verifies correct behavior when alternating between

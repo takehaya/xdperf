@@ -1000,26 +1000,26 @@ int xdp_tx(struct xdp_md *ctx)
 // Helper macro: generate a switch case that writes a cached diff at constant index N.
 // Using constant indices in each case satisfies verifier bounds checking
 // (variable indexing into map_value arrays fails on kernel 6.1).
-#define CACHE_DIFF_CASE(N)                                     \
-    case N:                                                    \
-        diff->diffs[N].offset = offset;                        \
-        diff->diffs[N].size = 2;                               \
-        diff->diffs[N].affects_csum = 0;                       \
-        __builtin_memcpy(diff->diffs[N].new_value, value, 2);  \
+#define CACHE_DIFF_CASE(N)                                                                                                         \
+    case N:                                                                                                                        \
+        diff->diffs[N].offset = offset;                                                                                            \
+        diff->diffs[N].size = 2;                                                                                                   \
+        diff->diffs[N].affects_csum = 0;                                                                                           \
+        __builtin_memcpy(diff->diffs[N].new_value, value, 2);                                                                      \
         return true;
 
 // Store a single cached diff at slot 'dc' (verifier-safe bounded access)
 static __noinline bool cache_one_diff(struct diff_entry *diff, __u8 dc, __u16 offset, __u8 *value)
 {
     switch (dc) {
-    CACHE_DIFF_CASE(0)
-    CACHE_DIFF_CASE(1)
-    CACHE_DIFF_CASE(2)
-    CACHE_DIFF_CASE(3)
-    CACHE_DIFF_CASE(4)
-    CACHE_DIFF_CASE(5)
-    CACHE_DIFF_CASE(6)
-    CACHE_DIFF_CASE(7)
+        CACHE_DIFF_CASE(0)
+        CACHE_DIFF_CASE(1)
+        CACHE_DIFF_CASE(2)
+        CACHE_DIFF_CASE(3)
+        CACHE_DIFF_CASE(4)
+        CACHE_DIFF_CASE(5)
+        CACHE_DIFF_CASE(6)
+        CACHE_DIFF_CASE(7)
     default:
         return false;
     }
@@ -1213,18 +1213,8 @@ int xdp_tx_checksum(struct xdp_md *ctx)
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    __u32 base_idx = tc_ctx->base_idx;
-    __u32 local_idx = tc_ctx->local_idx;
     __u16 target_len = tc_ctx->target_len;
-    __u8 diff_errors = tc_ctx->diff_errors;
-    __u8 checksum_count = tc_ctx->checksum_count;
     __u8 len_changed = tc_ctx->len_changed;
-
-    // Bounds check
-    if (checksum_count > MAX_CHECKSUM_ENTRIES)
-        checksum_count = MAX_CHECKSUM_ENTRIES;
-    if (base_idx >= MAX_BASE_PACKETS)
-        base_idx = 0;
 
     // 2. If length unchanged, tail call to dedicated incremental checksum program
     if (!len_changed) {
@@ -1234,15 +1224,57 @@ int xdp_tx_checksum(struct xdp_md *ctx)
         RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
     }
 
-    // 3. len_changed path: update IP/UDP length fields, then recalculate checksums from scratch
+    // 3. len_changed path: update IP/UDP length fields, then tail call to the
+    // dedicated recalculation program. Splitting the heavy length update and the
+    // full checksum recalculation into separate programs keeps each under the
+    // verifier instruction limit (notably on Linux 7.x, where the combined pass
+    // exceeded 1,000,000 processed instructions by one).
     __u8 checksum_errors = 0;
-
     if (!update_packet_lengths(ctx, target_len)) {
         DEBUG_PRINT("update_packet_lengths failed\n");
         checksum_errors++;
     }
 
-    // Recalculate checksums from scratch
+    // Carry the running error count to the recalc program via the per-CPU ctx.
+    tc_ctx->checksum_errors = checksum_errors;
+
+    bpf_tail_call(ctx, &xdp_progs, XDP_PROG_CSUM_RECALC);
+    // Tail call failed
+    DEBUG_PRINT("tail call to xdp_tx_csum_recalc failed\n");
+    RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+}
+
+// len_changed checksum recalculation, split from xdp_tx_checksum into its own
+// program (reached via tail call) so the packet-length update and the full
+// from-scratch checksum recalculation do not share a single verifier instruction
+// budget. Mirrors xdp_tx_csum_diff (the !len_changed counterpart). The packet
+// length was already adjusted by xdp_tx_checksum before the tail call.
+SEC("xdp")
+int xdp_tx_csum_recalc(struct xdp_md *ctx)
+{
+    __u32 zero = 0;
+
+    // 1. Retrieve context from tail call
+    struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
+    if (!tc_ctx) {
+        DEBUG_PRINT("tail_call_ctx_map lookup failed in csum_recalc\n");
+        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    }
+
+    __u32 base_idx = tc_ctx->base_idx;
+    __u32 local_idx = tc_ctx->local_idx;
+    __u16 target_len = tc_ctx->target_len;
+    __u8 checksum_count = tc_ctx->checksum_count;
+    __u8 diff_errors = tc_ctx->diff_errors;
+    __u8 checksum_errors = tc_ctx->checksum_errors;
+
+    // Bounds check (the parent clamped only local copies, not tc_ctx)
+    if (checksum_count > MAX_CHECKSUM_ENTRIES)
+        checksum_count = MAX_CHECKSUM_ENTRIES;
+    if (base_idx >= MAX_BASE_PACKETS)
+        base_idx = 0;
+
+    // 2. Recalculate checksums from scratch
     // Error handling strategy:
     // - meta lookup fail: break (map issue, subsequent lookups likely fail too)
     // - recalc fail: continue (only affects this checksum, others may succeed)
@@ -1264,10 +1296,10 @@ int xdp_tx_checksum(struct xdp_md *ctx)
     }
 
     // Cache computed checksums (and length fields) into diff_entry for future skip
-    cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, len_changed, target_len);
+    cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, 1, target_len);
 
     update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
-    DEBUG_PRINT("xdp_tx_checksum: idx=%u len=%u\n", local_idx, target_len);
+    DEBUG_PRINT("xdp_tx_csum_recalc: idx=%u len=%u\n", local_idx, target_len);
     RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
 }
 

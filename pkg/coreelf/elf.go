@@ -74,8 +74,9 @@ func ReadCollection(constants map[string]any, diffMapSize uint32, debug ...bool)
 	}
 
 	// Populate the prog_array for tail calls
-	// Index 0: xdp_tx_checksum (len_changed path)
-	// Index 1: xdp_tx_csum_diff (incremental checksum path)
+	// Index 0: xdp_tx_checksum (len_changed dispatch + packet length update)
+	// Index 1: xdp_tx_csum_diff (incremental checksum path, !len_changed)
+	// Index 2: xdp_tx_csum_recalc (full checksum recalculation, len_changed)
 	if objs.XdpProgs == nil {
 		objs.Close()
 		return nil, nil, fmt.Errorf("xdp_progs map is missing from BPF objects")
@@ -88,6 +89,10 @@ func ReadCollection(constants map[string]any, diffMapSize uint32, debug ...bool)
 		objs.Close()
 		return nil, nil, fmt.Errorf("xdp_tx_csum_diff program is missing from BPF objects")
 	}
+	if objs.XdpTxCsumRecalc == nil {
+		objs.Close()
+		return nil, nil, fmt.Errorf("xdp_tx_csum_recalc program is missing from BPF objects")
+	}
 	checksumProgFD := uint32(objs.XdpTxChecksum.FD())
 	if err := objs.XdpProgs.Put(uint32(0), checksumProgFD); err != nil {
 		objs.Close()
@@ -97,6 +102,11 @@ func ReadCollection(constants map[string]any, diffMapSize uint32, debug ...bool)
 	if err := objs.XdpProgs.Put(uint32(1), csumDiffProgFD); err != nil {
 		objs.Close()
 		return nil, nil, fmt.Errorf("fail to populate xdp_progs[1] (xdp_tx_csum_diff): %w", err)
+	}
+	csumRecalcProgFD := uint32(objs.XdpTxCsumRecalc.FD())
+	if err := objs.XdpProgs.Put(uint32(2), csumRecalcProgFD); err != nil {
+		objs.Close()
+		return nil, nil, fmt.Errorf("fail to populate xdp_progs[2] (xdp_tx_csum_recalc): %w", err)
 	}
 
 	return objs, spec, nil
