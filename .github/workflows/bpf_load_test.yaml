@@ -24,6 +24,8 @@ jobs:
     name: BPF load test (kernel ${{ matrix.kernel }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Experimental kernels (e.g. unreleased 7.x) must not fail the workflow.
+    continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +34,11 @@ jobs:
           - "6.6"
           - "6.12"
           - "6.18"
+        # 7.x is not released yet; track readiness as allow-failure so the job
+        # does not go red until a 7.x ci-kernels image is published.
+        include:
+          - kernel: "7.0"
+            experimental: true
     permissions:
       contents: read
     env:
