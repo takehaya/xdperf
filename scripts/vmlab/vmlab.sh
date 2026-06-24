@@ -392,6 +392,8 @@ cmd_up() {
   ensure_ssh_key
   [[ -f "${BASE_IMAGE}" ]] || die "ベースイメージがありません。先に 'vmlab.sh image' を実行してください。"
   [[ -x "${SHARE_DIR}/bin/xdperf" ]] || die "${SHARE_DIR}/bin/xdperf がありません。先に 'make build' を実行してください。"
+  [[ "${DATA_LINK}" =~ ^(socket|tap|vhostuser)$ ]] \
+    || die "VMLAB_DATA_LINK は socket / tap / vhostuser のいずれかにしてください（タイプミス時に socket で起動しないように）。現在: ${DATA_LINK}"
   [[ "${QUEUE_SIZE}" =~ ^(256|512|1024)$ ]] \
     || die "VMLAB_QUEUE_SIZE は 256 / 512 / 1024 のいずれかにしてください（virtio が受け付ける 2 の冪）。現在: ${QUEUE_SIZE}"
   [[ "${DATA_QUEUES}" =~ ^[1-9][0-9]*$ ]] \
