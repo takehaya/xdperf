@@ -399,7 +399,12 @@ SUM_AWK='{for(i=1;i<=NF;i++)if($i ~ /^[0-9]+$/)s+=$i} END{printf "%d", s}'
 report_nic() {  # role  human_grep_re  queue_grep_re  sum_label
   local role="$1" human="$2" qre="$3" label="$4" stats
   stats="$(vm_ssh "${role}" "ethtool -S ${DATA_IF} 2>/dev/null" || true)"
-  grep -Ei "${human}" <<<"${stats}" || echo '(取得不可)'
+  if [[ -z "${stats}" ]]; then   # 取得失敗と「カウンタが 0」を区別する
+    echo '(取得不可)'
+    printf '  -> %s: (取得不可)\n' "${label}"
+    return
+  fi
+  grep -Ei "${human}" <<<"${stats}" || echo '(該当カウンタなし)'
   printf '  -> %s: ' "${label}"
   { grep -E "${qre}" <<<"${stats}" || true; } | awk "${SUM_AWK}"; echo
 }

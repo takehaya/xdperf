@@ -57,7 +57,7 @@ def plot_payload_sweep():
     wr[0] = wire_mpps(68)  # 64B は xdperf 最小フレーム = on-wire 約68B
 
     fig, ax = plt.subplots(figsize=(7.5, 4.6))
-    ax.plot(xi, one_way, "o-", color=OW_COLOR, label="one-way RX (xdperf, exp A)")
+    ax.plot(xi, one_way, "o-", color=OW_COLOR, label="one-way RX (xdperf)")
     ax.plot(xi, round_trip, "s--", **RT_STYLE)
     ax.plot(xi, wr, ":", color="gray", label="100G wire rate")
     _save(fig, ax, xticks=xi, xticklabels=frame,
@@ -74,7 +74,7 @@ def plot_core_sweep():
 
     fig, ax = plt.subplots(figsize=(7.5, 4.6))
     ax.plot(ci, rt, "s-", **RT_STYLE)
-    ax.axhline(116, ls="--", color=OW_COLOR, alpha=0.6, label="one-way 64B RX ~116 (exp A)")
+    ax.axhline(116, ls="--", color=OW_COLOR, alpha=0.6, label="one-way 64B RX ~116")
     ax.axhline(142.0, ls=":", color="gray", label="64B wire rate 142 (on-wire 68B)")
     _save(fig, ax, xticks=ci, xticklabels=cores,
           xlabel="sender cores (parallelism)",
