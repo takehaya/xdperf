@@ -310,23 +310,27 @@ ensure_ssh_key() {
 build_seed() {
   local role="$1"
   local pubkey; pubkey="$(cat "${SSH_KEY}.pub")"
-  local work; work="$(mktemp -d)"
 
-  # 共通テンプレートに鍵 / role 別 MAC / IP を差し込む（network-config と MAC を二重管理しない）
-  sed "s|__SSH_PUBKEY__|${pubkey}|" "${CI_DIR}/user-data" > "${work}/user-data"
-  sed -e "s|__MGMT_MAC__|$(mgmt_mac_for "${role}")|" \
-      -e "s|__DATA_MAC__|$(data_mac_for "${role}")|" \
-      -e "s|__DATA_IP__|$(data_ip_for "${role}")|" \
-      "${CI_DIR}/network-config" > "${work}/network-config"
-  cat > "${work}/meta-data" <<EOF
+  # サブシェル + EXIT トラップで作業ディレクトリを掃除する。
+  # サブシェルの EXIT は正常終了でも set -e による途中失敗でも発火し、かつ trap が
+  # 親シェルに残らない（グローバルな RETURN トラップを使うと set -u 下で後続関数が壊れる）。
+  (
+    work="$(mktemp -d)"
+    trap 'rm -rf "${work}"' EXIT
+    # 共通テンプレートに鍵 / role 別 MAC / IP を差し込む（network-config と MAC を二重管理しない）
+    sed "s|__SSH_PUBKEY__|${pubkey}|" "${CI_DIR}/user-data" > "${work}/user-data"
+    sed -e "s|__MGMT_MAC__|$(mgmt_mac_for "${role}")|" \
+        -e "s|__DATA_MAC__|$(data_mac_for "${role}")|" \
+        -e "s|__DATA_IP__|$(data_ip_for "${role}")|" \
+        "${CI_DIR}/network-config" > "${work}/network-config"
+    cat > "${work}/meta-data" <<EOF
 instance-id: xdperf-${role}
 local-hostname: ${role}
 EOF
-
-  genisoimage -quiet -output "${CACHE_DIR}/${role}-seed.iso" \
-    -volid cidata -joliet -rock \
-    "${work}/user-data" "${work}/meta-data" "${work}/network-config"
-  rm -rf "${work}"
+    genisoimage -quiet -output "${CACHE_DIR}/${role}-seed.iso" \
+      -volid cidata -joliet -rock \
+      "${work}/user-data" "${work}/meta-data" "${work}/network-config"
+  )
 }
 
 build_overlay() {
