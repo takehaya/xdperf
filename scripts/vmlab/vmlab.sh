@@ -552,7 +552,7 @@ cmd_down() {
     p="$(pid_of "${role}")"
     # PID 再利用で無関係なプロセスを kill しないよう、qemu の xdperf-<role> であることを確認する
     if [[ -n "${p}" ]] && kill -0 "${p}" 2>/dev/null \
-       && ps -p "${p}" -o args= 2>/dev/null | grep -q "xdperf-${role}"; then
+       && ps -p "${p}" -o args= 2>/dev/null | grep -q -- "-name xdperf-${role}"; then
       log "停止: ${role} (pid ${p})"
       kill "${p}" 2>/dev/null || true
       # 終了を待ち、残れば SIGKILL（残留 VM のまま teardown してデバイスを壊さない）
