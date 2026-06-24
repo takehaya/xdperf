@@ -39,8 +39,11 @@ install_tool "clang-format" "sudo apt-get install -y clang-format"
 # buf
 install_tool "buf" "curl -sSL https://github.com/bufbuild/buf/releases/latest/download/buf-$(uname -s)-$(uname -m) | install -m 755 /dev/stdin ~/.local/bin/buf"
 
-# golangci-lint
-install_tool "golangci-lint" "go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+# golangci-lint — pin to a v2 release. The unversioned (v1) module path with
+# @latest resolves to golangci-lint v1, which cannot read the v2 .golangci.yml
+# ("configuration file for golangci-lint v2 with golangci-lint v1"). Use the
+# /v2 module path at a fixed version so CI matches the committed config.
+install_tool "golangci-lint" "go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4"
 
 # taplo (TOML linter)
 install_tool "taplo" "curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin ~/.local/bin/taplo"

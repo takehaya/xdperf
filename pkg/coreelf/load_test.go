@@ -40,6 +40,8 @@ func TestBpfProgramsLoad(t *testing.T) {
 	}{
 		{"xdp_tx", objs.XdpTx},
 		{"xdp_tx_checksum", objs.XdpTxChecksum},
+		{"xdp_tx_csum_diff", objs.XdpTxCsumDiff},
+		{"xdp_tx_csum_recalc", objs.XdpTxCsumRecalc},
 		{"xdp_rx", objs.XdpRx},
 		{"xdp_pass_dummy", objs.XdpPassDummy},
 	} {
@@ -65,12 +67,24 @@ func TestBpfProgramsLoadVariants(t *testing.T) {
 func TestBpfTailCallSetup(t *testing.T) {
 	objs, _ := loadOrFail(t, defaultConsts())
 
-	var progFD uint32
-	if err := objs.XdpProgs.Lookup(uint32(0), &progFD); err != nil {
-		t.Fatalf("prog_array lookup failed: %v", err)
-	}
-	if progFD == 0 {
-		t.Error("prog_array[0] is empty")
+	// All three tail-call slots must be populated, else the len_changed /
+	// !len_changed paths abort at runtime:
+	//   0: xdp_tx_checksum, 1: xdp_tx_csum_diff, 2: xdp_tx_csum_recalc
+	for _, slot := range []struct {
+		idx  uint32
+		name string
+	}{
+		{0, "xdp_tx_checksum"},
+		{1, "xdp_tx_csum_diff"},
+		{2, "xdp_tx_csum_recalc"},
+	} {
+		var progFD uint32
+		if err := objs.XdpProgs.Lookup(slot.idx, &progFD); err != nil {
+			t.Fatalf("prog_array[%d] (%s) lookup failed: %v", slot.idx, slot.name, err)
+		}
+		if progFD == 0 {
+			t.Errorf("prog_array[%d] (%s) is empty", slot.idx, slot.name)
+		}
 	}
 }
 

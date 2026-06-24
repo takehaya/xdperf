@@ -64,15 +64,16 @@ type BpfPktState struct {
 }
 
 type BpfTailCallCtx struct {
-	_             structs.HostLayout
-	BaseIdx       uint32
-	LocalIdx      uint32
-	TargetLen     uint16
-	DiffCount     uint8
-	ChecksumCount uint8
-	LenChanged    uint8
-	DiffErrors    uint8
-	Pad           [2]uint8
+	_              structs.HostLayout
+	BaseIdx        uint32
+	LocalIdx       uint32
+	TargetLen      uint16
+	DiffCount      uint8
+	ChecksumCount  uint8
+	LenChanged     uint8
+	DiffErrors     uint8
+	ChecksumErrors uint8
+	Pad            [1]uint8
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.
@@ -117,11 +118,12 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	XdpPassDummy  *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
-	XdpRx         *ebpf.ProgramSpec `ebpf:"xdp_rx"`
-	XdpTx         *ebpf.ProgramSpec `ebpf:"xdp_tx"`
-	XdpTxChecksum *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
-	XdpTxCsumDiff *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_diff"`
+	XdpPassDummy    *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
+	XdpRx           *ebpf.ProgramSpec `ebpf:"xdp_rx"`
+	XdpTx           *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpTxChecksum   *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
+	XdpTxCsumDiff   *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_diff"`
+	XdpTxCsumRecalc *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_recalc"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -214,11 +216,12 @@ type BpfVariables struct {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	XdpPassDummy  *ebpf.Program `ebpf:"xdp_pass_dummy"`
-	XdpRx         *ebpf.Program `ebpf:"xdp_rx"`
-	XdpTx         *ebpf.Program `ebpf:"xdp_tx"`
-	XdpTxChecksum *ebpf.Program `ebpf:"xdp_tx_checksum"`
-	XdpTxCsumDiff *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
+	XdpPassDummy    *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpRx           *ebpf.Program `ebpf:"xdp_rx"`
+	XdpTx           *ebpf.Program `ebpf:"xdp_tx"`
+	XdpTxChecksum   *ebpf.Program `ebpf:"xdp_tx_checksum"`
+	XdpTxCsumDiff   *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
+	XdpTxCsumRecalc *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
 }
 
 func (p *BpfPrograms) Close() error {
@@ -228,6 +231,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpTx,
 		p.XdpTxChecksum,
 		p.XdpTxCsumDiff,
+		p.XdpTxCsumRecalc,
 	)
 }
 
