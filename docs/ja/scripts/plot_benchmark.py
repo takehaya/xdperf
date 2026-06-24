@@ -61,7 +61,7 @@ def plot_payload_sweep():
     ax.plot(xi, round_trip, "s--", **RT_STYLE)
     ax.plot(xi, wr, ":", color="gray", label="100G wire rate")
     _save(fig, ax, xticks=xi, xticklabels=frame,
-          xlabel="frame size (B, on-wire)",
+          xlabel="frame size (B; 64B = on-wire ~68B)",
           title="Round-trip vs one-way RX (XDP only, par=32)",
           ylim=(0, 155), filename="bench_roundtrip.png")
 
@@ -74,7 +74,7 @@ def plot_core_sweep():
 
     fig, ax = plt.subplots(figsize=(7.5, 4.6))
     ax.plot(ci, rt, "s-", **RT_STYLE)
-    ax.axhline(116, ls="--", color=OW_COLOR, alpha=0.6, label="one-way 64B RX ~116")
+    ax.axhline(116.5, ls="--", color=OW_COLOR, alpha=0.6, label="one-way 64B RX 116.5")
     ax.axhline(142.0, ls=":", color="gray", label="64B wire rate 142 (on-wire 68B)")
     _save(fig, ax, xticks=ci, xticklabels=cores,
           xlabel="sender cores (parallelism)",

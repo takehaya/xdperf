@@ -140,6 +140,7 @@ setup_tap_link() {
       sudo ip tuntap add dev "${tap}" mode tap multi_queue user "${RUN_USER}"
       sudo ip link set "${tap}" master "${BRIDGE}"
       sudo ip link set "${tap}" up
+      touch "${CACHE_DIR}/tap-${tap}-created"   # 自分で作った tap だけ teardown で消す
     fi
   done
 }
@@ -148,9 +149,13 @@ teardown_tap_link() {
   local role tap
   for role in tx rx; do
     tap="$(tap_name_for "${role}")"
-    if ip link show "${tap}" >/dev/null 2>&1; then
-      log "host tap 削除: ${tap}"
-      sudo ip link del "${tap}" 2>/dev/null || true
+    # tap も自分で作った場合のみ削除する（手動運用の同名 tap を破壊しない）
+    if [[ -f "${CACHE_DIR}/tap-${tap}-created" ]]; then
+      if ip link show "${tap}" >/dev/null 2>&1; then
+        log "host tap 削除: ${tap}"
+        sudo ip link del "${tap}" 2>/dev/null || true
+      fi
+      rm -f "${CACHE_DIR}/tap-${tap}-created"
     fi
   done
   # bridge は自分で作った場合のみ削除する（既存の同名 bridge を破壊しない）
@@ -201,9 +206,12 @@ setup_vhostuser_link() {
   sudo chown "${RUN_USER}" "${HUGE_DIR}"
 
   log "OVS PMD cpu mask=${PMD_CPU_MASK}"
-  # 既存の pmd-cpu-mask を退避し（teardown で復元）、既存 OVS-DPDK 設定を壊さない。未設定なら空ファイル。
-  sudo ovs-vsctl get Open_vSwitch . other_config:pmd-cpu-mask 2>/dev/null \
-    | tr -d '"' > "${CACHE_DIR}/pmd-cpu-mask.prev" || true
+  # 既存の pmd-cpu-mask を退避し（teardown で復元）、既存 OVS-DPDK 設定を壊さない。
+  # 未設定時は ovs-vsctl が `[]` や空を返すので、空文字に正規化して teardown で remove させる。
+  local prev_mask
+  prev_mask="$(sudo ovs-vsctl get Open_vSwitch . other_config:pmd-cpu-mask 2>/dev/null | tr -d '"' || true)"
+  [[ "${prev_mask}" == "[]" ]] && prev_mask=""
+  printf '%s' "${prev_mask}" > "${CACHE_DIR}/pmd-cpu-mask.prev"
   sudo ovs-vsctl set Open_vSwitch . other_config:pmd-cpu-mask="${PMD_CPU_MASK}"
 
   log "OVS bridge 作成: ${OVS_BRIDGE} (datapath_type=netdev) + dpdkvhostuserclient x2"
@@ -525,7 +533,7 @@ cmd_clean() {
   log "overlay / seed / serial ログ / 状態ファイルを削除（ベースイメージは保持）"
   rm -f "${CACHE_DIR}"/*-overlay.qcow2 "${CACHE_DIR}"/*-seed.iso "${CACHE_DIR}"/*-serial.log "${CACHE_DIR}"/*.pid \
         "${CACHE_DIR}/datalink" "${CACHE_DIR}/dataqueues" "${CACHE_DIR}/queuesize" \
-        "${CACHE_DIR}/bridge-created" "${CACHE_DIR}/pmd-cpu-mask.prev"
+        "${CACHE_DIR}/bridge-created" "${CACHE_DIR}"/tap-*-created "${CACHE_DIR}/pmd-cpu-mask.prev"
 }
 
 usage() {
