@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"strings"
 	"time"
 
@@ -68,30 +69,34 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		return -6
 	}
 
+	// parseMAC parses a MAC string into a fixed array, logging and reporting
+	// failure (so the caller can return the -5 parse-error code).
+	parseMAC := func(s, label string) ([6]byte, bool) {
+		var out [6]byte
+		b, err := guest.ParseMAC(s)
+		if err != nil {
+			guest.Log(3, "failed to parse "+label+" MAC address: "+err.Error())
+			return out, false
+		}
+		copy(out[:], b)
+		return out, true
+	}
+
 	// Resolve the inner Ethernet MACs (static).
-	innerSrcMAC := [6]byte{}
-	ismac, err := guest.ParseMAC(req.InnerSrcMac)
-	if err != nil {
-		guest.Log(3, "failed to parse inner source MAC address: "+err.Error())
+	innerSrcMAC, ok := parseMAC(req.InnerSrcMac, "inner source")
+	if !ok {
 		return -5
 	}
-	copy(innerSrcMAC[:], ismac)
-	innerDstMAC := [6]byte{}
-	idmac, err := guest.ParseMAC(req.InnerDstMac)
-	if err != nil {
-		guest.Log(3, "failed to parse inner destination MAC address: "+err.Error())
+	innerDstMAC, ok := parseMAC(req.InnerDstMac, "inner destination")
+	if !ok {
 		return -5
 	}
-	copy(innerDstMAC[:], idmac)
 
 	// Resolve the outer destination MAC (static or via ARP/NDP).
-	dstMAC := [6]byte{}
-	dmac, err := guest.ParseMAC(req.DstMac)
-	if err != nil {
-		guest.Log(3, "failed to parse destination MAC address: "+err.Error())
+	dstMAC, ok := parseMAC(req.DstMac, "destination")
+	if !ok {
 		return -5
 	}
-	copy(dstMAC[:], dmac)
 	if req.IsArpResolve {
 		dmacstr, err := guest.NeighborResolve(req.DstIP, req.DeviceName)
 		if err != nil {
@@ -100,12 +105,11 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		}
 		if dmacstr != "" {
 			guest.Log(1, "resolved MAC address: "+dmacstr)
-			rmac, err := guest.ParseMAC(dmacstr)
-			if err != nil {
-				guest.Log(3, "failed to parse MAC address: "+err.Error())
+			rmac, rok := parseMAC(dmacstr, "resolved")
+			if !rok {
 				return -5
 			}
-			copy(dstMAC[:], rmac)
+			dstMAC = rmac
 		}
 	}
 
@@ -126,6 +130,10 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		InnerUDPChecksum: req.InnerUDPChecksum,
 		InnerL2Only:      l2only,
 	}
+
+	// Inner source IP as a big-endian uint32, used as the sweep start; computed
+	// once since it does not depend on the IMIX size.
+	innerSrcIPVal := ipv4ToUint32(req.InnerSrcIP)
 
 	variants := make([]guest.PacketVariant, 0, len(req.IMIXSizes))
 	minLen := builder.MinFrameLen(params)
@@ -170,7 +178,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 			vparams = append(vparams, guest.VariableParams{
 				ByteStart:   off,
 				ByteSize:    4,
-				ByteRange:   guest.TemplateRange{Start: ipv4ToUint32(req.InnerSrcIP), End: 0xFFFFFFFF},
+				ByteRange:   guest.TemplateRange{Start: innerSrcIPVal, End: 0xFFFFFFFF},
 				PatternType: guest.ValuePatternTypeSequential,
 			})
 		}
@@ -234,31 +242,9 @@ func plugin_cleanup(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 // ipv4ToUint32 parses a dotted-quad IPv4 string into its big-endian uint32
 // value. An unparseable address yields 0, which is a harmless sweep start.
 func ipv4ToUint32(s string) uint64 {
-	var b [4]byte
-	n := 0
-	cur := 0
-	seen := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= '0' && c <= '9':
-			cur = cur*10 + int(c-'0')
-			seen = true
-		case c == '.':
-			if n > 3 || !seen {
-				return 0
-			}
-			b[n] = byte(cur)
-			n++
-			cur = 0
-			seen = false
-		default:
-			return 0
-		}
-	}
-	if n != 3 || !seen {
+	v4 := net.ParseIP(s).To4()
+	if v4 == nil {
 		return 0
 	}
-	b[3] = byte(cur)
-	return uint64(b[0])<<24 | uint64(b[1])<<16 | uint64(b[2])<<8 | uint64(b[3])
+	return uint64(v4[0])<<24 | uint64(v4[1])<<16 | uint64(v4[2])<<8 | uint64(v4[3])
 }

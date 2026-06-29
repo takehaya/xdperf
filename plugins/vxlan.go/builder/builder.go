@@ -16,7 +16,6 @@
 package builder
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 
@@ -100,11 +99,10 @@ func MinFrameLen(p PacketParams) int {
 func buildVXLANHeader(vni uint32) []byte {
 	h := make([]byte, vxlanLen)
 	h[0] = vxlanFlagValidVNI
-	// VNI is a 24-bit field occupying bytes 4..6 (big-endian). Write it via a
-	// uint32 then drop the high byte into the trailing reserved octet position,
-	// which we immediately overwrite to 0.
-	binary.BigEndian.PutUint32(h[4:8], vni<<8)
-	h[7] = 0x00 // reserved
+	// VNI is a 24-bit field occupying bytes 4..6 (big-endian); byte 7 is reserved.
+	h[4] = byte(vni >> 16)
+	h[5] = byte(vni >> 8)
+	h[6] = byte(vni)
 	return h
 }
 
@@ -226,8 +224,9 @@ func BuildVXLANPacket(p PacketParams, totalLen int) (*PacketInfo, error) {
 	data := buf.Bytes()
 	// Force the outer UDP checksum to 0 in case gopacket computed one.
 	outerUDPStart := ethLen + ipv4Len
-	data[outerUDPStart+guest.UDPChecksumFieldOffset] = 0
-	data[outerUDPStart+guest.UDPChecksumFieldOffset+1] = 0
+	outerUDPCsum := outerUDPStart + guest.UDPChecksumFieldOffset
+	data[outerUDPCsum] = 0
+	data[outerUDPCsum+1] = 0
 
 	vxlanStart := ethLen + ipv4Len + udpLen // 42
 	innerEthStart := vxlanStart + vxlanLen  // 50
