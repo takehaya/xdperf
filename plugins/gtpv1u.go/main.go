@@ -60,6 +60,21 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 			return -6
 		}
 	}
+	// pdu_type / inner_proto are documented as dl|ul and udp|icmp; reject unknown
+	// non-empty values instead of silently falling back to the default (empty
+	// means "use the default": dl / udp).
+	switch strings.ToLower(req.PDUType) {
+	case "", "dl", "ul":
+	default:
+		guest.Log(3, "pdu_type must be 'dl' or 'ul'")
+		return -6
+	}
+	switch strings.ToLower(req.InnerProto) {
+	case "", "udp", "icmp":
+	default:
+		guest.Log(3, "inner_proto must be 'udp' or 'icmp'")
+		return -6
+	}
 
 	// Resolve the destination MAC (static or via ARP/NDP).
 	dstMAC := [6]byte{}
