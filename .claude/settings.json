@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git reset:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(go build:*)",
+      "Bash(git checkout:*)",
+      "Bash(make bpf-gen:*)",
+      "Bash(sudo chmod:*)",
+      "Bash(vimto -kernel :6.1 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf)",
+      "Bash(vimto -kernel :6.1 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpfProgramsLoad)",
+      "Bash(vimto -kernel :6.6 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf)",
+      "Bash(vimto -kernel :6.12 -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf)",
+      "Bash(go test:*)",
+      "WebFetch(domain:apt.llvm.org)"
+    ]
+  }
+}
