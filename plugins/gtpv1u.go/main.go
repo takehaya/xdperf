@@ -42,6 +42,16 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		guest.Log(3, "qfi_start/qfi_end must be in 0-63")
 		return -6
 	}
+	// _end below _start is a misconfiguration (equal = fixed field, end > start
+	// = sweep); reject it rather than silently treating it as a fixed field.
+	if req.TEIDEnd < req.TEIDStart {
+		guest.Log(3, "teid_end must be >= teid_start")
+		return -6
+	}
+	if req.EnablePSC && req.QFIEnd < req.QFIStart {
+		guest.Log(3, "qfi_end must be >= qfi_start")
+		return -6
+	}
 	// Negative weights would wrap to huge uint32 values and break variant
 	// selection.
 	for _, w := range req.IMIXWeights {
@@ -135,12 +145,13 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 			})
 		}
 		// Optional inner UDP source port variation (2 bytes). Only applies to an
-		// inner UDP T-PDU; for inner ICMP there is no port offset.
+		// inner UDP T-PDU; for inner ICMP there is no port offset. The sweep
+		// starts at inner_src_port so the base packet and the range stay in sync.
 		if off, ok := info.Offsets["inner.udp.src"]; ok && req.VaryInnerPort {
 			vparams = append(vparams, guest.VariableParams{
 				ByteStart:   off,
 				ByteSize:    2,
-				ByteRange:   guest.TemplateRange{Start: 1024, End: 65535},
+				ByteRange:   guest.TemplateRange{Start: uint64(req.InnerSrcPort), End: 65535},
 				PatternType: guest.ValuePatternTypeSequential,
 			})
 		}
