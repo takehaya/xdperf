@@ -36,6 +36,12 @@ type GeneratorRequest struct {
 	// Outer UDP destination port. The IANA-assigned VXLAN port is 4789.
 	DstPort uint16 `json:"dst_port" default:"4789"`
 
+	// Optional outer 802.1Q VLAN tag (VXLAN underlay). vlan_id 0 (the default)
+	// means no tag — the VLAN header is omitted entirely, so it can be dropped
+	// when not needed. vlan_pcp is the 3-bit priority, only used when tagged.
+	VLANID  uint16 `json:"vlan_id" default:"0"`
+	VLANPCP uint8  `json:"vlan_pcp" default:"0"`
+
 	// --- VXLAN ---
 	VNIStart uint32 `json:"vni_start" default:"100"`
 	VNIEnd   uint32 `json:"vni_end" default:"100"`

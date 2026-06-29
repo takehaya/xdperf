@@ -3,9 +3,13 @@
 Generates VXLAN-encapsulated traffic:
 
 ```
-Eth | IPv4 | UDP(dst 4789) | VXLAN(8) | inner Eth | inner IPv4 | inner UDP | payload
+Eth | [VLAN] | IPv4 | UDP(dst 4789) | VXLAN(8) | inner Eth | inner IPv4 | inner UDP | payload
 ```
 
+- **Optional outer 802.1Q VLAN tag** (VXLAN underlay): set `vlan_id` (1-4094) to
+  insert one tag, with `vlan_pcp` for priority. `vlan_id: 0` (the default) omits
+  the tag entirely — so it can be dropped when not needed. A tag shifts every
+  downstream offset by 4 bytes (handled automatically).
 - **24-bit VNI** sweeps sequentially (`vni_start`/`vni_end`); when `start == end`
   the VNI is fixed.
 - **Inner Ethernet frame**: a full inner L2 header (configurable inner src/dst
@@ -56,6 +60,8 @@ Pass config inline with `--cfg` (alias `--plugin-config`) or from a file with
 | `is_arp_resolve` | bool | `true` | Resolve `dst_mac` from `dst_ip` via ARP/NDP |
 | `src_port` | uint16 | `0` | Outer UDP source port (sweep start when `vary_outer_port`) |
 | `dst_port` | uint16 | `4789` | Outer UDP destination port (IANA VXLAN port) |
+| `vlan_id` | uint16 | `0` | Outer 802.1Q VLAN ID 1-4094; `0` = no VLAN tag |
+| `vlan_pcp` | uint8 | `0` | Outer VLAN priority (PCP), only used when `vlan_id` > 0 |
 | `vni_start` / `vni_end` | uint32 | `100` / `100` | 24-bit VNI range 0-16777215 (`end > start` to sweep) |
 | `inner_mode` | string | `ip` | `ip` = inner Ethernet+IPv4+UDP (92B min); `l2only` = inner Ethernet only (64B min) |
 | `inner_src_mac` / `inner_dst_mac` | string | `02:00:00:00:01:01` / `02:00:00:00:01:02` | Inner Ethernet MACs |
@@ -73,6 +79,9 @@ Pass config inline with `--cfg` (alias `--plugin-config`) or from a file with
 ```jsonc
 // VNI sweep 100..200
 {"vni_start":100,"vni_end":200}
+
+// VLAN/VXLAN: outer 802.1Q tag (VID 10) carrying the VXLAN underlay
+{"vlan_id":10,"vlan_pcp":0,"vni_start":100,"vni_end":100}
 
 // Single VNI, sweep inner source port for RSS/ECMP spread
 {"vni_start":4242,"vni_end":4242,"vary_inner_port":true,"inner_udp_checksum":true}
