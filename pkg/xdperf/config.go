@@ -28,7 +28,7 @@ type Config struct {
 	PPS         uint64        // 0 = unlimited (max speed)
 	Duration    time.Duration // 0 = not specified (use count instead)
 	Infinite    bool          // enable infinite mode for maximum throughput
-	BatchSize   uint32        // syscall batch size tuning (default: 1)
+	BatchSize   uint32        // syscall batch size tuning (default: 64)
 
 	DebugMode int
 

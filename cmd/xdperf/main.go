@@ -109,8 +109,8 @@ func newApp(version string) *cli.App {
 		},
 		cli.IntFlag{
 			Name:  "batch-size",
-			Value: 1,
-			Usage: "syscall batch size tuning",
+			Value: 64,
+			Usage: "syscall batch size tuning (frames per bpf_prog_run in infinite/max-speed mode; 1 to disable batching)",
 		},
 		cli.StringFlag{
 			Name:  "wasm-cache-dir",
