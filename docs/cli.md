@@ -62,7 +62,7 @@ xdperf run has two primary operating modes:
 | `--plugin-config-path` | `--cfgpath` | No | - | Path to JSON configuration file |
 | `--debugmode` | `-D` | No | `0` | Debug level (0: off, 1: on, 2: verbose) |
 | `--infinite` | - | No | `false` | Enable infinite mode for maximum throughput |
-| `--batch-size` | - | No | `1` | Syscall batch size tuning |
+| `--batch-size` | - | No | `64` | Syscall batch size tuning |
 
 ### Option Details
 
@@ -316,12 +316,14 @@ sudo xdperf run --device eth0 --count 10k --parallelism 8 --infinite --batch-siz
 
 #### `--batch-size`
 
-Tune the syscall batch size for `bpf_prog_run`. Higher values reduce syscall overhead but may increase latency.
+Tune the syscall batch size for `bpf_prog_run` (applies to infinite and
+max-speed modes; PPS-limited mode always uses 1). Higher values reduce syscall
+overhead but may increase latency.
 
 | Value | Description |
 |-------|-------------|
-| `1` | Default, one packet per syscall |
-| `64` | Recommended for high-throughput scenarios |
+| `64` | Default; tuned for high throughput |
+| `1` | One packet per syscall (lowest latency, much lower pps) |
 
 ```shell
 # Use batch size of 64 for improved performance

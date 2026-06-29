@@ -86,10 +86,10 @@ Pass config inline with `--cfg` (alias `--plugin-config`) or from a file with
 
 ## Throughput / round-trip benchmarking
 
-For peak packets-per-second, **pass `--batch-size` (default `1`)** — it sets how
-many frames each `BPF_PROG_TEST_RUN` live-frame call submits. A batch size of 1
-caps a single 100G port at ~23 Mpps regardless of cores/diffs/checksums; a batch
-of 64 reaches line-rate territory.
+Peak packets-per-second depends on **`--batch-size`** (default `64`) — it sets
+how many frames each `BPF_PROG_TEST_RUN` live-frame call submits. `--batch-size 1`
+caps a single 100G port at ~23 Mpps regardless of cores/diffs/checksums; the
+default 64 reaches line-rate territory.
 
 Round-trip (Both mode here, a swap-echo on the peer), 64-byte `l2only` frames,
 24 NIC-local cores, on a back-to-back 100G E810 link:
