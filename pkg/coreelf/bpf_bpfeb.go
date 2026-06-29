@@ -138,14 +138,12 @@ type BpfMapSpecs struct {
 	TailCallCtxMap  *ebpf.MapSpec `ebpf:"tail_call_ctx_map"`
 	TxStatsMap      *ebpf.MapSpec `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.MapSpec `ebpf:"xdp_progs"`
-	XdpcapHook      *ebpf.MapSpec `ebpf:"xdpcap_hook"`
 }
 
 // BpfVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfVariableSpecs struct {
-	EnableXdpcap       *ebpf.VariableSpec `ebpf:"enable_xdpcap"`
 	MaxBasePackets     *ebpf.VariableSpec `ebpf:"max_base_packets"`
 	MaxChecksumEntries *ebpf.VariableSpec `ebpf:"max_checksum_entries"`
 	MaxDiffsPerPacket  *ebpf.VariableSpec `ebpf:"max_diffs_per_packet"`
@@ -182,7 +180,6 @@ type BpfMaps struct {
 	TailCallCtxMap  *ebpf.Map `ebpf:"tail_call_ctx_map"`
 	TxStatsMap      *ebpf.Map `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.Map `ebpf:"xdp_progs"`
-	XdpcapHook      *ebpf.Map `ebpf:"xdpcap_hook"`
 }
 
 func (m *BpfMaps) Close() error {
@@ -195,7 +192,6 @@ func (m *BpfMaps) Close() error {
 		m.TailCallCtxMap,
 		m.TxStatsMap,
 		m.XdpProgs,
-		m.XdpcapHook,
 	)
 }
 
@@ -203,7 +199,6 @@ func (m *BpfMaps) Close() error {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfVariables struct {
-	EnableXdpcap       *ebpf.Variable `ebpf:"enable_xdpcap"`
 	MaxBasePackets     *ebpf.Variable `ebpf:"max_base_packets"`
 	MaxChecksumEntries *ebpf.Variable `ebpf:"max_checksum_entries"`
 	MaxDiffsPerPacket  *ebpf.Variable `ebpf:"max_diffs_per_packet"`

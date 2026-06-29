@@ -9,8 +9,7 @@ import (
 
 func defaultConsts() map[string]any {
 	return map[string]any{
-		"swap_resp":     uint32(0),
-		"enable_xdpcap": uint32(0),
+		"swap_resp": uint32(0),
 	}
 }
 
@@ -54,8 +53,8 @@ func TestBpfProgramsLoad(t *testing.T) {
 // TestBpfProgramsLoadVariants verifies loading with different constant combinations.
 func TestBpfProgramsLoadVariants(t *testing.T) {
 	for name, consts := range map[string]map[string]any{
-		"swap_resp=1":     {"swap_resp": uint32(1), "enable_xdpcap": uint32(0)},
-		"enable_xdpcap=1": {"swap_resp": uint32(0), "enable_xdpcap": uint32(1)},
+		"swap_resp=0": {"swap_resp": uint32(0)},
+		"swap_resp=1": {"swap_resp": uint32(1)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			loadOrFail(t, consts)

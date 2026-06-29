@@ -26,13 +26,4 @@ struct {
     __uint(max_entries, 1);
 } rx_stats_map SEC(".maps");
 
-// https://github.com/cloudflare/xdpcap
-// struct bpf_map_def SEC("maps") xdpcap_hook = XDPCAP_HOOK();
-struct xdpcap_hook {
-    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(key_size, sizeof(int));
-    __uint(value_size, sizeof(int));
-    __uint(max_entries, 5);
-} xdpcap_hook SEC(".maps");
-
 #endif // XDP_PROG_H

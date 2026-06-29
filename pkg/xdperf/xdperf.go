@@ -67,12 +67,6 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 			}
 			return 0
 		}(),
-		"enable_xdpcap": func() uint32 {
-			if cfg.EnableXdpcap {
-				return 1
-			}
-			return 0
-		}(),
 	}
 
 	// Calculate diff_map size based on mode. The kernel hard-caps the per-CPU

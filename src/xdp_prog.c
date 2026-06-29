@@ -1,7 +1,6 @@
 #include "xdp_prog.h"
 #include "xdp_packet.h"
 #include "xdp_checksum.h"
-#include "xdpcap.h"
 #include "xdp_utils.h"
 
 #include <bpf/bpf_endian.h>
@@ -84,7 +83,7 @@ int xdp_rx(struct xdp_md *ctx)
     int key = 0;
     struct datarec *rec = bpf_map_lookup_elem(&rx_stats_map, &key);
     if (!rec)
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
 
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
@@ -96,7 +95,7 @@ int xdp_rx(struct xdp_md *ctx)
     void *l3_hdr;
 
     if (data + sizeof(*eth) > data_end)
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+        return XDP_PASS;
 
     eth_proto = eth->h_proto;
     l3_hdr = data + sizeof(*eth);
@@ -106,7 +105,7 @@ int xdp_rx(struct xdp_md *ctx)
     if (eth_proto == bpf_htons(ETH_P_8021Q) || eth_proto == bpf_htons(ETH_P_8021AD)) {
         vlan = l3_hdr;
         if ((void *)vlan + sizeof(*vlan) > data_end)
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+            return XDP_PASS;
 
         eth_proto = vlan->h_vlan_encapsulated_proto;
         l3_hdr = (void *)vlan + sizeof(*vlan);
@@ -115,7 +114,7 @@ int xdp_rx(struct xdp_md *ctx)
         if (eth_proto == bpf_htons(ETH_P_8021Q)) {
             vlan = l3_hdr;
             if ((void *)vlan + sizeof(*vlan) > data_end)
-                RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+                return XDP_PASS;
 
             eth_proto = vlan->h_vlan_encapsulated_proto;
             l3_hdr = (void *)vlan + sizeof(*vlan);
@@ -125,7 +124,7 @@ int xdp_rx(struct xdp_md *ctx)
     if (eth_proto == bpf_htons(ETH_P_IP)) {
         iph = l3_hdr;
         if ((void *)iph + sizeof(*iph) > data_end)
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+            return XDP_PASS;
 
         // Swap MAC and IP addresses
         swap_mac(eth);
@@ -136,7 +135,7 @@ int xdp_rx(struct xdp_md *ctx)
     } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
         ip6h = l3_hdr;
         if ((void *)ip6h + sizeof(*ip6h) > data_end)
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+            return XDP_PASS;
 
         // Swap MAC and IPv6 addresses
         swap_mac(eth);
@@ -145,12 +144,12 @@ int xdp_rx(struct xdp_md *ctx)
         rec->packets++;
         rec->bytes += (__u64)(data_end - data);
     } else {
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_PASS);
+        return XDP_PASS;
     }
     if (swap_resp == 0) {
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_DROP);
+        return XDP_DROP;
     }
-    RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
+    return XDP_TX;
 }
 
 // Apply a single diff value to the packet
@@ -808,13 +807,13 @@ int xdp_tx(struct xdp_md *ctx)
     struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
     if (!state) {
         DEBUG_PRINT("pkt_state_map lookup failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     __u32 count = state->count;
     if (count == 0) {
         DEBUG_PRINT("count=0, skipping\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
     if (count > MAX_DIFF_ENTRIES)
         count = MAX_DIFF_ENTRIES;
@@ -827,7 +826,7 @@ int xdp_tx(struct xdp_md *ctx)
     struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
     if (!diff) {
         DEBUG_PRINT("diff_map lookup failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     // 3. Get base packet using base_idx from diff entry
@@ -837,7 +836,7 @@ int xdp_tx(struct xdp_md *ctx)
     struct base_packet *base = bpf_map_lookup_elem(&base_packet_map, &base_idx);
     if (!base) {
         DEBUG_PRINT("base_packet_map lookup failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     // 4. Determine target packet length
@@ -848,7 +847,7 @@ int xdp_tx(struct xdp_md *ctx)
         target_len = MAX_PACKET_SIZE;
     if (target_len < sizeof(struct ethhdr)) {
         DEBUG_PRINT("packet too small: %u\n", target_len);
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     // 5. Adjust packet size
@@ -857,7 +856,7 @@ int xdp_tx(struct xdp_md *ctx)
         int delta = (int)target_len - (int)cur_len;
         if (bpf_xdp_adjust_tail(ctx, delta) < 0) {
             DEBUG_PRINT("bpf_xdp_adjust_tail failed\n");
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+            return XDP_ABORTED;
         }
         data = (void *)(long)ctx->data;
         data_end = (void *)(long)ctx->data_end;
@@ -866,7 +865,7 @@ int xdp_tx(struct xdp_md *ctx)
     // Bounds check for verifier
     if (data + target_len > data_end) {
         DEBUG_PRINT("data out of bounds\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     // 6. Copy base packet (skip if same base and no resize needed)
@@ -891,12 +890,12 @@ int xdp_tx(struct xdp_md *ctx)
     if (need_copy) {
         if (target_len < COPY_CHUNK_SIZE) {
             DEBUG_PRINT("packet too small (min 64 bytes): %u\n", target_len);
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+            return XDP_ABORTED;
         }
 
         if (copy_base_packet(ctx, base, target_len) < 0) {
             DEBUG_PRINT("copy_base_packet failed\n");
-            RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+            return XDP_ABORTED;
         }
 
         // Tail copy: re-copy the last COPY_CHUNK_SIZE bytes to cover partial chunks.
@@ -920,7 +919,7 @@ int xdp_tx(struct xdp_md *ctx)
     // The verifier loses bounds tracking after helper calls
     if (data + target_len > data_end) {
         DEBUG_PRINT("packet size mismatch after store\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     // 7. Apply diffs (bounded loop for max 8 diffs)
@@ -956,7 +955,7 @@ int xdp_tx(struct xdp_md *ctx)
 
     // Re-establish packet bounds for verifier after pointer refresh
     if (data + target_len > data_end) {
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     // 8. If checksums are cached as diffs, skip the entire checksum tail call chain.
@@ -965,7 +964,7 @@ int xdp_tx(struct xdp_md *ctx)
     if (diff->csum_cached) {
         update_stats_and_index(local_idx, target_len, diff_errors, 0);
         DEBUG_PRINT("xdp_tx: csum_cached, skipping checksum\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
+        return XDP_TX;
     }
 
     // 9. Store context for tail call and jump to checksum program
@@ -973,7 +972,7 @@ int xdp_tx(struct xdp_md *ctx)
     struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
     if (!tc_ctx) {
         DEBUG_PRINT("tail_call_ctx_map lookup failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     tc_ctx->base_idx = base_idx;
@@ -990,7 +989,7 @@ int xdp_tx(struct xdp_md *ctx)
 
     // Tail call failed - this should not happen if prog_array is properly set up
     DEBUG_PRINT("tail call to xdp_tx_checksum failed\n");
-    RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    return XDP_ABORTED;
 }
 
 // Cache computed checksum (and length) values back into diff_entry as additional diffs.
@@ -1210,7 +1209,7 @@ int xdp_tx_checksum(struct xdp_md *ctx)
     struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
     if (!tc_ctx) {
         DEBUG_PRINT("tail_call_ctx_map lookup failed in checksum\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     __u16 target_len = tc_ctx->target_len;
@@ -1221,7 +1220,7 @@ int xdp_tx_checksum(struct xdp_md *ctx)
         bpf_tail_call(ctx, &xdp_progs, XDP_PROG_CSUM_DIFF);
         // Tail call failed
         DEBUG_PRINT("tail call to xdp_tx_csum_diff failed\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     // 3. len_changed path: update IP/UDP length fields, then tail call to the
@@ -1241,7 +1240,7 @@ int xdp_tx_checksum(struct xdp_md *ctx)
     bpf_tail_call(ctx, &xdp_progs, XDP_PROG_CSUM_RECALC);
     // Tail call failed
     DEBUG_PRINT("tail call to xdp_tx_csum_recalc failed\n");
-    RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+    return XDP_ABORTED;
 }
 
 // len_changed checksum recalculation, split from xdp_tx_checksum into its own
@@ -1258,7 +1257,7 @@ int xdp_tx_csum_recalc(struct xdp_md *ctx)
     struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
     if (!tc_ctx) {
         DEBUG_PRINT("tail_call_ctx_map lookup failed in csum_recalc\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     __u32 base_idx = tc_ctx->base_idx;
@@ -1301,7 +1300,7 @@ int xdp_tx_csum_recalc(struct xdp_md *ctx)
 
     update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
     DEBUG_PRINT("xdp_tx_csum_recalc: idx=%u len=%u\n", local_idx, target_len);
-    RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
+    return XDP_TX;
 }
 
 // Third part of xdp_tx: incremental checksum updates using bpf_csum_diff
@@ -1316,7 +1315,7 @@ int xdp_tx_csum_diff(struct xdp_md *ctx)
     struct tail_call_ctx *tc_ctx = bpf_map_lookup_elem(&tail_call_ctx_map, &zero);
     if (!tc_ctx) {
         DEBUG_PRINT("tail_call_ctx_map lookup failed in csum_diff\n");
-        RETURN_ACTION(ctx, &xdpcap_hook, XDP_ABORTED);
+        return XDP_ABORTED;
     }
 
     __u32 base_idx = tc_ctx->base_idx;
@@ -1362,5 +1361,5 @@ int xdp_tx_csum_diff(struct xdp_md *ctx)
 
     update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
     DEBUG_PRINT("xdp_tx_csum_diff: idx=%u len=%u\n", local_idx, target_len);
-    RETURN_ACTION(ctx, &xdpcap_hook, XDP_TX);
+    return XDP_TX;
 }

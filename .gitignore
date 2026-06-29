@@ -157,5 +157,9 @@ dist/
 
 *.dat
 
+# Generated capture pcaps (plugins/gtpv1u.go/*.pcap, xdp-ninja per-CPU shards)
+*.pcap
+*.pcap.cpu*
+
 # VM-to-VM lab artifacts (scripts/vmlab)
 .cache/
