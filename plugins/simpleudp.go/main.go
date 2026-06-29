@@ -63,6 +63,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 
 	packetBytes, srcPortOffset, err := BuildSamplePacket(
 		[6]byte(req.DeviceMacAddr), dstMAC,
+		req.VLANID, req.VLANPCP,
 		req.SrcIP, req.DstIP,
 		req.SrcPort, req.DstPort,
 		payload,

@@ -18,6 +18,12 @@ type GeneratorRequest struct {
 	DstPort      uint16 `json:"dst_port" default:"5678"`
 	PayloadSize  int    `json:"payload_size" default:"1024"`
 
+	// Optional outer 802.1Q VLAN tag. vlan_id 0 (the default) means no tag — it is
+	// omitted entirely, so it can be dropped when not needed. vlan_pcp is the
+	// 3-bit priority, only used when tagged.
+	VLANID  uint16 `json:"vlan_id" default:"0"`
+	VLANPCP uint8  `json:"vlan_pcp" default:"0"`
+
 	// required param
 	guest.BaseGeneratorRequest
 }
