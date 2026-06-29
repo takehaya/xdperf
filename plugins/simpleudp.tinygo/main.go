@@ -78,25 +78,26 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		payload[i] = byte(i % 256)
 	}
 
-	// Packet structure:
+	// Packet structure (offsets shift by 4 when an outer VLAN tag is present):
 	//   Ethernet header: 14 bytes (offset 0-13)
-	//   IP header: 20 bytes (offset 14-33)
-	//     - Dst IP: offset 30-33 (last octet at 33)
-	//   UDP header: 8 bytes (offset 34-41)
-	//     - Source port: offset 34-35
-	//     - Dst port: offset 36-37
-	//   Payload: offset 42+
-	// Both variants use the same base packet
-	packetBytes := BuildSimpleUDPPacket(
+	//   [optional 802.1Q tag: 4 bytes]
+	//   IPv4 header: 20 bytes
+	//   UDP header: 8 bytes (src port at udpOffset)
+	//   Payload
+	// BuildSimpleUDPPacket returns the UDP source-port offset so the sweep and the
+	// checksum specs stay correct whether or not the frame is VLAN-tagged.
+	packetBytes, srcPortOffset := BuildSimpleUDPPacket(
 		[6]byte(req.DeviceMacAddr), dstMAC,
+		req.VLANID, req.VLANPCP,
 		req.SrcIP, req.DstIP,
 		req.SrcPort, req.DstPort,
 		payload,
 	)
 	maxLen := uint16(len(packetBytes))
 
-	// Checksum specs for an untagged Ethernet/IPv4/UDP frame (IPv4 header at 14).
-	checksums := guest.IPv4UDPChecksumSpecs(guest.EthernetHeaderLen)
+	// Checksum specs for the Ethernet/[VLAN/]IPv4/UDP frame. The IPv4 header begins
+	// one IPv4 header before the UDP source port (srcPortOffset - IPv4HeaderLen).
+	checksums := guest.IPv4UDPChecksumSpecs(uint16(srcPortOffset) - guest.IPv4HeaderLen)
 
 	res := guest.GeneratorProcessResponse{
 		TemplateType: guest.GeneratorTemplateTypeVariable,
@@ -109,7 +110,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 					},
 					Params: []guest.VariableParams{
 						{
-							ByteStart:   34, // UDP src port offset
+							ByteStart:   uint64(srcPortOffset), // UDP src port offset
 							ByteSize:    2,
 							ByteRange:   guest.TemplateRange{Start: 1024, End: 1124},
 							PatternType: guest.ValuePatternTypeSequential,

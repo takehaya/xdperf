@@ -140,22 +140,42 @@ func (pb *PacketBuilder) WritePayload(offset int, payload []byte) {
 	copy(pb.data[offset:], payload)
 }
 
-func BuildSimpleUDPPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) []byte {
-	// パケットサイズの計算
-	// Ethernet(14) + IPv4(20) + UDP(8) + Payload
-	packetSize := 14 + 20 + 8 + len(payload)
+// BuildSimpleUDPPacket builds an Ethernet/IPv4/UDP frame. When vlanID != 0 an
+// outer 802.1Q tag (priority vlanPCP) is inserted between the Ethernet header
+// and IPv4; vlanID == 0 omits the tag entirely. Returns the packet bytes and the
+// byte offset of the UDP source port (which shifts by 4 when tagged).
+func BuildSimpleUDPPacket(srcMAC, dstMAC [6]byte, vlanID uint16, vlanPCP uint8, srcIP, dstIP string, srcPort, dstPort uint16, payload []byte) ([]byte, int) {
+	vlanLen := 0
+	if vlanID != 0 {
+		vlanLen = 4
+	}
+	// Layer offsets, all shifted by the optional 4-byte VLAN tag.
+	ipOffset := 14 + vlanLen
+	udpOffset := ipOffset + 20
+	payloadOffset := udpOffset + 8
+	packetSize := payloadOffset + len(payload)
 	pb := NewPacketBuilder(packetSize)
 
-	// Ethernetヘッダー
+	// Ethernetヘッダー (tagged フレームでは EtherType が TPID 0x8100 になる)
+	etherType := uint16(0x0800) // IPv4
+	if vlanLen > 0 {
+		etherType = 0x8100 // 802.1Q TPID
+	}
 	pb.WriteEthernet(0, &EthernetHeader{
 		DstMAC:    dstMAC,
 		SrcMAC:    srcMAC,
-		EtherType: 0x0800, // IPv4
+		EtherType: etherType,
 	})
+	if vlanLen > 0 {
+		// 802.1Q tag: TCI (PCP(3)|DEI(1)|VID(12)) at offset 14, inner EtherType at 16.
+		tci := (uint16(vlanPCP&0x7) << 13) | (vlanID & 0x0FFF)
+		binary.BigEndian.PutUint16(pb.data[14:16], tci)
+		binary.BigEndian.PutUint16(pb.data[16:18], 0x0800) // IPv4
+	}
 
 	// IPv4ヘッダー
 	ipTotalLen := uint16(20 + 8 + len(payload))
-	pb.WriteIPv4(14, &IPv4Header{
+	pb.WriteIPv4(ipOffset, &IPv4Header{
 		Version:        4,
 		IHL:            5, // 20 bytes / 4 = 5
 		TOS:            0,
@@ -171,12 +191,12 @@ func BuildSimpleUDPPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, 
 	})
 
 	// IPv4チェックサムの計算と設定
-	ipChecksum := pb.CalculateIPv4Checksum(14, 20)
-	binary.BigEndian.PutUint16(pb.data[14+10:14+12], ipChecksum)
+	ipChecksum := pb.CalculateIPv4Checksum(ipOffset, 20)
+	binary.BigEndian.PutUint16(pb.data[ipOffset+10:ipOffset+12], ipChecksum)
 
 	// UDPヘッダー
 	udpLen := uint16(8 + len(payload))
-	pb.WriteUDP(34, &UDPHeader{
+	pb.WriteUDP(udpOffset, &UDPHeader{
 		SrcPort:  srcPort,
 		DstPort:  dstPort,
 		Length:   udpLen,
@@ -185,12 +205,12 @@ func BuildSimpleUDPPacket(srcMAC, dstMAC [6]byte, srcIP, dstIP string, srcPort, 
 
 	// ペイロード
 	if len(payload) > 0 {
-		pb.WritePayload(42, payload)
+		pb.WritePayload(payloadOffset, payload)
 	}
 
 	// UDPチェックサムの計算と設定
-	udpChecksum := pb.CalculateUDPChecksum(14, 34, int(udpLen))
-	binary.BigEndian.PutUint16(pb.data[34+6:34+8], udpChecksum)
+	udpChecksum := pb.CalculateUDPChecksum(ipOffset, udpOffset, int(udpLen))
+	binary.BigEndian.PutUint16(pb.data[udpOffset+6:udpOffset+8], udpChecksum)
 
-	return pb.Bytes()
+	return pb.Bytes(), udpOffset
 }

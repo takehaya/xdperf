@@ -83,6 +83,8 @@ The `simpleudp` plugin accepts the following configuration parameters via `--plu
 | `src_port` | uint16 | `1234` | Source port |
 | `dst_port` | uint16 | `5678` | Destination port |
 | `payload_size` | int | `1024` | UDP payload size in bytes |
+| `vlan_id` | uint16 | `0` | Outer 802.1Q VLAN ID 1-4094; `0` = no VLAN tag |
+| `vlan_pcp` | uint8 | `0` | Outer VLAN priority (PCP), only used when `vlan_id` > 0 |
 
 **Example:**
 ```shell
