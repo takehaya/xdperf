@@ -97,8 +97,10 @@ traffic: outer `Ethernet / IPv4 / UDP(dst 2152) / GTP-U` encapsulating an inner
 extension header (type `0x85`) so the QFI can be exercised. TEID and QFI use a
 `_start`/`_end` pair: equal values keep the field fixed, `end > start` increments
 it sequentially per packet. Packet-length diversity is produced IMIX-style from
-the fixed-size variants in `imix_sizes` (no runtime length mutation), and all
-four checksums (outer IPv4, inner IPv4, inner UDP, outer UDP) are recomputed.
+the fixed-size variants in `imix_sizes` (no runtime length mutation). The outer
+IPv4, inner IPv4 and outer UDP checksums are recomputed; the inner UDP checksum
+is left 0 (disabled) by default and only recomputed when `inner_udp_checksum` is
+set.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

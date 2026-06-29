@@ -36,6 +36,20 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		guest.Log(3, "imix_sizes must not be empty")
 		return -6
 	}
+	// QFI is a 6-bit field; reject out-of-range values instead of silently
+	// masking them (which would turn e.g. 64 into 0).
+	if req.QFIStart > 63 || req.QFIEnd > 63 {
+		guest.Log(3, "qfi_start/qfi_end must be in 0-63")
+		return -6
+	}
+	// Negative weights would wrap to huge uint32 values and break variant
+	// selection.
+	for _, w := range req.IMIXWeights {
+		if w < 0 {
+			guest.Log(3, "imix_weights must not be negative")
+			return -6
+		}
+	}
 
 	// Resolve the destination MAC (static or via ARP/NDP).
 	dstMAC := [6]byte{}
@@ -116,7 +130,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 			vparams = append(vparams, guest.VariableParams{
 				ByteStart:   info.Offsets["psc.qfi"],
 				ByteSize:    1,
-				ByteRange:   guest.TemplateRange{Start: rqiBit | uint64(req.QFIStart&0x3F), End: rqiBit | uint64(req.QFIEnd&0x3F)},
+				ByteRange:   guest.TemplateRange{Start: rqiBit | uint64(req.QFIStart), End: rqiBit | uint64(req.QFIEnd)},
 				PatternType: guest.ValuePatternTypeSequential,
 			})
 		}

@@ -78,7 +78,8 @@ func TestGTPv1UPluginIntegration(t *testing.T) {
 		}
 
 		d := v.Base.Data
-		// Inner UDP checksum is disabled by default (5G inner UDP at offset 78).
+		// Inner UDP is disabled by default: its checksum field (5G inner UDP
+		// header at offset 78, checksum at 78+6=84) must be 0.
 		if d[84] != 0 || d[85] != 0 {
 			t.Errorf("variant %d: inner UDP checksum = 0x%02x%02x, want 0 (disabled)", i, d[84], d[85])
 		}
