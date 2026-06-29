@@ -50,6 +50,7 @@ xdperf run has two primary operating modes:
 | `--duration` | `-t` | *Conditional* | - | Duration to send packets (e.g., `10s`, `1m`, `500ms`) |
 | `--pps` | - | No | unlimited | Target packets per second (e.g., `100k`, `1m`) |
 | `--parallelism` | `-l` | No | `1` | Number of parallel sending threads |
+| `--cpu-mode` | - | No | `auto` | NUMA-aware CPU pinning: `auto`, `local`, `balanced`, `node:<N>`, or a CPU list (e.g., `0,2,4,6`) |
 | `--send` | `-s` | No | `true` | Run in send mode |
 | `--recv` | `-r` | No | `false` | Run in receive mode |
 | `--swap-resp` | `--swap` | No | `false` | Swap response packets (for echo server) |
@@ -62,7 +63,6 @@ xdperf run has two primary operating modes:
 | `--debugmode` | `-D` | No | `0` | Debug level (0: off, 1: on, 2: verbose) |
 | `--infinite` | - | No | `false` | Enable infinite mode for maximum throughput |
 | `--batch-size` | - | No | `1` | Syscall batch size tuning |
-| `--enable-xdpcap` | - | No | `false` | Enable xdpcap support for packet capture (reduces performance) |
 
 ### Option Details
 
@@ -150,6 +150,53 @@ sudo xdperf run --device eth0 --count 100k --parallelism 16
 
 # Error: count must be >= parallelism
 sudo xdperf run --device eth0 --count 5 --parallelism 10
+```
+
+#### `--cpu-mode`
+
+Controls which CPU cores the parallel sending threads are pinned to. By default (`auto`), xdperf detects the NIC's NUMA node and pins worker threads to CPUs on that node, reducing cross-node memory access on multi-socket servers.
+
+For every mode **except an explicit CPU list**, the number of CPUs selected is governed by `--parallelism`.
+
+| Mode | Behavior |
+|------|----------|
+| `auto` (default) | Pin to the NIC's local NUMA node first; if `--parallelism` exceeds the local CPUs, spill over to other nodes. |
+| `local` | Pin **only** to the NIC's local NUMA node. Errors if `--parallelism` exceeds the CPUs on that node. |
+| `balanced` | Distribute threads round-robin across all NUMA nodes. |
+| `node:<N>` | Pin to CPUs on NUMA node `N` (e.g., `node:1`). Errors if the node does not exist or has too few CPUs. |
+| `<cpu list>` | Pin to an explicit set of CPUs in Linux cpulist format (e.g., `0,2,4,6` or `8-15`). **This overrides `--parallelism`** — the thread count becomes the number of CPUs listed. |
+
+**Note:** On single-node (non-NUMA) systems, or when the NIC reports no NUMA affinity (`numa_node` = `-1`), `auto` and `local` fall back to the first `--parallelism` CPUs.
+
+**Finding the NIC's NUMA node:**
+
+```shell
+# NUMA node the NIC is attached to (-1 means no affinity / single-node system)
+cat /sys/class/net/eth0/device/numa_node
+
+# CPUs belonging to each NUMA node
+lscpu | grep NUMA
+# or
+numactl --hardware
+```
+
+**Examples:**
+
+```shell
+# Auto (default): pin to the NIC's local node
+sudo xdperf run --device eth0 --count 10k --parallelism 8 --infinite
+
+# Force NIC-local node only (fails fast if the node has fewer than 8 CPUs)
+sudo xdperf run --device eth0 --count 10k --parallelism 8 --infinite --cpu-mode local
+
+# Pin to a specific NUMA node
+sudo xdperf run --device eth0 --count 10k --parallelism 8 --infinite --cpu-mode node:1
+
+# Explicit CPU list: parallelism is taken from the list (4 threads on CPUs 8,10,12,14)
+sudo xdperf run --device eth0 --count 10k --infinite --cpu-mode 8,10,12,14
+
+# Spread evenly across all nodes
+sudo xdperf run --device eth0 --count 10k --parallelism 16 --infinite --cpu-mode balanced
 ```
 
 #### `--send`, `-s` / `--recv`, `-r`
@@ -284,16 +331,24 @@ sudo xdperf run --device eth0 --count 1m --batch-size 64
 sudo xdperf run --device eth0 --count 10k --infinite --batch-size 64 --parallelism 8
 ```
 
-#### `--enable-xdpcap`
+#### Capturing transmitted packets (xdp-ninja)
 
-Enable xdpcap support for packet capture. This allows capturing transmitted packets for debugging purposes.
-
-**Warning:** Enabling this option reduces performance due to additional BPF map lookups.
+`xdperf run` transmits via XDP and does not write a pcap itself. Capture the
+generated traffic with [xdp-ninja](https://github.com/takehaya/xdp-ninja), an
+XDP-time capture tool that attaches non-invasively (no changes to, and no
+runtime cost in, xdperf) and — unlike tcpdump's cBPF — can walk into
+encapsulated inner headers such as GTP-U, VXLAN, MPLS and SRv6:
 
 ```shell
-# Enable packet capture (for debugging)
-sudo xdperf run --device eth0 --count 1000 --enable-xdpcap
+# While `xdperf run` is sending on eth0, in another terminal:
+sudo xdp-ninja -i eth0 -w capture.pcap
+
+# Or pipe straight into tcpdump, filtering on the inner GTP-U headers:
+sudo xdp-ninja -i eth0 "eth/ipv4/udp/gtp/ipv4/udp" | tcpdump -n -r -
 ```
+
+See the [xdp-ninja README](https://github.com/takehaya/xdp-ninja) for the full
+DSL filter syntax and capture modes.
 
 ### Option Constraints Summary
 
@@ -305,6 +360,8 @@ sudo xdperf run --device eth0 --count 1000 --enable-xdpcap
 | `--pps` requires `--count` or `--duration` | Cannot be used alone |
 | `--count` >= `--parallelism` | Total packets must be at least equal to thread count |
 | `--parallelism` <= CPU cores | Cannot exceed available CPU cores |
+| `--cpu-mode local`/`node:<N>` fits the node | `--parallelism` must not exceed the CPUs on the target NUMA node |
+| `--cpu-mode <cpu list>` overrides `--parallelism` | Thread count is taken from the listed CPUs |
 | Plugin name format | Must be `<name>.<language>` unless `--plugin-language` is specified |
 | `--infinite` requires `--count` | Packet pool size must be specified |
 | `--infinite` cannot use `--duration` | Duration is not applicable in infinite mode |

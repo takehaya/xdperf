@@ -163,3 +163,7 @@ dist/
 
 # VM-to-VM lab artifacts (scripts/vmlab)
 .cache/
+
+# perf profiling output
+perf.data
+perf.data.old
