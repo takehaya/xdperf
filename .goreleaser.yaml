@@ -61,6 +61,28 @@ builds:
       - -X main.version={{ .Version }}
       - -X main.commit={{ .Commit }}
       - -X main.date={{ .Date }}
+  - id: plugin-gtpv1u.go
+    dir: ./plugins/gtpv1u.go
+    main: .
+    binary: gtpv1u.go
+    goos: [ wasip1 ]
+    goarch: [ wasm ]
+    buildmode: c-shared
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+  - id: plugin-vxlan.go
+    dir: ./plugins/vxlan.go
+    main: .
+    binary: vxlan.go
+    goos: [ wasip1 ]
+    goarch: [ wasm ]
+    buildmode: c-shared
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
 archives:
   - id: xdperf
     formats:
@@ -87,6 +109,16 @@ archives:
     - 'binary'
     ids:
     - plugin-imixudp.go
+  - id: plugin-gtpv1u.go
+    formats:
+    - 'binary'
+    ids:
+    - plugin-gtpv1u.go
+  - id: plugin-vxlan.go
+    formats:
+    - 'binary'
+    ids:
+    - plugin-vxlan.go
 checksum:
   name_template: 'checksums.txt'
 snapshot:
