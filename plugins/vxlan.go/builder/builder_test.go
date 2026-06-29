@@ -301,6 +301,79 @@ func TestInnerL2Only64B(t *testing.T) {
 	}
 }
 
+func TestOuterVLANTag(t *testing.T) {
+	p := sampleParams()
+	p.VLANID = 100
+	p.VLANPCP = 3
+	if min := MinFrameLen(p); min != 96 {
+		t.Fatalf("tagged MinFrameLen = %d, want 96 (92+4)", min)
+	}
+	info, err := BuildVXLANPacket(p, 128)
+	if err != nil {
+		t.Fatalf("BuildVXLANPacket tagged: %v", err)
+	}
+	d := info.Data
+	// Outer Ethernet EtherType is 802.1Q (0x8100) at offset 12.
+	if et := binary.BigEndian.Uint16(d[12:14]); et != 0x8100 {
+		t.Errorf("EtherType = 0x%04x, want 0x8100 (802.1Q)", et)
+	}
+	// 802.1Q TCI at offset 14: PCP (top 3 bits) and VID (low 12 bits).
+	tci := binary.BigEndian.Uint16(d[14:16])
+	if vid := tci & 0x0FFF; vid != 100 {
+		t.Errorf("VLAN VID = %d, want 100", vid)
+	}
+	if pcp := tci >> 13; pcp != 3 {
+		t.Errorf("VLAN PCP = %d, want 3", pcp)
+	}
+	// vlan.tci offset is exposed only when tagged.
+	if info.Offsets["vlan.tci"] != 14 {
+		t.Errorf("vlan.tci offset = %d, want 14", info.Offsets["vlan.tci"])
+	}
+	// Every downstream offset is shifted by the 4-byte tag.
+	want := map[string]uint64{
+		"outer.udp.src":  38,
+		"vxlan.start":    46,
+		"vxlan.vni":      50,
+		"inner.start":    54,
+		"inner.ip.start": 68,
+		"inner.udp.src":  88,
+	}
+	for k, v := range want {
+		if info.Offsets[k] != v {
+			t.Errorf("tagged offset %s = %d, want %d", k, info.Offsets[k], v)
+		}
+	}
+	// Outer IPv4 (now at offset 18) and inner IPv4 checksums stay valid.
+	if !ipv4ChecksumValid(d, 18) {
+		t.Error("outer IPv4 checksum invalid (tagged)")
+	}
+	if !ipv4ChecksumValid(d, 68) {
+		t.Error("inner IPv4 checksum invalid (tagged)")
+	}
+	// The outer IPv4 checksum spec must target the shifted header (offset 18+10).
+	if info.Checksums[0].ChecksumOffset != 18+10 {
+		t.Errorf("outer IPv4 spec ChecksumOffset = %d, want 28", info.Checksums[0].ChecksumOffset)
+	}
+}
+
+func TestVLANUntaggedByDefault(t *testing.T) {
+	p := sampleParams() // VLANID == 0
+	info, err := BuildVXLANPacket(p, 128)
+	if err != nil {
+		t.Fatalf("BuildVXLANPacket: %v", err)
+	}
+	// No tag: EtherType is IPv4 directly, no vlan.tci offset, VNI stays at 46.
+	if et := binary.BigEndian.Uint16(info.Data[12:14]); et != 0x0800 {
+		t.Errorf("untagged EtherType = 0x%04x, want 0x0800 (IPv4)", et)
+	}
+	if _, ok := info.Offsets["vlan.tci"]; ok {
+		t.Error("vlan.tci offset must be absent when untagged")
+	}
+	if info.Offsets["vxlan.vni"] != 46 {
+		t.Errorf("untagged vxlan.vni = %d, want 46", info.Offsets["vxlan.vni"])
+	}
+}
+
 func TestBelowMinFrameLen(t *testing.T) {
 	p := sampleParams()
 	min := MinFrameLen(p)

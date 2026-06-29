@@ -120,6 +120,8 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		DstIP:            req.DstIP,
 		OuterSrcPort:     req.SrcPort,
 		OuterDstPort:     req.DstPort,
+		VLANID:           req.VLANID,
+		VLANPCP:          req.VLANPCP,
 		VNI:              req.VNIStart,
 		InnerSrcMAC:      innerSrcMAC,
 		InnerDstMAC:      innerDstMAC,

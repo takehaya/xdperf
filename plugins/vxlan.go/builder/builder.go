@@ -29,10 +29,11 @@ const VXLANPort = 4789
 
 // Fixed layer sizes used to derive offsets.
 const (
-	ethLen   = guest.EthernetHeaderLen // 14
-	ipv4Len  = guest.IPv4HeaderLen     // 20
-	udpLen   = guest.UDPHeaderLen      // 8
-	vxlanLen = 8                       // VXLAN header
+	ethLen     = guest.EthernetHeaderLen // 14
+	ipv4Len    = guest.IPv4HeaderLen     // 20
+	udpLen     = guest.UDPHeaderLen      // 8
+	vxlanLen   = 8                       // VXLAN header
+	vlanTagLen = 4                       // one 802.1Q tag (TPID + TCI)
 	// inner overhead: inner Ethernet + inner IPv4 + inner UDP.
 	innerOverhead = ethLen + ipv4Len + udpLen
 )
@@ -51,6 +52,13 @@ type PacketParams struct {
 	SrcIP, DstIP   string
 	OuterSrcPort   uint16
 	OuterDstPort   uint16
+
+	// Optional outer 802.1Q VLAN tag (VXLAN underlay). VLANID == 0 means no tag
+	// (the default) — the VLAN header is omitted entirely and all downstream
+	// offsets are unshifted. VLANPCP is the 3-bit priority, only meaningful when
+	// tagged.
+	VLANID  uint16
+	VLANPCP uint8
 
 	// VXLAN
 	VNI uint32
@@ -83,15 +91,23 @@ type PacketInfo struct {
 	Checksums []guest.ChecksumSpec
 }
 
+// vlanLen returns the outer 802.1Q tag length: 4 when tagged, 0 otherwise.
+func (p *PacketParams) vlanLen() int {
+	if p.VLANID != 0 {
+		return vlanTagLen
+	}
+	return 0
+}
+
 // MinFrameLen is the smallest total frame length (including the outer Ethernet
 // header) that can hold all headers with a zero-length inner payload. In
 // l2-only mode the inner frame is just an Ethernet header, giving a 64-byte
-// minimum.
+// minimum (68 with an outer VLAN tag).
 func MinFrameLen(p PacketParams) int {
 	if p.InnerL2Only {
-		return ethLen + ipv4Len + udpLen + vxlanLen + ethLen // 64
+		return ethLen + p.vlanLen() + ipv4Len + udpLen + vxlanLen + ethLen // 64 (+4 tagged)
 	}
-	return ethLen + ipv4Len + udpLen + vxlanLen + innerOverhead // 92
+	return ethLen + p.vlanLen() + ipv4Len + udpLen + vxlanLen + innerOverhead // 92 (+4 tagged)
 }
 
 // buildVXLANHeader assembles the raw 8-byte VXLAN header: flags(1) +
@@ -190,6 +206,7 @@ func BuildVXLANPacket(p PacketParams, totalLen int) (*PacketInfo, error) {
 	vxlanPayload = append(vxlanPayload, vxlanHeader...)
 	vxlanPayload = append(vxlanPayload, innerBytes...)
 
+	vlanLen := p.vlanLen()
 	eth := &layers.Ethernet{
 		SrcMAC:       net.HardwareAddr(p.SrcMAC[:]),
 		DstMAC:       net.HardwareAddr(p.DstMAC[:]),
@@ -214,43 +231,62 @@ func BuildVXLANPacket(p PacketParams, totalLen int) (*PacketInfo, error) {
 	if err := outerUDP.SetNetworkLayerForChecksum(outerIP); err != nil {
 		return nil, fmt.Errorf("outer SetNetworkLayerForChecksum: %w", err)
 	}
+	// Assemble the layer stack, inserting an optional 802.1Q tag between the outer
+	// Ethernet header and IPv4. When untagged the VLAN layer is omitted entirely.
+	outerLayers := []gopacket.SerializableLayer{eth}
+	if vlanLen > 0 {
+		eth.EthernetType = layers.EthernetTypeDot1Q
+		outerLayers = append(outerLayers, &layers.Dot1Q{
+			Priority:       p.VLANPCP,
+			VLANIdentifier: p.VLANID,
+			Type:           layers.EthernetTypeIPv4,
+		})
+	}
+	outerLayers = append(outerLayers, outerIP, outerUDP, gopacket.Payload(vxlanPayload))
 	buf := gopacket.NewSerializeBuffer()
 	if err := gopacket.SerializeLayers(buf,
 		gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true},
-		eth, outerIP, outerUDP, gopacket.Payload(vxlanPayload),
+		outerLayers...,
 	); err != nil {
 		return nil, fmt.Errorf("serialize outer: %w", err)
 	}
 	data := buf.Bytes()
+
+	// Outer L3 starts after the Ethernet header and the optional VLAN tag; every
+	// downstream offset is relative to that, so a VLAN tag shifts them all by 4.
+	outerIPStart := ethLen + vlanLen
 	// Force the outer UDP checksum to 0 in case gopacket computed one.
-	outerUDPStart := ethLen + ipv4Len
+	outerUDPStart := outerIPStart + ipv4Len
 	outerUDPCsum := outerUDPStart + guest.UDPChecksumFieldOffset
 	data[outerUDPCsum] = 0
 	data[outerUDPCsum+1] = 0
 
-	vxlanStart := ethLen + ipv4Len + udpLen // 42
-	innerEthStart := vxlanStart + vxlanLen  // 50
-	innerOff := innerEthStart + ethLen      // 64 (inner IPv4, ip mode only)
+	vxlanStart := outerUDPStart + udpLen   // 42 (+4 tagged)
+	innerEthStart := vxlanStart + vxlanLen // 50 (+4 tagged)
+	innerOff := innerEthStart + ethLen     // 64 (inner IPv4, ip mode only)
 	info := &PacketInfo{
 		Data: data,
 		Offsets: map[string]uint64{
-			"outer.udp.src": uint64(outerUDPStart),  // 34
-			"vxlan.start":   uint64(vxlanStart),     // 42
-			"vxlan.vni":     uint64(vxlanStart + 4), // 46 (24-bit VNI)
-			"inner.start":   uint64(innerEthStart),  // 50 (inner Ethernet)
+			"outer.udp.src": uint64(outerUDPStart),
+			"vxlan.start":   uint64(vxlanStart),
+			"vxlan.vni":     uint64(vxlanStart + 4), // 24-bit VNI within the VXLAN header
+			"inner.start":   uint64(innerEthStart),  // inner Ethernet
 		},
+	}
+	if vlanLen > 0 {
+		info.Offsets["vlan.tci"] = uint64(ethLen) // 802.1Q TCI (PCP/DEI/VID) at offset 14
 	}
 	if p.InnerL2Only {
 		// L2-only: just the outer IPv4 header checksum (no inner L3/L4). The outer
 		// UDP checksum stays 0 (RFC 7348), so no spec for it.
-		info.Checksums = []guest.ChecksumSpec{guest.IPv4UDPChecksumSpecs(ethLen)[0]}
+		info.Checksums = []guest.ChecksumSpec{guest.IPv4UDPChecksumSpecs(uint16(outerIPStart))[0]}
 		return info, nil
 	}
-	info.Offsets["inner.ip.start"] = uint64(innerOff)          // 64
-	info.Offsets["inner.ip.src"] = uint64(innerOff + 12)       // 76
-	info.Offsets["inner.ip.dst"] = uint64(innerOff + 16)       // 80
-	info.Offsets["inner.udp.src"] = uint64(innerOff + ipv4Len) // 84
-	info.Checksums = buildChecksumSpecs(uint16(innerOff), p.InnerUDPChecksum)
+	info.Offsets["inner.ip.start"] = uint64(innerOff)
+	info.Offsets["inner.ip.src"] = uint64(innerOff + 12)
+	info.Offsets["inner.ip.dst"] = uint64(innerOff + 16)
+	info.Offsets["inner.udp.src"] = uint64(innerOff + ipv4Len)
+	info.Checksums = buildChecksumSpecs(uint16(outerIPStart), uint16(innerOff), p.InnerUDPChecksum)
 	return info, nil
 }
 
@@ -261,9 +297,9 @@ func BuildVXLANPacket(p PacketParams, totalLen int) (*PacketInfo, error) {
 // true, [outer IPv4, inner IPv4, inner UDP] — the inner UDP spec lets the data
 // plane keep the inner UDP checksum correct (e.g. when the inner source port or
 // inner source IP is varied).
-func buildChecksumSpecs(innerOff uint16, includeInnerUDP bool) []guest.ChecksumSpec {
+func buildChecksumSpecs(outerIPOff, innerOff uint16, includeInnerUDP bool) []guest.ChecksumSpec {
 	// Reuse the outer IPv4 spec from the shared helper; drop its outer UDP entry.
-	outerIPv4 := guest.IPv4UDPChecksumSpecs(ethLen)[0]
+	outerIPv4 := guest.IPv4UDPChecksumSpecs(outerIPOff)[0]
 	innerIP := guest.ChecksumSpec{
 		ChecksumOffset: innerOff + guest.IPv4ChecksumFieldOffset,
 		HeaderStart:    innerOff,
