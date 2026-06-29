@@ -88,6 +88,7 @@ WASMプラグインがパケットテンプレートを生成。`plugins/`にリ
 - `simpleudp.go/` — Goでビルド (`GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared`)
 - `imixudp.go/` — IMIXトラフィックパターン
 - `gtpv1u.go/` — GTP-U (5G/4G) トラフィック。外側UDP/GTP-Uヘッダ + 内側IP/UDPを生成し、内側ポートをスイープ可能。
+- `vxlan.go/` — VXLAN (RFC 7348) トラフィック。外側UDP(4789)/VXLANヘッダ + 内側Ethernetフレーム(IPv4/UDP)を生成し、VNI・内側ポート・内側IP・外側ポートをスイープ可能。外側UDPチェックサムは0固定。
 - `test_e2e_variety.go/` — 全プロトコルE2Eテスト (IPv4/IPv6/VLAN/QinQ/ICMP/TCP/ARP/EAPOL/LLDP/SRv6/MPLS)
 
 プラグインは `GeneratorProcessResponse` を返す。2つのテンプレートタイプ:
