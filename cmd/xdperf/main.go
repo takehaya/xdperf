@@ -112,10 +112,6 @@ func newApp(version string) *cli.App {
 			Value: 1,
 			Usage: "syscall batch size tuning",
 		},
-		cli.BoolFlag{
-			Name:  "enable-xdpcap",
-			Usage: "enable xdpcap support for packet capture (reduces performance)",
-		},
 		cli.StringFlag{
 			Name:  "wasm-cache-dir",
 			Usage: "directory for WASM compilation cache (default: ~/.cache/xdperf/wasm/)",
@@ -178,7 +174,6 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.ShowNICStats = ctx.Bool("show-nic-stats")
 	c.Infinite = ctx.Bool("infinite")
 	c.BatchSize = uint32(ctx.Int("batch-size"))
-	c.EnableXdpcap = ctx.Bool("enable-xdpcap")
 	c.WasmCacheDir = ctx.String("wasm-cache-dir")
 	c.CPUMode = ctx.String("cpu-mode")
 

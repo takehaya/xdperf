@@ -38,8 +38,8 @@ const (
 	GeneratorTemplateTypeRaw GeneratorTemplateType = "raw"
 
 	// Variable template.
-	// Packets are generated on the xdpcap side using a template and
-	// variable parameter sets.
+	// Packets are generated on the host/XDP data-plane side using a template
+	// and variable parameter sets.
 	GeneratorTemplateTypeVariable GeneratorTemplateType = "variable"
 )
 
