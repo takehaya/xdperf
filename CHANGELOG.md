@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.13.0](https://github.com/takehaya/xdperf/compare/v0.12.0...v0.13.0) (2026-06-29)
+
+
+### 🎉 Features
+
+* GTPv1-U traffic plugin + capture via xdp-ninja (drop in-tree xdpcap) ([aecbe16](https://github.com/takehaya/xdperf/commit/aecbe16c83c041430b833ceeac923c2f7f348f47))
+* **plugins:** add gtpv1u GTP-U (5G/4G) traffic plugin ([b400189](https://github.com/takehaya/xdperf/commit/b400189a20b1be7ba88b9bf250638419bafe9875))
+* **plugins:** add VXLAN (RFC 7348) traffic plugin ([6880802](https://github.com/takehaya/xdperf/commit/6880802f52eaa9ba802ae9da9dbaa746c1bd61c3))
+* **plugins:** add VXLAN (RFC 7348) traffic plugin ([236b2f3](https://github.com/takehaya/xdperf/commit/236b2f38f296cf9307e17414d41a4d087ce15a20))
+* VM-to-VM lab and 100G real-NIC XDP benchmark ([#84](https://github.com/takehaya/xdperf/issues/84)) ([e1e8a8d](https://github.com/takehaya/xdperf/commit/e1e8a8d05fb176a20f9d385c7d5c60c0fe81983c))
+
+
+### 🐛 Bug Fixes
+
+* **plugins:** address gtpv1u review feedback ([ff9aec2](https://github.com/takehaya/xdperf/commit/ff9aec22ba608373ea64f0adb311fe078db4f0c8))
+* **plugins:** reject reversed gtpv1u ranges, sweep inner port from inner_src_port ([07e703a](https://github.com/takehaya/xdperf/commit/07e703af4a77f4c18d946ef3d0ccef605aa507e4))
+* **plugins:** validate gtpv1u pdu_type and inner_proto ([f388808](https://github.com/takehaya/xdperf/commit/f388808d663aa49164fe483c0a639f5ccc6a56dd))
+
+
+### ⚡ Performance Improvements
+
+* **cli:** default --batch-size to 64 ([693b97c](https://github.com/takehaya/xdperf/commit/693b97c8a3584c7778593879e5547e1f02c6166b))
+
+
+### 📝 Documentation
+
+* AGENTS.md を本体化 + --cpu-mode/xdp-ninja 反映、リポ運用ファイル追跡 ([#87](https://github.com/takehaya/xdperf/issues/87)) ([9501581](https://github.com/takehaya/xdperf/commit/9501581a36c6c78878a787415356c18b48fedef9))
+
+
+### ♻️ Code Refactoring
+
+* **bpf:** drop the in-tree xdpcap hook, capture via xdp-ninja ([2d72782](https://github.com/takehaya/xdperf/commit/2d727821aeebaa496015bfe1888d2c4200972db8))
+* **plugins:** simplify vxlan plugin internals ([1fdc3c0](https://github.com/takehaya/xdperf/commit/1fdc3c0fdf20ea0c0da508c17faf139187e74738))
+
 ## [0.12.0](https://github.com/takehaya/xdperf/compare/v0.11.3...v0.12.0) (2026-06-24)
 
 
