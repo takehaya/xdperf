@@ -121,6 +121,8 @@ $ sudo ./out/bin/xdperf run --device=ens4 --count 10k --parallelism 15 --infinit
 | **bpf_xdp_store_bytes 適用** | 40〜43 Mpps (105〜113 Gbps) | +560% |
 | **xdpcap バイパス** | **45〜51 Mpps (115〜129 Gbps)** | **+700%** |
 
+> 補記: その後、xdpcap のフック (`RETURN_ACTION` / `xdpcap_hook`) を XDP プログラムから完全に撤去し、キャプチャは非侵襲な [xdp-ninja](https://github.com/takehaya/xdp-ninja) に移行した。ホットパスから分岐が消えたため、上表の「バイパス」時と同等の性能が常時の既定となっている。
+
 ちなみに1coreあたりの性能だと3Mppsぐらいだった。
 
 ```shell
@@ -233,7 +235,7 @@ ubuntu@takehaya-main:~/private/xdperf$ sudo ./out/bin/xdperf run --device=ens4 -
 
 この事から1coreで2Mpps, Multiで最大10Mppsほどがこの書き換えでオーバーヘッドになってることがわかった。
 
-## パフォーマンスチューニング(intel ice編)
+## パフォーマンスチューニング(intel ice編)　20260322
 要はベアメタルサーバーでのチューニングという話。
 とりあえずこの辺をやっておくと良い。
 
@@ -369,3 +371,55 @@ sudo perf record -g -a -- sleep 5
 # この辺を使ってみてみると色々わかる
 sudo perf report --sort=symbol --no-children | head -30
 ```
+
+## パフォーマンスチューニング(intel ice編)　20260413
+さらに性能を上げたいね？ということでベースパケットに対する冗長なコピーを省略することを試みる
+
+## NUMA を意識した CPU 選択 (--cpu-mode)
+マルチソケット機(2ソケット以上)だと、NIC が刺さってる NUMA ノードと、worker スレッドを回す CPU のノードがズレると地味に遅い。
+パケットバッファや BPF マップへのアクセスがクロスノードのメモリアクセスになるからね。
+なので worker を NIC ローカルなノードの CPU に寄せてやると効く。`--cpu-mode` でこれを制御する(デフォルト `auto`)。
+
+シングルソケット機や VM だとそもそもノードが1個なので、何を指定しても先頭 N コアに固定されるだけ。気にしなくていい。
+
+### まず自分の構成を見る
+```shell
+# NIC がどの NUMA ノードに繋がってるか (-1 なら affinity なし or 単一ノード)
+cat /sys/class/net/enp138s0f0np0/device/numa_node
+
+# 各ノードにどの CPU がいるか
+lscpu | grep NUMA
+# もしくは
+numactl --hardware
+```
+例えば `numa_node` が `1` で、ノード1 が CPU 24-47 みたいに出てくる構成なら、その範囲に worker を寄せたい。
+
+### モード早見
+| モード | 挙動 |
+|--------|------|
+| `auto` (デフォルト) | NIC ローカルノードを優先。`--parallelism` がローカルのコア数を超えたら他ノードに溢れる |
+| `local` | NIC ローカルノードのみ。`--parallelism` がそのノードのコア数を超えたらエラーで落ちる(fail fast) |
+| `balanced` | 全ノードにラウンドロビンで均等配分 |
+| `node:<N>` | 指定したノード N の CPU に固定 |
+| `0,2,4,6` 等 | CPU 番号を直接指定。**この場合 `--parallelism` は無視され、リストの個数がスレッド数になる** |
+
+### 使い分け
+- 基本は `auto` で放っておけば NIC ローカルに寄る。普段はこれでいい。
+- きっちり縛って「ローカルから溢れたら気付きたい」なら `local`(溢れるとエラーになる)。
+- ハイパースレッドの片方だけ使いたい等、手で固定したいなら CPU リスト直指定(例 `--cpu-mode 8,10,12,14`)。
+- 散らした場合との比較実験をしたいなら `balanced`。
+
+```shell
+# NIC ローカルノードに 8 worker を寄せる(溢れたらエラー)
+sudo ./out/bin/xdperf run --plugin=simpleudp.go --device=enp138s0f0np0 --plugin-path="./out/bin" \
+  --count 10k --parallelism 8 --infinite --batch-size 64 --cpu-mode local \
+  --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 1200, "is_arp_resolve":false}'
+```
+
+### 効いてるかの確認
+起動時のログに `CPU selection` 行が出るので、`selected_cpus` が狙ったノードの CPU 番号になってるか見る。
+```
+INFO  CPU selection  {"mode": "local", "selected_cpus": [24,25,26,27,28,29,30,31], "parallelism": 8}
+```
+あとは `auto`/`local` 指定で `numa_node=-1`(affinity なし)のデバイスを掴むと、ローカルノードに寄せられず先頭 N コアにフォールバックする点に注意。物理 NIC ならまず付いてるはずだけど、veth とかだと付いてないことがある。
+
