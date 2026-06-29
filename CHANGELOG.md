@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/takehaya/xdperf/compare/v0.13.0...v0.14.0) (2026-06-29)
+
+
+### 🎉 Features
+
+* **plugins:** optional outer 802.1Q VLAN tag for vxlan ([#89](https://github.com/takehaya/xdperf/issues/89)) ([2041144](https://github.com/takehaya/xdperf/commit/20411448ec1d8331a20cc47a60f48216829af796))
+
 ## [0.13.0](https://github.com/takehaya/xdperf/compare/v0.12.0...v0.13.0) (2026-06-29)
 
 
