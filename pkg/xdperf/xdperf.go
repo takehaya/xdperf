@@ -374,6 +374,13 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		Interface: x.Device.Index,
 	})
 	if err != nil {
+		l, err = link.AttachXDP(link.XDPOptions{
+			Program:   rxprog,
+			Interface: x.Device.Index,
+			Flags:     link.XDPGenericMode,
+		})
+	}
+	if err != nil {
 		return fmt.Errorf("failed to attach XDP program: %w", err)
 	}
 	defer l.Close()
