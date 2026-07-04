@@ -56,8 +56,10 @@ ns: xdperf-tx                      ns: xdperf-rx
 - The receiver attaches the `xdp_rx` program, which counts IPv4/IPv6 frames and
   DROPs them
 - The veth XDP TX path requires the peer's NAPI to be active (an XDP program
-  attached on the peer, or GRO enabled) — otherwise frames are silently
-  dropped ([XDP ate my packets](https://fedepaol.github.io/blog/2023/09/11/xdp-ate-my-packets-and-how-i-debugged-it)).
+  attached on the peer, or GRO enabled — the latter since kernel v5.13,
+  `d3256efd8e8b` "veth: allow enabling NAPI even without XDP") — otherwise
+  frames are silently dropped
+  ([XDP ate my packets](https://fedepaol.github.io/blog/2023/09/11/xdp-ate-my-packets-and-how-i-debugged-it)).
   This is why the **receive server is started first**; the requirement itself
   is measured by [simpleudp-no-rx-attach](simpleudp-no-rx-attach/), and the
   reverse direction (echo `XDP_TX` back toward the sender, which xdperf covers

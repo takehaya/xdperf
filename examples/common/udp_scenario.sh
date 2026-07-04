@@ -181,6 +181,10 @@ run_udp_test() {
 # または GRO on) でないとパケットを silent drop する。これを実測で確認する:
 #   Phase 1: 受信サーバなし・GRO off → xdp-rx にほぼ届かない (パケットが「食われる」)
 #   Phase 2: GRO on にして再送 → NAPI が有効になり通常スタックに届く
+# GRO on で NAPI が立つのは kernel v5.13 の
+#   d3256efd8e8b "veth: allow enabling NAPI even without XDP"
+#   0e672f306a28 "veth: check for NAPI instead of xdp_prog before xmit of XDP frame"
+# による (xmit 側は xdp_prog ではなく rq->napi を見る)。
 run_no_rx_attach_test() {
     check_root
     check_xdperf_built
