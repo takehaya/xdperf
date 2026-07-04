@@ -33,7 +33,12 @@ check_xdperf_built() {
 # as root, and a fixed path under world-writable /tmp would be exposed to
 # symlink planting by other users; /run is writable only by root.
 XDPERF_EXAMPLE_RUNDIR="${XDPERF_EXAMPLE_RUNDIR:-/run/xdperf-examples}"
-mkdir -p -m 0700 "${XDPERF_EXAMPLE_RUNDIR}" 2>/dev/null || true
+if ! mkdir -p -m 0700 "${XDPERF_EXAMPLE_RUNDIR}" 2>/dev/null && [[ $EUID -eq 0 ]]; then
+    # Fail fast as root — later PID/log writes would fail confusingly.
+    # Non-root sourcing falls through to check_root's clearer message.
+    print_error "Cannot create rundir: ${XDPERF_EXAMPLE_RUNDIR}"
+    exit 1
+fi
 
 # PID file so a later invocation (teardown, next test run) can target the
 # server these examples started instead of a blanket pkill (PID reuse makes

@@ -23,8 +23,12 @@ main() {
     local expected base after delta
     expected="$(to_number "${COUNT}")"
 
-    # Phase 1: expect silent drop
-    ip netns exec "${NS_RX}" ethtool -K "${VETH_RX}" gro off >/dev/null 2>&1 || true
+    # Phase 1: expect silent drop. GRO must actually be off — if this fails
+    # and GRO stays enabled, packets would arrive and cause a false FAIL
+    if ! ip netns exec "${NS_RX}" ethtool -K "${VETH_RX}" gro off >/dev/null 2>&1; then
+        print_error "Failed to disable GRO on ${VETH_RX}"
+        return 1
+    fi
     base="$(stack_rx_packets "${NS_RX}" "${VETH_RX}")"
     print_info "Phase 1: sending ${COUNT} with no XDP attach on receiver (GRO off)"
     send_udp || return 1

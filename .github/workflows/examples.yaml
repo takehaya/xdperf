@@ -40,7 +40,9 @@ jobs:
           if ! command -v tinygo >/dev/null; then
             wget -q https://github.com/tinygo-org/tinygo/releases/download/v0.39.0/tinygo_0.39.0_amd64.deb
             echo "775f15974e35059c8f3a141266bd9d293b5d556a3e44d5e6356c5602e9f386ab  tinygo_0.39.0_amd64.deb" | sha256sum -c -
-            # apt-get resolves dependencies, unlike dpkg -i
+            # apt-get resolves dependencies, unlike dpkg -i; refresh indexes
+            # first so resolution doesn't fail on a stale runner image
+            sudo apt-get update -qq
             sudo apt-get install -y ./tinygo_0.39.0_amd64.deb
             rm tinygo_0.39.0_amd64.deb
           fi
