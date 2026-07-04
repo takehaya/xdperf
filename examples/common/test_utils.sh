@@ -45,13 +45,15 @@ check_xdperf_built() {
 
 # ---- xdperf 受信サーバの起動 / 停止 ----------------------------------------
 # setsid で親シェルからのシグナル伝播を切る。XDPERF_RX_PID に PID を入れる。
-# Usage: start_rx_server <namespace> <device> <log_file>
+# 第4引数以降は追加フラグ (例: --swap-resp)。
+# Usage: start_rx_server <namespace> <device> <log_file> [extra_args...]
 start_rx_server() {
     local ns="$1" dev="$2" log="$3"
+    shift 3
     # 注意: pkill は -x (プロセス名の完全一致)。-f だとコマンドライン中の
     # "xdperf" にマッチして無関係のプロセスまで殺しかねない (vmlab.sh と同じ配慮)。
     pkill -x xdperf 2>/dev/null || true
-    setsid ip netns exec "$ns" "${XDPERF_BIN}" run --device "$dev" --send=false --recv \
+    setsid ip netns exec "$ns" "${XDPERF_BIN}" run --device "$dev" --send=false --recv "$@" \
         > "$log" 2>&1 &
     XDPERF_RX_PID=$!
     sleep 2
@@ -78,6 +80,14 @@ rx_xdp_packets() {
     local ns="$1" dev="$2"
     ip netns exec "$ns" ethtool -S "$dev" 2>/dev/null \
         | awk '/rx_queue_[0-9]+_xdp_packets:/ { sum += $2 } END { print sum + 0 }'
+}
+
+# ---- 通常スタックの受信カウンタ ----------------------------------------------
+# XDP を attach していないデバイスの受信数 (カーネル標準統計)。
+# Usage: stack_rx_packets <namespace> <device>
+stack_rx_packets() {
+    local ns="$1" dev="$2"
+    ip netns exec "$ns" cat "/sys/class/net/${dev}/statistics/rx_packets"
 }
 
 # ---- live-frames サポート確認 -----------------------------------------------

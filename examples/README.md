@@ -37,6 +37,8 @@ sudo ./setup.sh && sudo ./test.sh && sudo ./teardown.sh
 |----------|-------------|
 | [simpleudp](simpleudp/) | Basic UDP send/receive. Verifies rx counter == packets sent |
 | [simpleudp-vlan](simpleudp-vlan/) | UDP with an outer 802.1Q tag. Verifies counting through VLAN parsing |
+| [simpleudp-echo](simpleudp-echo/) | Echo server (`--swap-resp`) round-trip. Verifies the `XDP_TX` return path over veth |
+| [simpleudp-no-rx-attach](simpleudp-no-rx-attach/) | Negative case: without peer XDP attach (and GRO off) packets are silently dropped; with GRO on they arrive |
 
 ## How it works
 
@@ -53,8 +55,14 @@ ns: xdperf-tx                      ns: xdperf-rx
   `BPF_PROG_RUN` live-frames
 - The receiver attaches the `xdp_rx` program, which counts IPv4/IPv6 frames and
   DROPs them
-- The veth XDP TX path requires an XDP program attached on the peer, so the
-  **receive server is started first**
+- The veth XDP TX path requires the peer's NAPI to be active (an XDP program
+  attached on the peer, or GRO enabled) — otherwise frames are silently
+  dropped ([XDP ate my packets](https://fedepaol.github.io/blog/2023/09/11/xdp-ate-my-packets-and-how-i-debugged-it)).
+  This is why the **receive server is started first**; the requirement itself
+  is measured by [simpleudp-no-rx-attach](simpleudp-no-rx-attach/), and the
+  reverse direction (echo `XDP_TX` back toward the sender, which xdperf covers
+  by attaching `xdp_pass_dummy`/`xdp_rx` to its own device while sending) by
+  [simpleudp-echo](simpleudp-echo/)
 - Verification uses the delta of the receiver veth's `ethtool -S` counters
   (sum of `rx_queue_N_xdp_packets`)
 - IPv6 is disabled during setup (kernel-originated IPv6 frames would otherwise
