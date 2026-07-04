@@ -1,0 +1,57 @@
+---
+name: examples (veth e2e)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'go.*'
+      - '**.go'
+      - '**.h'
+      - '**.c'
+      - 'plugins/**'
+      - 'examples/**'
+      - '.github/workflows/examples.yaml'
+  pull_request:
+    paths:
+      - 'go.*'
+      - '**.go'
+      - '**.h'
+      - '**.c'
+      - 'plugins/**'
+      - 'examples/**'
+      - '.github/workflows/examples.yaml'
+
+jobs:
+  examples:
+    permissions:
+      contents: 'read'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: check out
+        uses: actions/checkout@v5
+      - name: setup go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ./go.mod
+      - name: install tinygo
+        run: |
+          if ! command -v tinygo >/dev/null; then
+            wget -q https://github.com/tinygo-org/tinygo/releases/download/v0.39.0/tinygo_0.39.0_amd64.deb
+            echo "775f15974e35059c8f3a141266bd9d293b5d556a3e44d5e6356c5602e9f386ab  tinygo_0.39.0_amd64.deb" | sha256sum -c -
+            # apt-get resolves dependencies, unlike dpkg -i; refresh indexes
+            # first so resolution doesn't fail on a stale runner image
+            sudo apt-get update -qq
+            sudo apt-get install -y ./tinygo_0.39.0_amd64.deb
+            rm tinygo_0.39.0_amd64.deb
+          fi
+      - name: install ethtool
+        run: |
+          if ! command -v ethtool >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y ethtool
+          fi
+      - name: build binary and plugins
+        run: make build
+      - name: run veth e2e examples
+        run: sudo ./examples/run_all.sh

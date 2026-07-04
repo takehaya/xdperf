@@ -16,6 +16,7 @@ make build-plugins      # WASMプラグインのみビルド (TinyGoとGoの両�
 make bpf-gen            # Docker経由でeBPFオブジェクトを再生成 (pkg/coreelf/elf.goのgo generateを実行)
 make test               # 全テスト実行: go test -v -exec sudo -race ./...
 make test-runnable      # バイナリがパニックせず初期化できることを検証
+make examples           # vethベースのend-to-end exampleシナリオを一括実行 (examples/, sudo必要)
 make lint               # lefthookによるpre-commitチェック (golangci-lint, clang-format, yamllint等)
 make install-dev-tools  # 開発依存パッケージのインストール
 make install-build-tools # ビルドツールのインストール (TinyGo等)

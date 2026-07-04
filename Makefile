@@ -123,6 +123,11 @@ remove-ebpfmap: ## remove all ebpf maps
 show-trace_pipe: ## show trace_pipe
 	sudo cat /sys/kernel/debug/tracing/trace_pipe
 
+## Examples:
+.PHONY: examples
+examples: build ## Run veth-based end-to-end example scenarios (requires sudo)
+	sudo -E ./examples/run_all.sh
+
 ## VM Lab:
 .PHONY: vmlab-image vmlab-up vmlab-demo vmlab-down vmlab-clean
 VMLAB := ./scripts/vmlab/vmlab.sh
