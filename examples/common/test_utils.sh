@@ -35,8 +35,9 @@ check_xdperf_built() {
 XDPERF_EXAMPLE_RUNDIR="${XDPERF_EXAMPLE_RUNDIR:-/run/xdperf-examples}"
 mkdir -p -m 0700 "${XDPERF_EXAMPLE_RUNDIR}" 2>/dev/null || true
 
-# PID file so a later invocation (teardown, next test run) can stop only the
-# server these examples started, never unrelated xdperf processes on the host
+# PID file so a later invocation (teardown, next test run) can target the
+# server these examples started instead of a blanket pkill (PID reuse makes
+# this best-effort, not a guarantee)
 RX_PID_FILE="${RX_PID_FILE:-${XDPERF_EXAMPLE_RUNDIR}/rx.pid}"
 
 # Kill a leftover receive server from a previous (possibly crashed) run,
@@ -85,6 +86,11 @@ start_rx_server() {
         sleep 0.1
     done
     print_error "Receive server did not attach XDP within 5s (log: $log)"
+    # Don't leak the started process into later scenarios
+    kill "${XDPERF_RX_PID}" 2>/dev/null || true
+    wait "${XDPERF_RX_PID}" 2>/dev/null || true
+    rm -f "${RX_PID_FILE}"
+    XDPERF_RX_PID=""
     return 1
 }
 
