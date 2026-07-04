@@ -2,13 +2,26 @@
 # examples/common/veth.sh
 # veth pair helpers (meant to be sourced)
 
+# Delete a leftover interface of ours, but refuse to touch a same-named
+# interface that is not a veth (running as root, an unconditional delete
+# could take down unrelated host interfaces)
+delete_veth_if_ours() {
+    local dev="$1"
+    ip link show dev "$dev" >/dev/null 2>&1 || return 0
+    if ! ip -d link show dev "$dev" 2>/dev/null | grep -qw veth; then
+        echo "Error: interface $dev exists but is not a veth; refusing to delete" >&2
+        return 1
+    fi
+    ip link del "$dev"
+}
+
 # Create a veth pair, move each end into a namespace, and bring them up
 # Usage: create_veth_pair <veth1_name> <ns1> <veth2_name> <ns2>
 create_veth_pair() {
     local veth1="$1" ns1="$2" veth2="$3" ns2="$4"
 
-    ip link del "$veth1" 2>/dev/null || true
-    ip link del "$veth2" 2>/dev/null || true
+    delete_veth_if_ours "$veth1"
+    delete_veth_if_ours "$veth2"
 
     ip link add "$veth1" type veth peer name "$veth2"
     ip link set "$veth1" netns "$ns1"
