@@ -1,7 +1,7 @@
 #!/bin/bash
 # examples/run_all.sh
 # Run every scenario (directories containing test.sh) as setup -> test -> teardown
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common/test_utils.sh"
@@ -37,6 +37,11 @@ for scenario in "${SCENARIOS[@]}"; do
     if [ -f "${scenario_dir}/setup.sh" ]; then
         if ! "${scenario_dir}/setup.sh"; then
             print_error "Setup failed: $scenario"
+            # Clean up a partially built topology so it can't leak into the
+            # next scenario
+            if [ -f "${scenario_dir}/teardown.sh" ]; then
+                "${scenario_dir}/teardown.sh" || true
+            fi
             FAILED=$((FAILED + 1))
             FAILED_SCENARIOS+=("$scenario")
             continue

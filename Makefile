@@ -126,7 +126,7 @@ show-trace_pipe: ## show trace_pipe
 ## Examples:
 .PHONY: examples
 examples: build ## Run veth-based end-to-end example scenarios (requires sudo)
-	sudo ./examples/run_all.sh
+	sudo -E ./examples/run_all.sh
 
 ## VM Lab:
 .PHONY: vmlab-image vmlab-up vmlab-demo vmlab-down vmlab-clean

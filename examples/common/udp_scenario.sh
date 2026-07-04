@@ -83,7 +83,13 @@ scenario_preflight() {
         return 1
     fi
 
-    if ! check_live_frames "${NS_TX}" "${VETH_TX}"; then
+    local lf=0
+    check_live_frames "${NS_TX}" "${VETH_TX}" || lf=$?
+    if [ "${lf}" -eq 2 ]; then
+        print_error "xdperf probe failed on ${VETH_TX} (not a kernel-support SKIP)"
+        return 1
+    fi
+    if [ "${lf}" -eq 1 ]; then
         print_info "SKIP: this kernel does not support XDP live-frames (BPF_PROG_RUN)"
         return 2
     fi

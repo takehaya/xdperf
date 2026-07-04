@@ -29,25 +29,47 @@ check_xdperf_built() {
     fi
 }
 
+# PID file so a later invocation (teardown, next test run) can stop only the
+# server these examples started, never unrelated xdperf processes on the host
+RX_PID_FILE="${RX_PID_FILE:-/tmp/xdperf-example-rx.pid}"
+
+# Kill a leftover receive server from a previous (possibly crashed) run,
+# identified via the PID file.
+kill_stale_rx_server() {
+    local pid
+    pid="$(cat "${RX_PID_FILE}" 2>/dev/null)" || return 0
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        # Not our child; poll briefly for exit
+        local i
+        for i in $(seq 1 20); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+    fi
+    rm -f "${RX_PID_FILE}"
+}
+
 # Start the xdperf receive server in a namespace and wait until its XDP
 # program is attached. setsid isolates it from parent-shell signals; extra
-# args (e.g. --swap-resp) are passed through. pkill uses -x (exact process
-# name) — -f would match "xdperf" in unrelated command lines (same caveat as
-# vmlab.sh). Sets XDPERF_RX_PID.
+# args (e.g. --swap-resp) are passed through. Sets XDPERF_RX_PID and writes
+# the PID file.
 # Usage: start_rx_server <namespace> <device> <log_file> [extra_args...]
 start_rx_server() {
     local ns="$1" dev="$2" log="$3"
     shift 3
-    pkill -x xdperf 2>/dev/null || true
+    kill_stale_rx_server
     setsid ip netns exec "$ns" "${XDPERF_BIN}" run --device "$dev" --send=false --recv "$@" \
         > "$log" 2>&1 &
     XDPERF_RX_PID=$!
+    echo "${XDPERF_RX_PID}" > "${RX_PID_FILE}"
 
     local i
     for i in $(seq 1 50); do
         if ! kill -0 "${XDPERF_RX_PID}" 2>/dev/null; then
             print_error "Failed to start receive server (log: $log)"
             cat "$log" 2>/dev/null
+            rm -f "${RX_PID_FILE}"
             return 1
         fi
         if ip netns exec "$ns" ip -d link show dev "$dev" 2>/dev/null | grep -q "prog/xdp"; then
@@ -64,10 +86,11 @@ stop_rx_server() {
     if [ -n "${XDPERF_RX_PID:-}" ] && kill -0 "${XDPERF_RX_PID}" 2>/dev/null; then
         kill "${XDPERF_RX_PID}" 2>/dev/null || true
         wait "${XDPERF_RX_PID}" 2>/dev/null || true
+        rm -f "${RX_PID_FILE}"
     else
-        # No PID in this shell (e.g. teardown after a failed run)
-        pkill -x xdperf 2>/dev/null || true
-        sleep 1
+        # No PID in this shell (e.g. teardown after a failed run):
+        # fall back to the PID file, never a blanket pkill
+        kill_stale_rx_server
     fi
     XDPERF_RX_PID=""
 }
@@ -88,11 +111,12 @@ stack_rx_packets() {
 }
 
 # The sender transmits via BPF_PROG_RUN live frames; probe reports support.
-# Returns 0 if supported.
+# Returns 0 if supported, 1 if the kernel lacks support, 2 if probe itself
+# failed (callers must treat 2 as an error, not a SKIP).
 # Usage: check_live_frames <namespace> <device>
 check_live_frames() {
     local ns="$1" dev="$2"
     local out
-    out="$(ip netns exec "$ns" "${XDPERF_BIN}" probe --device "$dev" --json 2>/dev/null)" || return 1
-    echo "$out" | grep -q '"live_frame_mode"[^,}]*true'
+    out="$(ip netns exec "$ns" "${XDPERF_BIN}" probe --device "$dev" --json 2>/dev/null)" || return 2
+    echo "$out" | grep -q '"live_frame_mode"[^,}]*true' || return 1
 }
