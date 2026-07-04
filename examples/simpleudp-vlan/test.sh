@@ -1,11 +1,11 @@
 #!/bin/bash
-# simpleudp-vlan シナリオ: outer 802.1Q タグ付き UDP を送信し、
-# 受信側 XDP (xdp_rx は VLAN タグを剥いてパースする) のカウンタで検証
+# simpleudp-vlan scenario: send UDP with an outer 802.1Q tag and verify with
+# the receiver-side XDP counter (xdp_rx strips VLAN tags before parsing)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# outer 802.1Q タグ (vlan_id != 0 でタグ付与)
+# Outer 802.1Q tag (vlan_id != 0 enables tagging)
 export VLAN_ID="${VLAN_ID:-100}"
 export VLAN_PCP="${VLAN_PCP:-3}"
 

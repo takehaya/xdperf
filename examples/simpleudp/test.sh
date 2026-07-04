@@ -1,5 +1,6 @@
 #!/bin/bash
-# simpleudp シナリオ: veth 越しに UDP を送信し、受信側 XDP カウンタで検証
+# simpleudp scenario: send UDP across the veth pair and verify with the
+# receiver-side XDP counter
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

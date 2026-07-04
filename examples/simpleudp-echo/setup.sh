@@ -1,5 +1,5 @@
 #!/bin/bash
-# simpleudp-echo シナリオ: トポロジ構築 (simpleudp と同一)
+# simpleudp-echo scenario: build the topology
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

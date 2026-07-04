@@ -1,5 +1,5 @@
 #!/bin/bash
-# simpleudp-no-rx-attach シナリオ: トポロジ構築 (simpleudp と同一)
+# simpleudp-no-rx-attach scenario: build the topology
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

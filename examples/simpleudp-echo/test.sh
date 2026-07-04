@@ -1,12 +1,12 @@
 #!/bin/bash
-# simpleudp-echo シナリオ: 受信側を --swap-resp のエコーサーバにし、
-# XDP_TX で送り返されたパケットを送信側でも数える。
+# simpleudp-echo scenario: run the receiver as an echo server (--swap-resp)
+# and count the XDP_TX'd packets coming back on the sender.
 #
-# veth の XDP_TX は「打ち返される側にも XDP プログラムが attach されて
-# いないと silent drop される」という既知の罠の検証を兼ねる:
+# This doubles as a check for the veth XDP_TX gotcha (frames are silently
+# dropped unless the peer has an XDP program attached):
 # https://fedepaol.github.io/blog/2023/09/11/xdp-ate-my-packets-and-how-i-debugged-it
-# xdperf は送信時に自デバイスへ xdp_pass_dummy / xdp_rx を attach して
-# これを回避している (pkg/xdperf/xdperf.go runTXPacket)。
+# xdperf guards against it by attaching xdp_pass_dummy / xdp_rx to its own
+# device while sending (pkg/xdperf/xdperf.go runTXPacket).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

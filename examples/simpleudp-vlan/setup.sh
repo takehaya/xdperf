@@ -1,5 +1,5 @@
 #!/bin/bash
-# simpleudp-vlan シナリオ: トポロジ構築 (simpleudp と同一)
+# simpleudp-vlan scenario: build the topology
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

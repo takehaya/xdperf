@@ -1,13 +1,13 @@
 #!/bin/bash
 # examples/common/netns.sh
-# network namespace ユーティリティ (source して使う)
+# Network namespace helpers (meant to be sourced)
 
-# namespace を作成 (既存なら作り直して冪等にする)
+# Create a namespace (recreated if it exists, for idempotency)
 # Usage: create_netns <name>
 create_netns() {
     local name="$1"
     if [ -z "$name" ]; then
-        echo "Error: namespace 名が必要です"
+        echo "Error: namespace name required"
         return 1
     fi
 
@@ -18,12 +18,11 @@ create_netns() {
     echo "Created namespace: $name"
 }
 
-# namespace を削除 (無ければ何もしない)
 # Usage: delete_netns <name>
 delete_netns() {
     local name="$1"
     if [ -z "$name" ]; then
-        echo "Error: namespace 名が必要です"
+        echo "Error: namespace name required"
         return 1
     fi
 

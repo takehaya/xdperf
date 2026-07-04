@@ -1,5 +1,5 @@
 #!/bin/bash
-# simpleudp-no-rx-attach シナリオ: トポロジ削除
+# simpleudp-no-rx-attach scenario: remove the topology
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# simpleudp シナリオ: トポロジ削除
+# simpleudp scenario: remove the topology
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
