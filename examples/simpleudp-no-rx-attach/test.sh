@@ -43,7 +43,10 @@ main() {
     print_success "Phase 1: silent drop confirmed (packets were eaten)"
 
     # Phase 2: expect delivery to the normal stack
-    ip netns exec "${NS_RX}" ethtool -K "${VETH_RX}" gro on >/dev/null 2>&1
+    if ! ip netns exec "${NS_RX}" ethtool -K "${VETH_RX}" gro on >/dev/null 2>&1; then
+        print_error "Failed to enable GRO on ${VETH_RX}"
+        return 1
+    fi
     base="$(stack_rx_packets "${NS_RX}" "${VETH_RX}")"
     print_info "Phase 2: sending ${COUNT} with GRO on (NAPI active)"
     send_udp || return 1
