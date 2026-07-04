@@ -41,11 +41,12 @@ mkdir -p -m 0700 "${XDPERF_EXAMPLE_RUNDIR}" 2>/dev/null || true
 RX_PID_FILE="${RX_PID_FILE:-${XDPERF_EXAMPLE_RUNDIR}/rx.pid}"
 
 # Kill a leftover receive server from a previous (possibly crashed) run,
-# identified via the PID file.
+# identified via the PID file. The PID must still point at an xdperf
+# process — guards against PID reuse after a stale file.
 kill_stale_rx_server() {
     local pid
     pid="$(cat "${RX_PID_FILE}" 2>/dev/null)" || return 0
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if [ -n "$pid" ] && [ "$(cat "/proc/${pid}/comm" 2>/dev/null)" = "xdperf" ]; then
         kill "$pid" 2>/dev/null || true
         # Not our child; poll briefly for exit
         local i

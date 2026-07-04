@@ -52,4 +52,4 @@ jobs:
       - name: build binary and plugins
         run: make build
       - name: run veth e2e examples
-        run: sudo -E ./examples/run_all.sh
+        run: sudo ./examples/run_all.sh

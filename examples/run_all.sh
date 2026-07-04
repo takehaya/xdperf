@@ -25,6 +25,7 @@ echo ""
 
 PASSED=0
 FAILED=0
+SKIPPED=0
 FAILED_SCENARIOS=()
 
 for scenario in "${SCENARIOS[@]}"; do
@@ -48,9 +49,15 @@ for scenario in "${SCENARIOS[@]}"; do
         fi
     fi
 
-    if "${scenario_dir}/test.sh"; then
+    rc=0
+    "${scenario_dir}/test.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then
         print_success "Scenario $scenario: PASS"
         PASSED=$((PASSED + 1))
+    elif [ "$rc" -eq 3 ]; then
+        # SKIP exit code (see examples/common/udp_scenario.sh)
+        print_info "Scenario $scenario: SKIP"
+        SKIPPED=$((SKIPPED + 1))
     else
         print_error "Scenario $scenario: FAIL"
         FAILED=$((FAILED + 1))
@@ -68,8 +75,11 @@ done
 echo "========================================"
 echo "Summary"
 echo "========================================"
-print_info "Total: $((PASSED + FAILED))"
+print_info "Total: $((PASSED + FAILED + SKIPPED))"
 print_success "Passed: $PASSED"
+if [ $SKIPPED -gt 0 ]; then
+    print_info "Skipped: $SKIPPED"
+fi
 
 if [ $FAILED -gt 0 ]; then
     print_error "Failed: $FAILED"

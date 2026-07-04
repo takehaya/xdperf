@@ -17,7 +17,7 @@ source "${SCRIPT_DIR}/../common/udp_scenario.sh"
 main() {
     local rc=0
     scenario_preflight || rc=$?
-    [ "${rc}" -eq 2 ] && return 0
+    [ "${rc}" -eq 2 ] && return "${SKIP_EXIT_CODE}"
     [ "${rc}" -ne 0 ] && return 1
 
     local expected base after delta

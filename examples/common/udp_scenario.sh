@@ -74,6 +74,11 @@ teardown_udp_topology() {
     print_success "Topology removed"
 }
 
+# Exit code contract for scenario test.sh scripts: 0 = PASS, 3 = SKIP
+# (kernel without live-frames support), anything else = FAIL.
+# run_all.sh reports SKIPs separately from PASSes.
+SKIP_EXIT_CODE=3
+
 # Common test prologue. Returns 0 to proceed, 1 on error, 2 to SKIP
 # (kernel without live-frames support).
 scenario_preflight() {
@@ -124,7 +129,7 @@ send_udp() {
 run_udp_test() {
     local rc=0
     scenario_preflight || rc=$?
-    [ "${rc}" -eq 2 ] && return 0
+    [ "${rc}" -eq 2 ] && return "${SKIP_EXIT_CODE}"
     [ "${rc}" -ne 0 ] && return 1
 
     local rx_args=() tx_args=()

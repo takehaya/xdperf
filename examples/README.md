@@ -76,3 +76,6 @@ Put a directory containing `test.sh` directly under examples/ and
 `run_all.sh` will pick it up. `setup.sh` / `teardown.sh` are optional (run
 before/after if present). Source the helpers in [common/](common/)
 (`udp_scenario.sh` etc.) for shared logic.
+
+`test.sh` exit codes: `0` = PASS, `3` = SKIP (e.g. kernel without
+live-frames support), anything else = FAIL.
