@@ -3,6 +3,7 @@ name: examples (veth e2e)
 
 on:
   push:
+    branches: [main]
     paths:
       - 'go.*'
       - '**.go'
@@ -34,10 +35,18 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: ./go.mod
-      - name: install build tools
-        run: make install-build-tools
+      - name: install tinygo
+        run: |
+          if ! command -v tinygo >/dev/null; then
+            wget -q https://github.com/tinygo-org/tinygo/releases/download/v0.39.0/tinygo_0.39.0_amd64.deb
+            sudo dpkg -i tinygo_0.39.0_amd64.deb
+            rm tinygo_0.39.0_amd64.deb
+          fi
       - name: install ethtool
-        run: sudo apt-get update && sudo apt-get install -y ethtool
+        run: |
+          if ! command -v ethtool >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y ethtool
+          fi
       - name: build binary and plugins
         run: make build
       - name: run veth e2e examples

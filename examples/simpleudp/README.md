@@ -6,14 +6,9 @@ plugin across a veth pair and verify that the receiver netns's XDP counter
 
 ## Topology
 
-```
-ns: xdperf-tx                      ns: xdperf-rx
-+------------------+   veth pair  +------------------+
-| xdp-tx           |==============| xdp-rx           |
-| 192.168.100.1/24 |              | 192.168.100.2/24 |
-| live-frames TX   |              | xdp_rx attach    |
-+------------------+              +------------------+
-```
+See the diagram in the [examples README](../README.md#how-it-works): two
+netns (`xdperf-tx` / `xdperf-rx`) connected by a veth pair
+(`xdp-tx` 192.168.100.1/24 <-> `xdp-rx` 192.168.100.2/24).
 
 ## Run
 

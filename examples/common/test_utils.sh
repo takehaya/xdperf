@@ -18,14 +18,7 @@ check_root() {
     fi
 }
 
-# Echo a command before running it; exit on failure
-run() {
-    echo "$@"
-    "$@" || exit 1
-}
-
-# EXAMPLES_DIR is set by callers before sourcing (path to examples/)
-REPO_ROOT="${REPO_ROOT:-$(cd "${EXAMPLES_DIR}/.." && pwd)}"
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 XDPERF_BIN="${XDPERF_BIN:-${REPO_ROOT}/out/bin/xdperf}"
 PLUGIN_PATH="${PLUGIN_PATH:-${REPO_ROOT}/out/bin}"
 
@@ -36,10 +29,11 @@ check_xdperf_built() {
     fi
 }
 
-# Start the xdperf receive server in a namespace. setsid isolates it from
-# parent-shell signals; extra args (e.g. --swap-resp) are passed through.
-# pkill uses -x (exact process name) — -f would match "xdperf" in unrelated
-# command lines (same caveat as vmlab.sh). Sets XDPERF_RX_PID.
+# Start the xdperf receive server in a namespace and wait until its XDP
+# program is attached. setsid isolates it from parent-shell signals; extra
+# args (e.g. --swap-resp) are passed through. pkill uses -x (exact process
+# name) — -f would match "xdperf" in unrelated command lines (same caveat as
+# vmlab.sh). Sets XDPERF_RX_PID.
 # Usage: start_rx_server <namespace> <device> <log_file> [extra_args...]
 start_rx_server() {
     local ns="$1" dev="$2" log="$3"
@@ -48,19 +42,34 @@ start_rx_server() {
     setsid ip netns exec "$ns" "${XDPERF_BIN}" run --device "$dev" --send=false --recv "$@" \
         > "$log" 2>&1 &
     XDPERF_RX_PID=$!
-    sleep 2
-    if ! kill -0 "${XDPERF_RX_PID}" 2>/dev/null; then
-        print_error "Failed to start receive server (log: $log)"
-        cat "$log" 2>/dev/null
-        return 1
-    fi
-    print_success "Receive server started (ns=$ns dev=$dev PID=${XDPERF_RX_PID})"
-    return 0
+
+    local i
+    for i in $(seq 1 50); do
+        if ! kill -0 "${XDPERF_RX_PID}" 2>/dev/null; then
+            print_error "Failed to start receive server (log: $log)"
+            cat "$log" 2>/dev/null
+            return 1
+        fi
+        if ip netns exec "$ns" ip -d link show dev "$dev" 2>/dev/null | grep -q "prog/xdp"; then
+            print_success "Receive server started (ns=$ns dev=$dev PID=${XDPERF_RX_PID})"
+            return 0
+        fi
+        sleep 0.1
+    done
+    print_error "Receive server did not attach XDP within 5s (log: $log)"
+    return 1
 }
 
 stop_rx_server() {
-    pkill -x xdperf 2>/dev/null || true
-    sleep 1
+    if [ -n "${XDPERF_RX_PID:-}" ] && kill -0 "${XDPERF_RX_PID}" 2>/dev/null; then
+        kill "${XDPERF_RX_PID}" 2>/dev/null || true
+        wait "${XDPERF_RX_PID}" 2>/dev/null || true
+    else
+        # No PID in this shell (e.g. teardown after a failed run)
+        pkill -x xdperf 2>/dev/null || true
+        sleep 1
+    fi
+    XDPERF_RX_PID=""
 }
 
 # Sum of the device's rx_queue_N_xdp_packets (exposed by veth while XDP is attached)

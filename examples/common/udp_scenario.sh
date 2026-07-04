@@ -2,17 +2,11 @@
 # examples/common/udp_scenario.sh
 # Shared implementation for the simpleudp-family scenarios (meant to be sourced)
 #
-# Topology:
-#   ns: xdperf-tx                     ns: xdperf-rx
-#   +----------------+   veth pair   +----------------+
-#   | xdp-tx         |===============| xdp-rx         |
-#   | 192.168.100.1  |               | 192.168.100.2  |
-#   | live-frames TX |               | xdp_rx attach  |
-#   +----------------+               +----------------+
-#
-# The receive server is started before transmitting: the veth XDP TX path
-# requires the peer's NAPI to be active (XDP program attached or GRO on).
-# See examples/README.md and simpleudp-no-rx-attach/README.md for details.
+# Topology (see examples/README.md for the diagram): two netns connected by a
+# veth pair; the sender transmits via XDP live-frames, the receiver counts
+# with an attached xdp_rx program. The receive server is started before
+# transmitting: the veth XDP TX path requires the peer's NAPI to be active
+# (XDP program attached or GRO on) — see simpleudp-no-rx-attach/README.md.
 #
 # Overridable via environment variables:
 #   COUNT (10k) / PPS (10k) / PAYLOAD_SIZE (256) / DST_PORT (10001)
@@ -20,7 +14,6 @@
 #   ECHO (0) / ECHO_THRESHOLD (99) / PASS_THRESHOLD (100)
 
 COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXAMPLES_DIR="${EXAMPLES_DIR:-$(cd "${COMMON_DIR}/.." && pwd)}"
 
 source "${COMMON_DIR}/test_utils.sh"
 source "${COMMON_DIR}/netns.sh"
@@ -79,7 +72,9 @@ teardown_udp_topology() {
     print_success "Topology removed"
 }
 
-run_udp_test() {
+# Common test prologue. Returns 0 to proceed, 1 on error, 2 to SKIP
+# (kernel without live-frames support).
+scenario_preflight() {
     check_root
     check_xdperf_built
 
@@ -90,12 +85,47 @@ run_udp_test() {
 
     if ! check_live_frames "${NS_TX}" "${VETH_TX}"; then
         print_info "SKIP: this kernel does not support XDP live-frames (BPF_PROG_RUN)"
-        return 0
+        return 2
     fi
+    return 0
+}
 
-    local rx_args=()
+# Plugin config JSON from the scenario parameters (vlan_id != 0 adds the tag)
+build_cfg() {
+    local cfg="{\"src_ip\":\"${TX_IP}\",\"dst_ip\":\"${RX_IP}\",\"dst_port\":${DST_PORT},\"payload_size\":${PAYLOAD_SIZE},\"is_arp_resolve\":false"
+    if [ "${VLAN_ID}" -ne 0 ]; then
+        cfg+=",\"vlan_id\":${VLAN_ID},\"vlan_pcp\":${VLAN_PCP}"
+    fi
+    cfg+="}"
+    echo "$cfg"
+}
+
+# Send COUNT packets at PPS from the tx namespace; extra xdperf args are
+# passed through. Reports the failure (with log tail) itself.
+send_udp() {
+    ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
+        --plugin "${PLUGIN}" --plugin-path "${PLUGIN_PATH}" \
+        --count "${COUNT}" --pps "${PPS}" "$@" \
+        --cfg "$(build_cfg)" > "${TX_LOG}" 2>&1 || {
+        print_error "Send failed (log: ${TX_LOG})"
+        tail -n 20 "${TX_LOG}"
+        return 1
+    }
+}
+
+run_udp_test() {
+    local rc=0
+    scenario_preflight || rc=$?
+    [ "${rc}" -eq 2 ] && return 0
+    [ "${rc}" -ne 0 ] && return 1
+
+    local rx_args=() tx_args=()
     if [ "${ECHO}" -eq 1 ]; then
         rx_args+=(--swap-resp)
+        # Send+receive mode: xdperf attaches xdp_rx to the tx device, which
+        # both counts the echoes and satisfies the peer-attach requirement
+        # for the XDP_TX return path
+        tx_args+=(--recv)
     fi
     start_rx_server "${NS_RX}" "${VETH_RX}" "${RX_LOG}" "${rx_args[@]}" || return 1
 
@@ -103,36 +133,21 @@ run_udp_test() {
     local base after delta expected
     base="$(rx_xdp_packets "${NS_RX}" "${VETH_RX}")"
     local echo_base echo_after echo_delta
-    echo_base="$(rx_xdp_packets "${NS_TX}" "${VETH_TX}")"
-
-    # ECHO: run the sender in send+receive mode so xdperf attaches xdp_rx to
-    # xdp-tx, which both counts the echoes and satisfies the peer-attach
-    # requirement for the XDP_TX return path
-    local tx_args=()
     if [ "${ECHO}" -eq 1 ]; then
-        tx_args+=(--recv)
+        echo_base="$(rx_xdp_packets "${NS_TX}" "${VETH_TX}")"
     fi
 
-    local cfg="{\"src_ip\":\"${TX_IP}\",\"dst_ip\":\"${RX_IP}\",\"dst_port\":${DST_PORT},\"payload_size\":${PAYLOAD_SIZE},\"is_arp_resolve\":false"
-    if [ "${VLAN_ID}" -ne 0 ]; then
-        cfg+=",\"vlan_id\":${VLAN_ID},\"vlan_pcp\":${VLAN_PCP}"
-    fi
-    cfg+="}"
-
-    print_info "Sending: count=${COUNT} pps=${PPS} plugin=${PLUGIN} echo=${ECHO} cfg=${cfg}"
-    if ! ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
-        --plugin "${PLUGIN}" --plugin-path "${PLUGIN_PATH}" \
-        --count "${COUNT}" --pps "${PPS}" "${tx_args[@]}" \
-        --cfg "${cfg}" > "${TX_LOG}" 2>&1; then
-        print_error "Send failed (log: ${TX_LOG})"
-        tail -n 20 "${TX_LOG}"
+    print_info "Sending: count=${COUNT} pps=${PPS} plugin=${PLUGIN} echo=${ECHO} cfg=$(build_cfg)"
+    if ! send_udp "${tx_args[@]}"; then
         stop_rx_server
         return 1
     fi
 
     sleep 1
     after="$(rx_xdp_packets "${NS_RX}" "${VETH_RX}")"
-    echo_after="$(rx_xdp_packets "${NS_TX}" "${VETH_TX}")"
+    if [ "${ECHO}" -eq 1 ]; then
+        echo_after="$(rx_xdp_packets "${NS_TX}" "${VETH_TX}")"
+    fi
     stop_rx_server
 
     delta=$(( after - base ))
@@ -160,76 +175,5 @@ run_udp_test() {
     fi
 
     print_success "PASS: receive counters match"
-    return 0
-}
-
-# Negative case: no XDP program attached on the peer (receiver) side.
-# Phase 1: no XDP attach, GRO off -> frames are silently dropped
-# Phase 2: GRO on -> peer NAPI becomes active, frames reach the normal stack
-# See simpleudp-no-rx-attach/README.md for the kernel background.
-run_no_rx_attach_test() {
-    check_root
-    check_xdperf_built
-
-    if ! ip netns pids "${NS_TX}" >/dev/null 2>&1 || ! ip netns pids "${NS_RX}" >/dev/null 2>&1; then
-        print_error "netns not found. Run setup.sh first"
-        return 1
-    fi
-
-    if ! check_live_frames "${NS_TX}" "${VETH_TX}"; then
-        print_info "SKIP: this kernel does not support XDP live-frames (BPF_PROG_RUN)"
-        return 0
-    fi
-
-    local cfg="{\"src_ip\":\"${TX_IP}\",\"dst_ip\":\"${RX_IP}\",\"dst_port\":${DST_PORT},\"payload_size\":${PAYLOAD_SIZE},\"is_arp_resolve\":false}"
-    local expected base after delta
-    expected="$(to_number "${COUNT}")"
-
-    send_once() {
-        ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
-            --plugin "${PLUGIN}" --plugin-path "${PLUGIN_PATH}" \
-            --count "${COUNT}" --pps "${PPS}" \
-            --cfg "${cfg}" > "${TX_LOG}" 2>&1
-    }
-
-    # Phase 1: expect silent drop
-    ip netns exec "${NS_RX}" ethtool -K "${VETH_RX}" gro off >/dev/null 2>&1 || true
-    base="$(stack_rx_packets "${NS_RX}" "${VETH_RX}")"
-    print_info "Phase 1: sending ${COUNT} with no XDP attach on receiver (GRO off)"
-    if ! send_once; then
-        print_error "Send failed (log: ${TX_LOG})"
-        tail -n 20 "${TX_LOG}"
-        return 1
-    fi
-    sleep 1
-    after="$(stack_rx_packets "${NS_RX}" "${VETH_RX}")"
-    delta=$(( after - base ))
-    print_info "Phase 1: ${delta} / ${expected} packets reached ${VETH_RX}"
-    if [ "${delta}" -gt $(( expected / 100 )) ]; then
-        print_error "FAIL: ${delta} packets arrived without peer XDP attach (expected silent drop)"
-        return 1
-    fi
-    print_success "Phase 1: silent drop confirmed (packets were eaten)"
-
-    # Phase 2: expect delivery to the normal stack
-    ip netns exec "${NS_RX}" ethtool -K "${VETH_RX}" gro on >/dev/null 2>&1
-    base="$(stack_rx_packets "${NS_RX}" "${VETH_RX}")"
-    print_info "Phase 2: sending ${COUNT} with GRO on (NAPI active)"
-    if ! send_once; then
-        print_error "Send failed (log: ${TX_LOG})"
-        tail -n 20 "${TX_LOG}"
-        return 1
-    fi
-    sleep 1
-    after="$(stack_rx_packets "${NS_RX}" "${VETH_RX}")"
-    delta=$(( after - base ))
-    ip netns exec "${NS_RX}" ethtool -K "${VETH_RX}" gro off >/dev/null 2>&1 || true
-    print_info "Phase 2: ${delta} / ${expected} packets reached ${VETH_RX}"
-    if [ "${delta}" -lt $(( expected * 99 / 100 )) ]; then
-        print_error "FAIL: expected delivery with GRO on, got ${delta} / ${expected} packets"
-        return 1
-    fi
-    print_success "Phase 2: delivery via NAPI confirmed"
-    print_success "PASS: veth peer-attach requirement (XDP or GRO) confirmed by measurement"
     return 0
 }
