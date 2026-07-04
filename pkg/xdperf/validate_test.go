@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"testing"
+	"time"
 
 	"github.com/takehaya/xdperf/pkg/guest"
 )
@@ -53,6 +54,70 @@ func TestValidateChecksumSpec(t *testing.T) {
 			err := validateChecksumSpec(tt.cs, dataLen)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateChecksumSpec(%+v, %d) error = %v, wantErr %v", tt.cs, dataLen, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfigValidateOTLP(t *testing.T) {
+	// Server mode (recv only) skips sender-specific validations, which makes
+	// it the smallest valid baseline for exercising the OTLP checks that run
+	// before the server-mode early return.
+	base := func() Config {
+		return Config{Device: "eth0", Receiver: true, Sender: false}
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{
+			name:   "otlp_disabled_ignores_other_otlp_flags",
+			mutate: func(c *Config) { c.OTLPInterval = 0; c.OTLPAttributes = "not-key-value" },
+		},
+		{
+			name: "otlp_enabled_valid",
+			mutate: func(c *Config) {
+				c.OTLPEndpoint = "localhost:4317"
+				c.OTLPInterval = 10 * time.Second
+				c.OTLPAttributes = "site=lab1"
+			},
+		},
+		{
+			name: "otlp_enabled_zero_interval",
+			mutate: func(c *Config) {
+				c.OTLPEndpoint = "localhost:4317"
+				c.OTLPInterval = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "otlp_enabled_negative_interval",
+			mutate: func(c *Config) {
+				c.OTLPEndpoint = "localhost:4317"
+				c.OTLPInterval = -time.Second
+			},
+			wantErr: true,
+		},
+		{
+			name: "otlp_enabled_bad_attributes",
+			mutate: func(c *Config) {
+				c.OTLPEndpoint = "localhost:4317"
+				c.OTLPInterval = 10 * time.Second
+				c.OTLPAttributes = "not-key-value"
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := base()
+			tt.mutate(&c)
+			err := c.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}

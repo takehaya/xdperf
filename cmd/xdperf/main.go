@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/kelseyhightower/envconfig"
 	"github.com/takehaya/xdperf/pkg/probe"
@@ -121,6 +122,23 @@ func newApp(version string) *cli.App {
 			Value: "auto",
 			Usage: "NUMA-aware CPU selection: auto, local, balanced, node:<N>, or CPU list (e.g., 0,2,4,6)",
 		},
+		cli.StringFlag{
+			Name:  "otlp-endpoint",
+			Usage: "OTLP gRPC endpoint (host:port, e.g., localhost:4317) to export metrics. Empty to disable",
+		},
+		cli.DurationFlag{
+			Name:  "otlp-interval",
+			Value: 10 * time.Second,
+			Usage: "OTLP metrics export interval",
+		},
+		cli.BoolFlag{
+			Name:  "otlp-insecure",
+			Usage: "use insecure (plaintext) gRPC connection for OTLP export",
+		},
+		cli.StringFlag{
+			Name:  "otlp-attributes",
+			Usage: "additional OTLP resource attributes (key=value,key=value)",
+		},
 	}
 
 	app.Commands = []cli.Command{
@@ -176,6 +194,11 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.BatchSize = uint32(ctx.Int("batch-size"))
 	c.WasmCacheDir = ctx.String("wasm-cache-dir")
 	c.CPUMode = ctx.String("cpu-mode")
+	c.OTLPEndpoint = ctx.String("otlp-endpoint")
+	c.OTLPInterval = ctx.Duration("otlp-interval")
+	c.OTLPInsecure = ctx.Bool("otlp-insecure")
+	c.OTLPAttributes = ctx.String("otlp-attributes")
+	c.Version = version
 
 	// Parse count
 	countStr := ctx.String("count")
