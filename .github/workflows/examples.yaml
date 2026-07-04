@@ -1,0 +1,44 @@
+---
+name: examples (veth e2e)
+
+on:
+  push:
+    paths:
+      - 'go.*'
+      - '**.go'
+      - '**.h'
+      - '**.c'
+      - 'plugins/**'
+      - 'examples/**'
+      - '.github/workflows/examples.yaml'
+  pull_request:
+    paths:
+      - 'go.*'
+      - '**.go'
+      - '**.h'
+      - '**.c'
+      - 'plugins/**'
+      - 'examples/**'
+      - '.github/workflows/examples.yaml'
+
+jobs:
+  examples:
+    permissions:
+      contents: 'read'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: check out
+        uses: actions/checkout@v5
+      - name: setup go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ./go.mod
+      - name: install build tools
+        run: make install-build-tools
+      - name: install ethtool
+        run: sudo apt-get update && sudo apt-get install -y ethtool
+      - name: build binary and plugins
+        run: make build
+      - name: run veth e2e examples
+        run: sudo -E ./examples/run_all.sh
