@@ -29,9 +29,15 @@ check_xdperf_built() {
     fi
 }
 
+# Root-owned working directory for PID and log files. Everything here runs
+# as root, and a fixed path under world-writable /tmp would be exposed to
+# symlink planting by other users; /run is writable only by root.
+XDPERF_EXAMPLE_RUNDIR="${XDPERF_EXAMPLE_RUNDIR:-/run/xdperf-examples}"
+mkdir -p -m 0700 "${XDPERF_EXAMPLE_RUNDIR}" 2>/dev/null || true
+
 # PID file so a later invocation (teardown, next test run) can stop only the
 # server these examples started, never unrelated xdperf processes on the host
-RX_PID_FILE="${RX_PID_FILE:-/tmp/xdperf-example-rx.pid}"
+RX_PID_FILE="${RX_PID_FILE:-${XDPERF_EXAMPLE_RUNDIR}/rx.pid}"
 
 # Kill a leftover receive server from a previous (possibly crashed) run,
 # identified via the PID file.

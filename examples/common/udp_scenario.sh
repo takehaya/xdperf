@@ -41,8 +41,10 @@ PASS_THRESHOLD="${PASS_THRESHOLD:-100}"
 ECHO="${ECHO:-0}"
 ECHO_THRESHOLD="${ECHO_THRESHOLD:-99}"
 
-RX_LOG="${RX_LOG:-/tmp/xdperf-example-rx.log}"
-TX_LOG="${TX_LOG:-/tmp/xdperf-example-tx.log}"
+# Logs live in the root-only rundir (see test_utils.sh) to avoid symlink
+# risks and collisions on fixed /tmp paths
+RX_LOG="${RX_LOG:-${XDPERF_EXAMPLE_RUNDIR}/rx.log}"
+TX_LOG="${TX_LOG:-${XDPERF_EXAMPLE_RUNDIR}/tx.log}"
 
 # Convert "10k" / "1m" / "10000" to a plain number
 to_number() {

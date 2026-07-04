@@ -39,7 +39,8 @@ jobs:
         run: |
           if ! command -v tinygo >/dev/null; then
             wget -q https://github.com/tinygo-org/tinygo/releases/download/v0.39.0/tinygo_0.39.0_amd64.deb
-            sudo dpkg -i tinygo_0.39.0_amd64.deb
+            # apt-get resolves dependencies, unlike dpkg -i
+            sudo apt-get install -y ./tinygo_0.39.0_amd64.deb
             rm tinygo_0.39.0_amd64.deb
           fi
       - name: install ethtool
