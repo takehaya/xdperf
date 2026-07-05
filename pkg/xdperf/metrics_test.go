@@ -3,6 +3,7 @@ package xdperf
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -156,6 +157,27 @@ func TestRegisterMetricsSourceRXOnly(t *testing.T) {
 	if m, ok := findMetric(t, sm, "xdperf.errors"); ok {
 		if sum, ok := m.Data.(metricdata.Sum[int64]); ok && len(sum.DataPoints) > 0 {
 			t.Errorf("xdperf.errors has %d data points, want 0 in RX-only mode", len(sum.DataPoints))
+		}
+	}
+}
+
+func TestRegisterMetricsSourceClampsOverflow(t *testing.T) {
+	src := metricsSource{
+		tx: func() (statsTotals, error) {
+			// A counter past the int64 range must saturate, not wrap negative.
+			return statsTotals{packets: math.MaxInt64 + 42, bytes: math.MaxUint64}, nil
+		},
+	}
+	sm := collectMetrics(t, src)
+
+	for _, name := range []string{"xdperf.packets", "xdperf.bytes"} {
+		m, ok := findMetric(t, sm, name)
+		if !ok {
+			t.Fatalf("%s not found", name)
+		}
+		sum := m.Data.(metricdata.Sum[int64])
+		if len(sum.DataPoints) != 1 || sum.DataPoints[0].Value != maxObservable {
+			t.Errorf("%s = %+v, want single data point saturated at %d", name, sum.DataPoints, maxObservable)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"context"
+	"math"
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
@@ -108,18 +109,18 @@ func registerMetricsSource(meter metric.Meter, src metricsSource, log *zap.Logge
 			if t, err := src.tx(); err != nil {
 				log.Warn("failed to read TX stats for otlp metrics", zap.Error(err))
 			} else {
-				o.ObserveInt64(packets, int64(t.packets), transmit)
-				o.ObserveInt64(bytes, int64(t.bytes), transmit)
-				o.ObserveInt64(errCounter, int64(t.diffErrors), diffErr)
-				o.ObserveInt64(errCounter, int64(t.checksumErrors), csumErr)
+				o.ObserveInt64(packets, clampToInt64(t.packets), transmit)
+				o.ObserveInt64(bytes, clampToInt64(t.bytes), transmit)
+				o.ObserveInt64(errCounter, clampToInt64(t.diffErrors), diffErr)
+				o.ObserveInt64(errCounter, clampToInt64(t.checksumErrors), csumErr)
 			}
 		}
 		if src.rx != nil {
 			if r, err := src.rx(); err != nil {
 				log.Warn("failed to read RX stats for otlp metrics", zap.Error(err))
 			} else {
-				o.ObserveInt64(packets, int64(r.packets), receive)
-				o.ObserveInt64(bytes, int64(r.bytes), receive)
+				o.ObserveInt64(packets, clampToInt64(r.packets), receive)
+				o.ObserveInt64(bytes, clampToInt64(r.bytes), receive)
 			}
 		}
 		if src.nic != nil {
@@ -128,11 +129,28 @@ func registerMetricsSource(meter metric.Meter, src metricsSource, log *zap.Logge
 				// report a bogus zero for a cumulative counter.
 				log.Debug("failed to read NIC stats for otlp metrics", zap.Error(err))
 			} else {
-				o.ObserveInt64(nicPackets, int64(n.TxXdpPackets), transmit)
-				o.ObserveInt64(nicDropped, int64(n.TxXdpDropped), transmit)
+				o.ObserveInt64(nicPackets, clampToInt64(n.TxXdpPackets), transmit)
+				o.ObserveInt64(nicDropped, clampToInt64(n.TxXdpDropped), transmit)
 			}
 		}
 		return nil
 	}, packets, bytes, errCounter, nicPackets, nicDropped)
 	return err
+}
+
+// maxObservable is the saturation point for counter observations. The OTel
+// API only accepts int64, and the SDK's sum aggregator additionally
+// round-trips the value through float64 (atomicCounter.load), where a bare
+// MaxInt64 rounds up to 2^63 and wraps to MinInt64. 2^63-1024 is the largest
+// integer below MaxInt64 that float64 represents exactly.
+const maxObservable = int64(math.MaxInt64) - 1023
+
+// clampToInt64 saturates a uint64 counter at maxObservable so an
+// (unrealistically) large counter can never surface as a negative value and
+// break the monotonic sum.
+func clampToInt64(v uint64) int64 {
+	if v >= uint64(maxObservable) {
+		return maxObservable
+	}
+	return int64(v)
 }
