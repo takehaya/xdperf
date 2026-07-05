@@ -36,8 +36,24 @@ type Xdperf struct {
 	cpus          []int // resolved CPU list for workers
 }
 
-func NewXdperf(cfg Config) (*Xdperf, error) {
+func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	var cleanupFnList []CancelFunc
+	var xd *Xdperf
+	// On any construction error the caller never gets a handle to Close(), so
+	// release everything initialized up to that point here. Once xd exists it
+	// owns the (possibly extended) cleanup list.
+	defer func() {
+		if err == nil {
+			return
+		}
+		list := cleanupFnList
+		if xd != nil {
+			list = xd.cleanupFnList
+		}
+		for _, fn := range list {
+			_ = fn(context.Background())
+		}
+	}()
 	logger, cleanup, err := logger.NewLogger(cfg.LoggerConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed init logger: %w", err)
@@ -120,7 +136,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		zap.Int("parallelism", cfg.Parallelism),
 	)
 
-	x := &Xdperf{
+	xd = &Xdperf{
 		Logger:        logger,
 		PluginManager: pm,
 		cleanupFnList: cleanupFnList,
@@ -132,12 +148,12 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 	}
 
 	if cfg.OTLPEndpoint != "" {
-		if err := x.setupOTLPMetrics(); err != nil {
+		if err := xd.setupOTLPMetrics(); err != nil {
 			return nil, fmt.Errorf("failed init otlp metrics: %w", err)
 		}
 	}
 
-	return x, nil
+	return xd, nil
 }
 
 // setupOTLPMetrics wires the OTLP push exporter. Shutdown goes through
