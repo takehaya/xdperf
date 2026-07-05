@@ -42,6 +42,7 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 			switch ty {
 			case TrafficTypeTX:
 				deltaPackets, deltaBytes, deltaDiffErr, deltaCsumErr := x.getStatsWithErrors(txStatsMap, recs, &prevTxPackets, &prevTxBytes, &prevDiffErrors, &prevChecksumErrors)
+				x.recordPPSSample(deltaPackets)
 				if deltaDiffErr > 0 || deltaCsumErr > 0 {
 					p.Printf("%d xmit/s, %.2f Mbps (diff_err: %d, csum_err: %d)\n", deltaPackets, float64(deltaBytes*8)/1024/1024, deltaDiffErr, deltaCsumErr)
 				} else {
@@ -52,6 +53,7 @@ func (x *Xdperf) ShowStats(ctx context.Context, ty TrafficType) {
 				p.Printf("%d recv/s, %.2f Mbps\n", deltaPackets, float64(deltaBytes*8)/1024/1024)
 			case TrafficTypeBoth:
 				txDeltaPackets, txDeltaBytes, deltaDiffErr, deltaCsumErr := x.getStatsWithErrors(txStatsMap, recs, &prevTxPackets, &prevTxBytes, &prevDiffErrors, &prevChecksumErrors)
+				x.recordPPSSample(txDeltaPackets)
 				rxDeltaPackets, rxDeltaBytes := x.getStats(x.bpfobjs.RxStatsMap, recs, &prevRxPackets, &prevRxBytes)
 				if deltaDiffErr > 0 || deltaCsumErr > 0 {
 					p.Printf("%d xmit/s, %.2f Mbps(xmit) [diff_err: %d, csum_err: %d], %d recv/s, %.2f Mbps(recv)\n",
@@ -183,6 +185,28 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 		)
 	}
 	x.Logger.Info("final statistics", fields...)
+
+	// Pacing quality (PPS mode only records samples). The wakeup error is how
+	// far past its scheduled point each batch started: the direct measure of
+	// scheduling/timer jitter that --sched-policy and --scx aim to reduce.
+	if s := x.pacing.summarize(); s.Count > 0 {
+		x.Logger.Info("pacing statistics (batch wakeup error)",
+			zap.Uint64("batches", s.Count),
+			zap.Duration("p50", s.P50),
+			zap.Duration("p99", s.P99),
+			zap.Duration("max", s.Max),
+		)
+	}
+	if st, ok := x.ppsStabilitySummary(); ok {
+		x.Logger.Info("rate stability (per-second TX pps)",
+			zap.Int("samples", st.Samples),
+			zap.Float64("mean_pps", st.Mean),
+			zap.Float64("stddev_pps", st.Stddev),
+			zap.Float64("cv_percent", st.CV*100),
+			zap.Uint64("min_pps", st.Min),
+			zap.Uint64("max_pps", st.Max),
+		)
+	}
 
 	// NIC statistics (only if flag is set)
 	if x.cfg.ShowNICStats {

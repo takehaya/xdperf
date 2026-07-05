@@ -33,7 +33,11 @@ type Xdperf struct {
 	Device        *net.Interface
 	cfg           Config
 	bpfSpec       *ebpf.CollectionSpec
-	cpus          []int // resolved CPU list for workers
+	cpus          []int      // resolved CPU list for workers
+	pacing        *pacingSet // per-worker pacing-error recorders (sender only)
+
+	ppsMu      sync.Mutex
+	ppsSamples []uint64 // per-second TX pps deltas collected by ShowStats
 }
 
 func NewXdperf(cfg Config) (_ *Xdperf, err error) {
@@ -145,6 +149,12 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 		Device:        dev,
 		bpfSpec:       bpfSpec,
 		cpus:          cpus,
+	}
+
+	if cfg.Sender {
+		// Sized before workers start so the TX hot path never allocates; the
+		// OTLP callback may read the recorders concurrently.
+		xd.pacing = newPacingSet(len(cpus))
 	}
 
 	if cfg.OTLPEndpoint != "" {
@@ -394,6 +404,10 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		BatchSize: batchSize,
 	}
 
+	if err := x.setupRTThrottling(); err != nil {
+		return err
+	}
+
 	// Get NIC stats before sending (only if flag is set)
 	var nicStatsBefore NICStats
 	if x.cfg.ShowNICStats {
@@ -425,22 +439,32 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		zap.Uint32("total_batches_per_cpu", totalBatches),
 		zap.Duration("batch_interval", interval),
 		zap.Bool("infinite_mode", x.cfg.Infinite),
+		zap.String("sched_policy", x.cfg.SchedPolicy),
+		zap.String("pacing_mode", x.cfg.PacingMode),
 	)
 
 	// Fail Fast: cancel all goroutines on first error
 	var once sync.Once
 	var firstErr error
 
-	for _, cpu := range x.cpus {
+	// Two-phase startup: every worker pins itself (and applies the RT policy)
+	// first, reports its thread ID, and only starts transmitting once start is
+	// closed. This creates the one point where all worker threads exist but no
+	// packet has been sent — the sched_ext scheduler (--scx) must attach there,
+	// with every worker TID already registered.
+	ready := make(chan workerReady, len(x.cpus))
+	start := make(chan struct{})
+
+	for i, cpu := range x.cpus {
 		p, err := prog.Clone()
 		if err != nil {
 			return fmt.Errorf("failed to clone XDP program: %w", err)
 		}
 		wg.Add(1)
-		go func(cpu int) {
+		go func(i, cpu int) {
 			defer wg.Done()
 			defer p.Close()
-			if err := x.run(ctx, cpu, p, runOpts, interval, totalBatches); err != nil {
+			if err := x.run(ctx, cpu, p, runOpts, interval, totalBatches, x.pacing.recorder(i), ready, start); err != nil {
 				x.Logger.Error("error in run", zap.Int("cpu", cpu), zap.Error(err))
 				// Fail Fast: cancel all other goroutines on first error
 				once.Do(func() {
@@ -448,7 +472,33 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 					cancel()
 				})
 			}
-		}(cpu)
+		}(i, cpu)
+	}
+
+	workerTIDs := make(map[int]int, len(x.cpus))
+	barrierErr := func() error {
+		for range x.cpus {
+			select {
+			case r := <-ready:
+				if r.err != nil {
+					return r.err
+				}
+				workerTIDs[r.cpu] = r.tid
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}()
+	if barrierErr == nil {
+		x.Logger.Debug("all workers pinned", zap.Any("tid_by_cpu", workerTIDs))
+		close(start)
+	} else {
+		// Never close(start) on failure: the worker-side select between start
+		// and ctx.Done is nondeterministic, and a max-speed worker slipping
+		// into its loop after cancellation would still send the whole batch.
+		x.Logger.Error("worker startup failed", zap.Error(barrierErr))
+		cancel()
 	}
 
 	// Wait for either signal or all goroutines to complete
@@ -477,6 +527,10 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	}
 	cancel()
 	wg.Wait()
+
+	if firstErr == nil && barrierErr != nil {
+		firstErr = barrierErr
+	}
 
 	// Show final statistics with NIC stats comparison
 	x.ShowFinalStats(nicStatsBefore)
@@ -512,9 +566,14 @@ func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32, uint32) 
 		ppsPerCPU = 1
 	}
 
-	// Target batch interval: 100ms for good balance between precision and overhead
-	const targetBatchIntervalMs = 100
-	packetsPerBatch := uint32(ppsPerCPU * targetBatchIntervalMs / 1000)
+	// Target batch interval balances pacing smoothness against per-batch
+	// syscall overhead; --batch-interval overrides the 100ms default (smaller
+	// = smoother traffic, more wakeups).
+	targetInterval := x.cfg.BatchInterval
+	if targetInterval <= 0 {
+		targetInterval = defaultBatchInterval
+	}
+	packetsPerBatch := uint32(ppsPerCPU * uint64(targetInterval) / uint64(time.Second))
 
 	if packetsPerBatch < 1 {
 		packetsPerBatch = 1
@@ -534,21 +593,53 @@ func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32, uint32) 
 	intervalNs := float64(packetsPerBatch) * float64(time.Second) / float64(ppsPerCPU)
 	interval := time.Duration(intervalNs)
 
-	// Minimum interval to avoid busy loop
-	if interval < time.Millisecond {
-		interval = time.Millisecond
+	// Floor the interval so the ticker path cannot degrade into a busy loop.
+	// Busy pacing spins by design and only needs protection from a zero value.
+	floor := time.Millisecond
+	if x.cfg.PacingMode == PacingModeBusy {
+		floor = 10 * time.Microsecond
+	}
+	if interval < floor {
+		interval = floor
 	}
 
 	return packetsPerBatch, interval, totalBatches, 1
 }
 
-func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts *ebpf.RunOptions, interval time.Duration, totalBatches uint32) error {
+// workerReady is a worker's startup report: its pinned CPU, its OS thread ID
+// (the kernel-side pid a sched_ext policy matches on), and any pin/policy
+// error. The coordinator collects one per worker before releasing TX.
+type workerReady struct {
+	cpu int
+	tid int
+	err error
+}
+
+func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts *ebpf.RunOptions, interval time.Duration, totalBatches uint32, rec *pacingRecorder, ready chan<- workerReady, start <-chan struct{}) error {
+	// Phase 1: pin this thread and apply the scheduling policy, then report
+	// the thread ID and wait for the coordinator to release all workers at
+	// once. The ready channel is buffered, so the send never blocks.
 	runtime.LockOSThread()
+	tid := unix.Gettid()
 	var cpuset unix.CPUSet
 	cpuset.Set(cpu)
-	if err := unix.SchedSetaffinity(unix.Gettid(), &cpuset); err != nil {
-		return fmt.Errorf("failed to set CPU affinity: %v", err)
+	if err := unix.SchedSetaffinity(tid, &cpuset); err != nil {
+		err = fmt.Errorf("failed to set CPU affinity: %w", err)
+		ready <- workerReady{cpu: cpu, tid: tid, err: err}
+		return err
 	}
+	if err := x.applyWorkerSchedPolicy(); err != nil {
+		ready <- workerReady{cpu: cpu, tid: tid, err: err}
+		return err
+	}
+	ready <- workerReady{cpu: cpu, tid: tid}
+	select {
+	case <-start:
+	case <-ctx.Done():
+		return nil
+	}
+
+	// Phase 2: the TX loop for the selected mode.
 
 	// Infinite mode: infinite loop until Ctrl-C
 	if x.cfg.Infinite {
@@ -580,10 +671,15 @@ func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpt
 		return nil
 	}
 
+	if x.cfg.PacingMode == PacingModeBusy {
+		return x.runBusyPaced(ctx, xdpProg, runOpts, interval, totalBatches, rec)
+	}
+
 	// PPS mode: rate-limited batch execution
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	last := time.Now()
 	var sentBatches uint32
 	for sentBatches < totalBatches {
 		// Send batch
@@ -600,9 +696,51 @@ func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpt
 		if sentBatches < totalBatches {
 			select {
 			case <-ticker.C:
-				// continue to next batch
+				// The gap between consecutive wakeups minus the interval is
+				// the pacing error this run exists to measure: scheduling
+				// delay plus timer coalescing (batches overrunning the
+				// interval also surface here as missed ticks).
+				now := time.Now()
+				rec.record(now.Sub(last) - interval)
+				last = now
 			case <-ctx.Done():
 				return nil
+			}
+		}
+	}
+	return nil
+}
+
+// runBusyPaced is the --pacing-mode=busy PPS loop: it spins on the clock
+// toward absolute deadlines instead of sleeping on a ticker, trading one core
+// of CPU for microsecond-level batch starts. Pair it with --sched-policy or
+// --scx so the spin is not itself preempted.
+func (x *Xdperf) runBusyPaced(ctx context.Context, xdpProg *ebpf.Program, runOpts *ebpf.RunOptions, interval time.Duration, totalBatches uint32, rec *pacingRecorder) error {
+	next := time.Now()
+	var sentBatches uint32
+	for sentBatches < totalBatches {
+		ret, err := xdpProg.Run(runOpts)
+		if err != nil {
+			return fmt.Errorf("bpf_prog_run failed: %w", err)
+		}
+		if ret != 0 {
+			return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
+		}
+		sentBatches++
+
+		if sentBatches < totalBatches {
+			next = next.Add(interval)
+			for time.Now().Before(next) {
+				if ctx.Err() != nil {
+					return nil
+				}
+			}
+			overshoot := time.Since(next)
+			rec.record(overshoot)
+			if overshoot > interval {
+				// A batch overran its slot; rebase instead of bursting to
+				// catch up, so the configured rate is a ceiling.
+				next = time.Now()
 			}
 		}
 	}

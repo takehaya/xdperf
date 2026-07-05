@@ -37,6 +37,12 @@ type Config struct {
 	WasmCacheDir string // WASM compilation cache directory (empty = default ~/.cache/xdperf/wasm/)
 	CPUMode      string // NUMA-aware CPU selection mode (auto/local/balanced/node:N/CPU list)
 
+	SchedPolicy         string        // realtime class for TX worker threads: "" (keep default) / "fifo" / "rr"
+	SchedPriority       int           // realtime priority 1-99, used only with SchedPolicy
+	DisableRTThrottling bool          // set sched_rt_runtime_us=-1 for the run (restored on exit)
+	BatchInterval       time.Duration // target batch interval for --pps pacing (default 100ms)
+	PacingMode          string        // batch pacing engine for --pps: "ticker" (default) / "busy"
+
 	OTLPEndpoint   string        // OTLP gRPC endpoint (host:port). Empty = metrics export disabled
 	OTLPInterval   time.Duration // OTLP metrics export interval
 	OTLPInsecure   bool          // use plaintext gRPC for OTLP export
@@ -45,11 +51,22 @@ type Config struct {
 	Version string // xdperf version (from build info), used as service.version
 }
 
+// defaultBatchInterval is the target pacing batch interval when
+// --batch-interval is not given (or a Config is built without one).
+const defaultBatchInterval = 100 * time.Millisecond
+
 // Normalize fills in config fields derived from user input (currently
-// PluginLanguage, parsed from a "<name>.<lang>" PluginName). It is idempotent
-// and only mutates the receiver; call it before Validate. Keeping the derivation
-// here — rather than hidden inside Validate — makes Validate side-effect-free.
+// PluginLanguage, parsed from a "<name>.<lang>" PluginName) and defaults for
+// zero-valued pacing fields. It is idempotent and only mutates the receiver;
+// call it before Validate. Keeping the derivation here — rather than hidden
+// inside Validate — makes Validate side-effect-free.
 func (c *Config) Normalize() {
+	if c.BatchInterval == 0 {
+		c.BatchInterval = defaultBatchInterval
+	}
+	if c.PacingMode == "" {
+		c.PacingMode = PacingModeTicker
+	}
 	if c.PluginLanguage != "" {
 		return
 	}
@@ -72,6 +89,20 @@ func (c *Config) Validate() error {
 		}
 		if _, err := telemetry.ParseAttributes(c.OTLPAttributes); err != nil {
 			return fmt.Errorf("invalid --otlp-attributes: %w", err)
+		}
+	}
+
+	// Scheduling/pacing knobs only affect TX worker threads; reject them in
+	// recv-only mode instead of silently ignoring them.
+	if !c.Sender {
+		if c.SchedPolicy != SchedPolicyNone {
+			return fmt.Errorf("--sched-policy requires send mode")
+		}
+		if c.DisableRTThrottling {
+			return fmt.Errorf("--disable-rt-throttling requires send mode")
+		}
+		if c.PacingMode == PacingModeBusy {
+			return fmt.Errorf("--pacing-mode busy requires send mode")
 		}
 	}
 
@@ -125,6 +156,30 @@ func (c *Config) Validate() error {
 	// Duration requires PPS
 	if c.Duration > 0 && c.PPS == 0 {
 		return fmt.Errorf("--duration requires --pps to be specified")
+	}
+
+	// Scheduling / pacing validations
+	switch c.SchedPolicy {
+	case SchedPolicyNone, SchedPolicyFIFO, SchedPolicyRR:
+	default:
+		return fmt.Errorf("--sched-policy must be %q or %q (got %q)", SchedPolicyFIFO, SchedPolicyRR, c.SchedPolicy)
+	}
+	if c.SchedPolicy != SchedPolicyNone && (c.SchedPriority < 1 || c.SchedPriority > 99) {
+		return fmt.Errorf("--sched-priority must be within 1-99 (got %d)", c.SchedPriority)
+	}
+	if c.DisableRTThrottling && c.SchedPolicy == SchedPolicyNone {
+		return fmt.Errorf("--disable-rt-throttling requires --sched-policy")
+	}
+	switch c.PacingMode {
+	case "", PacingModeTicker, PacingModeBusy:
+	default:
+		return fmt.Errorf("--pacing-mode must be %q or %q (got %q)", PacingModeTicker, PacingModeBusy, c.PacingMode)
+	}
+	if c.PacingMode == PacingModeBusy && c.PPS == 0 {
+		return fmt.Errorf("--pacing-mode busy requires --pps")
+	}
+	if c.BatchInterval < 0 {
+		return fmt.Errorf("--batch-interval must be positive")
 	}
 
 	// PluginLanguage is derived by Normalize; if it is still empty here, the
