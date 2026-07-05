@@ -88,19 +88,27 @@ func (x *Xdperf) getStats(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPack
 	return deltaPackets, deltaBytes
 }
 
-func (x *Xdperf) getStatsWithErrors(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPackets, prevBytes, prevDiffErrors, prevChecksumErrors *uint64) (deltaPackets, deltaBytes, deltaDiffErrors, deltaChecksumErrors uint64) {
+// sumStats reads statMap and returns the cumulative per-CPU sums. recs is a
+// caller-owned scratch buffer sized to the possible-CPU count.
+func sumStats(statMap *ebpf.Map, recs []coreelf.BpfDatarec) (packets, bytes, diffErrors, checksumErrors uint64, err error) {
 	var key uint32
-	err := statMap.Lookup(&key, &recs)
+	if err := statMap.Lookup(&key, &recs); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	for _, rec := range recs {
+		packets += rec.Packets
+		bytes += rec.Bytes
+		diffErrors += rec.DiffErrors
+		checksumErrors += rec.ChecksumErrors
+	}
+	return packets, bytes, diffErrors, checksumErrors, nil
+}
+
+func (x *Xdperf) getStatsWithErrors(statMap *ebpf.Map, recs []coreelf.BpfDatarec, prevPackets, prevBytes, prevDiffErrors, prevChecksumErrors *uint64) (deltaPackets, deltaBytes, deltaDiffErrors, deltaChecksumErrors uint64) {
+	sumPackets, sumBytes, sumDiffErrors, sumChecksumErrors, err := sumStats(statMap, recs)
 	if err != nil {
 		fmt.Printf("failed to lookup stats_map: %v\n", err)
 		return 0, 0, 0, 0
-	}
-	var sumPackets, sumBytes, sumDiffErrors, sumChecksumErrors uint64
-	for _, rec := range recs {
-		sumPackets += rec.Packets
-		sumBytes += rec.Bytes
-		sumDiffErrors += rec.DiffErrors
-		sumChecksumErrors += rec.ChecksumErrors
 	}
 	// Guard against unsigned underflow if a counter is reset (e.g. map re-init
 	// or NIC counter wrap) between samples, which would otherwise report a huge
@@ -122,35 +130,33 @@ type NICStats struct {
 	TxXdpDropped uint64
 }
 
+// readNICCounter reads a single counter from /sys/class/net/<device>/statistics/.
+func (x *Xdperf) readNICCounter(name string) (uint64, error) {
+	path := filepath.Join("/sys/class/net", x.Device.Name, "statistics", name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read NIC stats %s: %w", path, err)
+	}
+	v, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse NIC stats %s: %w", path, err)
+	}
+	return v, nil
+}
+
 // GetNICStats reads XDP-related statistics from /sys/class/net/<device>/statistics/
 func (x *Xdperf) GetNICStats() NICStats {
 	var stats NICStats
-	basePath := filepath.Join("/sys/class/net", x.Device.Name, "statistics")
-
-	// Read tx_packets
-	txPacketsPath := filepath.Join(basePath, "tx_packets")
-	if data, err := os.ReadFile(txPacketsPath); err != nil {
-		x.Logger.Debug("failed to read NIC stats", zap.String("path", txPacketsPath), zap.Error(err))
+	if v, err := x.readNICCounter("tx_packets"); err != nil {
+		x.Logger.Debug("failed to read NIC stats", zap.Error(err))
 	} else {
-		if v, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err != nil {
-			x.Logger.Debug("failed to parse NIC stats", zap.String("path", txPacketsPath), zap.Error(err))
-		} else {
-			stats.TxXdpPackets = v
-		}
+		stats.TxXdpPackets = v
 	}
-
-	// Read tx_dropped
-	txDroppedPath := filepath.Join(basePath, "tx_dropped")
-	if data, err := os.ReadFile(txDroppedPath); err != nil {
-		x.Logger.Debug("failed to read NIC stats", zap.String("path", txDroppedPath), zap.Error(err))
+	if v, err := x.readNICCounter("tx_dropped"); err != nil {
+		x.Logger.Debug("failed to read NIC stats", zap.Error(err))
 	} else {
-		if v, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64); err != nil {
-			x.Logger.Debug("failed to parse NIC stats", zap.String("path", txDroppedPath), zap.Error(err))
-		} else {
-			stats.TxXdpDropped = v
-		}
+		stats.TxXdpDropped = v
 	}
-
 	return stats
 }
 
@@ -159,18 +165,10 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 	possibleCPUs := ebpf.MustPossibleCPU()
 	recs := make([]coreelf.BpfDatarec, possibleCPUs)
 
-	var key uint32
-	err := x.bpfobjs.TxStatsMap.Lookup(&key, &recs)
+	sumPackets, sumBytes, sumDiffErrors, sumChecksumErrors, err := sumStats(x.bpfobjs.TxStatsMap, recs)
 	if err != nil {
 		x.Logger.Error("failed to lookup stats_map", zap.Error(err))
 		return
-	}
-	var sumPackets, sumBytes, sumDiffErrors, sumChecksumErrors uint64
-	for _, rec := range recs {
-		sumPackets += rec.Packets
-		sumBytes += rec.Bytes
-		sumDiffErrors += rec.DiffErrors
-		sumChecksumErrors += rec.ChecksumErrors
 	}
 
 	fields := []zap.Field{

@@ -106,6 +106,22 @@ sudo ./out/bin/xdperf run \
 sudo xdperf run --device eth0 --count 1m --show-nic-stats
 ```
 
+### Metrics Export (OTLP)
+
+Export TX/RX statistics to an OpenTelemetry Collector over OTLP/gRPC, in both
+send and receive mode. See [docs/cli.md](./docs/cli.md#--otlp-endpoint----otlp-interval----otlp-insecure----otlp-attributes) for the metric list and collector setup, or the Japanese guide at [docs/ja/otlp_metrics.md](./docs/ja/otlp_metrics.md) for a full walkthrough including a Prometheus + Grafana pipeline.
+
+```shell
+# Push metrics every 10s to a local collector
+sudo xdperf run --device eth0 --count 1m \
+    --otlp-endpoint localhost:4317 --otlp-insecure
+
+# Tag a benchmark run with custom resource attributes
+sudo xdperf run --device eth0 --duration 60s --pps 1m \
+    --otlp-endpoint collector.example.com:4317 \
+    --otlp-attributes test.run.id=run42,site=lab1
+```
+
 ### Probe Command
 
 Check if your device supports XDP and live frame mode:

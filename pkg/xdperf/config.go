@@ -7,6 +7,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/logger"
+	"github.com/takehaya/xdperf/pkg/telemetry"
 )
 
 type Config struct {
@@ -35,6 +36,13 @@ type Config struct {
 	ShowNICStats bool   // show NIC-level statistics (may include other traffic on the same interface)
 	WasmCacheDir string // WASM compilation cache directory (empty = default ~/.cache/xdperf/wasm/)
 	CPUMode      string // NUMA-aware CPU selection mode (auto/local/balanced/node:N/CPU list)
+
+	OTLPEndpoint   string        // OTLP gRPC endpoint (host:port). Empty = metrics export disabled
+	OTLPInterval   time.Duration // OTLP metrics export interval
+	OTLPInsecure   bool          // use plaintext gRPC for OTLP export
+	OTLPAttributes string        // extra OTLP resource attributes ("key=value,key=value")
+
+	Version string // xdperf version (from build info), used as service.version
 }
 
 // Normalize fills in config fields derived from user input (currently
@@ -53,6 +61,18 @@ func (c *Config) Normalize() {
 func (c *Config) Validate() error {
 	if c.Device == "" {
 		return fmt.Errorf("device is required")
+	}
+
+	// OTLP export applies to both client and server mode, so validate it
+	// before the server-mode early return. Other otlp flags are silently
+	// ignored when no endpoint is set.
+	if c.OTLPEndpoint != "" {
+		if c.OTLPInterval <= 0 {
+			return fmt.Errorf("--otlp-interval must be positive")
+		}
+		if _, err := telemetry.ParseAttributes(c.OTLPAttributes); err != nil {
+			return fmt.Errorf("invalid --otlp-attributes: %w", err)
+		}
 	}
 
 	// Server mode (recv only) doesn't require sender-specific validations

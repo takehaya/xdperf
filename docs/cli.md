@@ -63,6 +63,10 @@ xdperf run has two primary operating modes:
 | `--debugmode` | `-D` | No | `0` | Debug level (0: off, 1: on, 2: verbose) |
 | `--infinite` | - | No | `false` | Enable infinite mode for maximum throughput |
 | `--batch-size` | - | No | `64` | Syscall batch size tuning |
+| `--otlp-endpoint` | - | No | - | OTLP gRPC endpoint (`host:port`) to export metrics. Empty to disable |
+| `--otlp-interval` | - | No | `10s` | OTLP metrics export interval |
+| `--otlp-insecure` | - | No | `false` | Use insecure (plaintext) gRPC connection for OTLP export |
+| `--otlp-attributes` | - | No | - | Additional OTLP resource attributes (`key=value,key=value`) |
 
 ### Option Details
 
@@ -331,6 +335,70 @@ sudo xdperf run --device eth0 --count 1m --batch-size 64
 
 # Combined with infinite mode for maximum throughput
 sudo xdperf run --device eth0 --count 10k --infinite --batch-size 64 --parallelism 8
+```
+
+#### `--otlp-endpoint` / `--otlp-interval` / `--otlp-insecure` / `--otlp-attributes`
+
+Export runtime statistics to an OpenTelemetry Collector over OTLP/gRPC.
+Setting `--otlp-endpoint` opts in; without it, no OTel SDK code runs and
+behavior is identical to previous versions. Export runs in both send and
+receive mode, and the final cumulative values are flushed on shutdown.
+
+Exported metrics (all monotonic cumulative sums; compute rates on the
+backend, e.g. with PromQL `rate()`):
+
+| Metric | Unit | Attributes | Source |
+|--------|------|------------|--------|
+| `xdperf.packets` | `{packet}` | `network.io.direction` = `transmit` / `receive` | XDP TX/RX stats maps |
+| `xdperf.bytes` | `By` | `network.io.direction` = `transmit` / `receive` | XDP TX/RX stats maps |
+| `xdperf.errors` | `{error}` | `error.type` = `diff` / `checksum` | XDP TX stats map |
+| `xdperf.nic.packets` | `{packet}` | `network.io.direction` = `transmit` | `/sys/class/net/<dev>/statistics/tx_packets` |
+| `xdperf.nic.dropped` | `{packet}` | `network.io.direction` = `transmit` | `/sys/class/net/<dev>/statistics/tx_dropped` |
+
+NIC metrics may include other traffic on the same interface (same caveat as
+`--show-nic-stats`). Resource attributes include `service.name=xdperf`,
+`service.version`, `host.name`, `network.interface.name`, and
+`xdperf.mode` (`client` / `server` / `both`), plus anything passed via
+`--otlp-attributes`.
+
+An unreachable collector never blocks traffic generation: the exporter dials
+lazily, export failures are logged as warnings and retried on the next
+interval, and shutdown flush is bounded by a 5s timeout.
+
+```shell
+# Export metrics every 10s to a local collector (plaintext gRPC)
+sudo xdperf run --device eth0 --count 1m \
+  --otlp-endpoint localhost:4317 --otlp-insecure
+
+# Tag a benchmark run for later lookup in Grafana
+sudo xdperf run --device eth0 --duration 60s --pps 1m \
+  --otlp-endpoint collector.example.com:4317 \
+  --otlp-interval 5s --otlp-attributes test.run.id=run42,site=lab1
+```
+
+Quick local collector for testing (prints received metrics to its log):
+
+```shell
+docker run --rm --network host \
+  -v $(pwd)/otelcol.yaml:/etc/otelcol/config.yaml \
+  otel/opentelemetry-collector:latest
+```
+
+```yaml
+# otelcol.yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
 ```
 
 #### Capturing transmitted packets (xdp-ninja)

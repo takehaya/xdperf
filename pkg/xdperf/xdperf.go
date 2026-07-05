@@ -19,6 +19,7 @@ import (
 	"github.com/takehaya/xdperf/pkg/logger"
 	"github.com/takehaya/xdperf/pkg/numa"
 	"github.com/takehaya/xdperf/pkg/plugin"
+	"github.com/takehaya/xdperf/pkg/telemetry"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 )
@@ -35,8 +36,24 @@ type Xdperf struct {
 	cpus          []int // resolved CPU list for workers
 }
 
-func NewXdperf(cfg Config) (*Xdperf, error) {
+func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	var cleanupFnList []CancelFunc
+	var xd *Xdperf
+	// On any construction error the caller never gets a handle to Close(), so
+	// release everything initialized up to that point here. Once xd exists it
+	// owns the (possibly extended) cleanup list.
+	defer func() {
+		if err == nil {
+			return
+		}
+		list := cleanupFnList
+		if xd != nil {
+			list = xd.cleanupFnList
+		}
+		for _, fn := range list {
+			_ = fn(context.Background())
+		}
+	}()
 	logger, cleanup, err := logger.NewLogger(cfg.LoggerConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed init logger: %w", err)
@@ -119,7 +136,7 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		zap.Int("parallelism", cfg.Parallelism),
 	)
 
-	return &Xdperf{
+	xd = &Xdperf{
 		Logger:        logger,
 		PluginManager: pm,
 		cleanupFnList: cleanupFnList,
@@ -128,7 +145,68 @@ func NewXdperf(cfg Config) (*Xdperf, error) {
 		Device:        dev,
 		bpfSpec:       bpfSpec,
 		cpus:          cpus,
-	}, nil
+	}
+
+	if cfg.OTLPEndpoint != "" {
+		if err := xd.setupOTLPMetrics(); err != nil {
+			return nil, fmt.Errorf("failed init otlp metrics: %w", err)
+		}
+	}
+
+	return xd, nil
+}
+
+// setupOTLPMetrics wires the OTLP push exporter. Shutdown goes through
+// cleanupFnList so the PeriodicReader's final flush runs on Close in both
+// client and server mode.
+func (x *Xdperf) setupOTLPMetrics() error {
+	attrs, err := telemetry.ParseAttributes(x.cfg.OTLPAttributes)
+	if err != nil {
+		return err
+	}
+	mode := "client"
+	switch {
+	case x.cfg.Sender && x.cfg.Receiver:
+		mode = "both"
+	case x.cfg.Receiver:
+		mode = "server"
+	}
+	// The gRPC exporter dials lazily, so Background is fine here even though
+	// NewXdperf has no ctx parameter; reachability is not checked at setup.
+	meter, shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
+		Endpoint:   x.cfg.OTLPEndpoint,
+		Interval:   x.cfg.OTLPInterval,
+		Insecure:   x.cfg.OTLPInsecure,
+		Attributes: attrs,
+		Mode:       mode,
+		Device:     x.cfg.Device,
+		Version:    x.cfg.Version,
+	}, x.Logger)
+	if err != nil {
+		return err
+	}
+	// Close() runs cleanupFnList front to back, so the shutdown (which
+	// performs the final metrics flush and reads the BPF stats maps) must run
+	// before the entry that closes the BPF objects — prepend, not append.
+	x.cleanupFnList = append([]CancelFunc{shutdown}, x.cleanupFnList...)
+
+	// Match the TrafficType selection in runTXPacket: the RX map is only
+	// updated when both sender and receiver are enabled (XdpRx attached).
+	ty := TrafficTypeTX
+	switch {
+	case x.cfg.Sender && x.cfg.Receiver:
+		ty = TrafficTypeBoth
+	case x.cfg.Receiver:
+		ty = TrafficTypeRX
+	}
+	if err := x.registerMetrics(meter, ty); err != nil {
+		return err
+	}
+	x.Logger.Info("otlp metrics exporter initialized",
+		zap.String("endpoint", x.cfg.OTLPEndpoint),
+		zap.Duration("interval", x.cfg.OTLPInterval),
+	)
+	return nil
 }
 
 func (x *Xdperf) StartClient(ctx context.Context) error {

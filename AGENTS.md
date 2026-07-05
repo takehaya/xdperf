@@ -40,6 +40,8 @@ CLI (cmd/xdperf/main.go) → 設定パース → Xdperf初期化
   │   └── Rawモード: 生パケットをラウンドロビンDiffエントリに変換
   │   → NUMA考慮でworker CPUを選択 (--cpu-mode) → eBPFアタッチ → XDP経由でTX
   └── サーバー: eBPF読込 → 受信、オプションでswap応答
+
+(共通・オプション) --otlp-endpoint 指定時: TX/RX統計とNICカウンタをOTLP/gRPCでpush (pkg/telemetry)
 ```
 
 ### 主要パッケージ
@@ -49,11 +51,13 @@ CLI (cmd/xdperf/main.go) → 設定パース → Xdperf初期化
   - `generator.go` — Diffベースパケット生成のコア。プラグインからの`PacketVariantSet`をBPF用の`DiffEntry`に変換。Sequential/Mixedの2つのバリアント選択モード、重み付き分配をサポート。
   - `bpf.go` — BPFマップ初期化 (`initBasePacketMaps`, `initDiffMap`, `initChecksumMetaMaps`, `initPktStateMap`)。エントリをCPUごとに分配。
   - `stats.go` — リアルタイム統計表示。diff_errorsとchecksum_errorsの追跡を含む。
+  - `metrics.go` — OTLPメトリクス送信の計装。`ObservableCounter` のコールバックでBPF統計マップとNIC sysfsカウンタを累積値として読む (stdout表示系とは独立)。
 - **pkg/numa/** — NUMA対応のworker CPU選択 (`--cpu-mode`)。`DetectTopology`/`DetectNICNode`でNICのNUMAノードを検出し、`SelectCPUs`/`ParseCPUMode`/`ParseCPUList`で`auto`/`local`/`balanced`/`node:<N>`/CPUリストを解決。マルチソケット機でNICローカルノードにworkerを寄せ、クロスノードメモリアクセスを削減する。
 - **pkg/coreelf/** — cilium/ebpfによるeBPFオブジェクト読込。`go:generate`ディレクティブで`bpf2go`を実行し`src/xdp_prog.c`をコンパイル。`ReadCollection()`がdiff_mapサイズを動的に調整。
 - **pkg/plugin/** — wazeroランタイムによるWASMプラグインマネージャ。`.wasm`バイナリを読込、ホスト関数 (ログ、メトリクス、ARP解決) を公開、プラグインライフサイクル (init → process → cleanup) を管理。ホスト・ゲスト間はJSONベースで通信。
 - **pkg/guest/** — WASMプラグインがインポートするSDK。`PacketVariantSet`、`PacketVariant`、`ChecksumSpec`、`VariableParams`等の型を提供。プラグインは`//go:wasmexport`で`plugin_init`、`plugin_process`、`plugin_cleanup`をエクスポートする必要あり。
 - **pkg/probe/** — ネットワークデバイスごとのXDP機能検出 (native, generic, offloadモード)。
+- **pkg/telemetry/** — OTLP/gRPC pushによるメトリクス送信 (`--otlp-endpoint` 指定時のみ有効)。otel SDK / gRPC依存をこのパッケージに閉じ込め、MeterProviderの組み立てとshutdown (最終フラッシュ、5sタイムアウト) を担当。使い方は [docs/ja/otlp_metrics.md](docs/ja/otlp_metrics.md) を参照。
 - **pkg/logger/** — zapベースの構造化ロギング。
 
 ### Diffベースパケット生成 (コアメカニズム)
