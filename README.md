@@ -109,7 +109,7 @@ sudo xdperf run --device eth0 --count 1m --show-nic-stats
 ### Metrics Export (OTLP)
 
 Export TX/RX statistics to an OpenTelemetry Collector over OTLP/gRPC, in both
-send and receive mode. See [docs/cli.md](./docs/cli.md#--otlp-endpoint----otlp-interval----otlp-insecure----otlp-attributes) for the metric list and collector setup.
+send and receive mode. See [docs/cli.md](./docs/cli.md#--otlp-endpoint----otlp-interval----otlp-insecure----otlp-attributes) for the metric list and collector setup, or the Japanese guide at [docs/ja/otlp_metrics.md](./docs/ja/otlp_metrics.md) for a full walkthrough including a Prometheus + Grafana pipeline.
 
 ```shell
 # Push metrics every 10s to a local collector
