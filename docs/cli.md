@@ -18,6 +18,15 @@ xdperf <command> [options]
 |--------|-------|----------|---------|-------------|
 | `--device` | `-d` | **Yes** | - | Network interface name to probe |
 | `--json` | `-j` | No | `false` | Output results in JSON format |
+| `--cpu-mode` | - | No | `auto` | CPU selection to evaluate the environment checks against (same syntax as `run`) |
+| `--parallelism` | `-l` | No | `1` | Worker count to evaluate the environment checks against (same as `run`) |
+
+Besides XDP capabilities, `probe` reports the jitter-relevant environment:
+kernel release, sched_ext availability (whether `--scx` can run), RT
+throttling, CPU frequency governors of the selected worker CPUs, irqbalance,
+`isolcpus`/`nohz_full`/`rcu_nocbs` boot parameters, and whether the device's
+IRQ affinity overlaps the worker CPUs. Warnings mark jitter-hostile findings;
+`--json` carries the full result under `environment`.
 
 ### Run Command - Operating Modes
 
@@ -63,6 +72,12 @@ xdperf run has two primary operating modes:
 | `--debugmode` | `-D` | No | `0` | Debug level (0: off, 1: on, 2: verbose) |
 | `--infinite` | - | No | `false` | Enable infinite mode for maximum throughput |
 | `--batch-size` | - | No | `64` | Syscall batch size tuning |
+| `--sched-policy` | - | No | (normal) | Realtime class for TX worker threads: `fifo` or `rr` |
+| `--sched-priority` | - | No | `50` | Realtime priority 1-99, used with `--sched-policy` |
+| `--disable-rt-throttling` | - | No | `false` | Set `sched_rt_runtime_us=-1` while running (restored on exit; requires `--sched-policy`) |
+| `--batch-interval` | - | No | `100ms` | Target batch interval for `--pps` pacing (smaller = smoother traffic, more wakeups) |
+| `--pacing-mode` | - | No | `ticker` | Batch pacing engine for `--pps`: `ticker` or `busy` (spins for µs precision, burns one core) |
+| `--scx` | - | No | `false` | Dedicate worker CPUs to xdperf via a sched_ext BPF scheduler (kernel >= 6.13 with `CONFIG_SCHED_EXT`) |
 | `--otlp-endpoint` | - | No | - | OTLP gRPC endpoint (`host:port`) to export metrics. Empty to disable |
 | `--otlp-interval` | - | No | `10s` | OTLP metrics export interval |
 | `--otlp-insecure` | - | No | `false` | Use insecure (plaintext) gRPC connection for OTLP export |
@@ -420,6 +435,68 @@ sudo xdp-ninja -i eth0 "eth/ipv4/udp/gtp/ipv4/udp" | tcpdump -n -r -
 See the [xdp-ninja README](https://github.com/takehaya/xdp-ninja) for the full
 DSL filter syntax and capture modes.
 
+### Scheduling & Pacing Options (jitter tuning)
+
+These flags all default to the previous behavior; nothing changes unless you
+opt in. They exist to reduce TX jitter (batch wakeup error and per-second
+rate variance), both reported in the final statistics of every `--pps` run:
+
+```
+pacing statistics (batch wakeup error)  {"batches": 999, "p50": "262µs", "p99": "1ms", "max": "902µs"}
+rate stability (per-second TX pps)      {"samples": 9, "mean_pps": 1000, "cv_percent": 0, ...}
+```
+
+#### `--sched-policy` / `--sched-priority` / `--disable-rt-throttling`
+
+Put the TX worker threads (and only them) into a realtime scheduling class
+via `sched_setattr(2)`. Other tasks can then no longer preempt the workers,
+which tightens the pacing tail on a busy machine.
+
+Realtime tasks are throttled to `sched_rt_runtime_us` per second by default
+(usually 950ms/1s), which injects a periodic stall into 100%-busy workers.
+xdperf warns when the throttle is active; `--disable-rt-throttling` lifts it
+for the run and restores the previous value on exit (not on SIGKILL). Note
+that a throttling-free FIFO worker at 100% CPU can starve percpu kthreads on
+its CPU — prefer `--scx` for long max-speed runs.
+
+```shell
+xdperf run -d eth0 -c 1m --pps 100k --sched-policy fifo --sched-priority 50 --disable-rt-throttling
+```
+
+#### `--batch-interval` / `--pacing-mode`
+
+`--pps` pacing sends one batch per interval (default 100ms). A smaller
+interval spreads packets more evenly at the cost of more wakeups and more
+`bpf_prog_run` calls. Note that each call has a fixed kernel-side cost
+(several ms on some kernels); if the interval is smaller than that cost the
+run becomes overrun-bound — visible as a constant `p50` batch wakeup error.
+Start at `10ms`–`50ms` and check the pacing statistics.
+
+`--pacing-mode busy` replaces the timer with a spin loop toward absolute
+deadlines: microsecond-precision batch starts, at the price of one fully
+busy core per worker. Combine with `--sched-policy` or `--scx` so the spin
+itself is not preempted.
+
+#### `--scx`
+
+Attaches a sched_ext BPF scheduler (kernel >= 6.13 with
+`CONFIG_SCHED_EXT=y`) that dedicates the worker CPUs to xdperf for the
+duration of the run: all other tasks are confined to the remaining CPUs, and
+tasks that can only run on a worker CPU (percpu kthreads) get bounded 20µs
+slices. This is "isolcpus without a reboot" and avoids the RT-throttling and
+kthread-starvation pitfalls of `--sched-policy`.
+
+While attached the scheduler manages every normal-class task on the system;
+it detaches (and the kernel restores its default scheduler) when the run
+ends, and automatically if the process dies. Requires send mode, at least
+one non-worker CPU for housekeeping, and no other sched_ext scheduler
+running. Mutually exclusive with `--sched-policy`. See
+[docs/ja/scx_design.md](ja/scx_design.md) for the design.
+
+```shell
+xdperf run -d eth0 -c 10m --pps 1m -l 4 --cpu-mode 2,3,4,5 --scx
+```
+
 ### Option Constraints Summary
 
 | Constraint | Description |
@@ -435,3 +512,9 @@ DSL filter syntax and capture modes.
 | Plugin name format | Must be `<name>.<language>` unless `--plugin-language` is specified |
 | `--infinite` requires `--count` | Packet pool size must be specified |
 | `--infinite` cannot use `--duration` | Duration is not applicable in infinite mode |
+| `--sched-policy` / `--scx` / `--pacing-mode busy` require send mode | RX has no worker threads to schedule |
+| `--sched-priority` within 1-99 | Checked only when `--sched-policy` is set |
+| `--disable-rt-throttling` requires `--sched-policy` | Only realtime classes are throttled |
+| `--batch-interval` / `--pacing-mode busy` require `--pps` | They only shape rate-limited pacing |
+| `--scx` and `--sched-policy` are mutually exclusive | Realtime workers would bypass the sched_ext scheduler |
+| `--scx` needs a spare CPU | At least one non-worker CPU must remain for housekeeping |

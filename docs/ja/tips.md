@@ -423,3 +423,78 @@ INFO  CPU selection  {"mode": "local", "selected_cpus": [24,25,26,27,28,29,30,31
 ```
 あとは `auto`/`local` 指定で `numa_node=-1`(affinity なし)のデバイスを掴むと、ローカルノードに寄せられず先頭 N コアにフォールバックする点に注意。物理 NIC ならまず付いてるはずだけど、veth とかだと付いてないことがある。
 
+
+## スケジューリングとジッタ低減 (--sched-policy / --scx)
+
+「レートは出てるけど揺れる」「p99 が暴れる」への対処。まず計測、次に安い順で対策する。
+
+### まず測る
+
+`--pps` 実行の最終統計に 2 つの指標が常に出る (フラグ不要):
+
+```
+INFO  pacing statistics (batch wakeup error)  {"batches": 999, "p50": "262.143µs", "p99": "1.048575ms", "max": "902.81µs"}
+INFO  rate stability (per-second TX pps)      {"samples": 9, "mean_pps": 1000, "stddev_pps": 0, "cv_percent": 0, ...}
+```
+
+- **batch wakeup error**: 各バッチが予定時刻からどれだけ遅れて始まったか。スケジューラ/タイマー起因のジッタの直接測定
+- **rate stability**: 秒間 PPS の平均・標準偏差・変動係数 (CV)。受信側に見える「揺れ」
+
+環境の下見は `xdperf probe -d <dev> --cpu-mode <...> -l <N>` で。RT スロットリング、governor、irqbalance、NIC IRQ と worker CPU の重なり、sched_ext 対応 (`--scx` 可否) まで警告してくれる。
+
+### 落とし穴: --batch-interval には床がある
+
+`bpf_prog_run` (live frames) は 1 回の呼び出しに**数 ms 規模の固定コスト**を持つカーネルがある (page_pool の解放同期など。バッチ内のパケット数にはよらない)。`--batch-interval` をこの固定コストより短くすると、全バッチがオーバーランして「p50 からして大きい・interval を変えても誤差がほぼ一定」という形で pacing statistics に現れる。
+
+```
+# 10ms スロット × 固定コスト ~10ms のカーネル → overrun-bound (p50 が ms 級で張り付く)
+pacing statistics  {"p50": "8.388607ms", "p99": "33.554431ms", ...}
+# 100ms スロット (既定) → 固定コストを吸収して µs 級に
+pacing statistics  {"p50": "262.143µs", "p99": "1.048575ms", ...}
+```
+
+細かくするなら 10〜50ms から様子見。誤差が interval 非依存の定数になったらそれは床。
+
+### 対策の階段
+
+1. **CPU を選ぶ** — `--cpu-mode` で NIC ローカル & 空いてるコアへ。probe の IRQ 重なり警告を消す
+2. **`--sched-policy fifo --sched-priority 50`** — worker スレッドだけ RT クラスに。他タスクに割り込まれなくなる。RT スロットリング (既定 950ms/1s) の警告が出たら `--disable-rt-throttling` (終了時に復元)。**注意**: throttling を切った FIFO worker が 100% busy で回り続けると同 CPU の percpu kthread が飢餓する。長時間の max-speed には向かない
+3. **`--scx`** (kernel 6.13+, `CONFIG_SCHED_EXT=y`) — sched_ext スケジューラで worker CPU を専有。isolcpus 不要・再起動不要で、kthread は 20µs の有界割込みに抑えつつ飢餓させない (FIFO の弱点がない)。実行中はシステム全体の通常タスクを管理し、終了・異常終了で既定スケジューラに自動復帰。設計は [scx_design.md](scx_design.md)
+4. **`--pacing-mode busy`** — ticker の起床レイテンシ (数十 µs〜) すら惜しいとき。絶対締切へのスピン待ちで µs 精度、代償はコア 1 個常時 100%。2 か 3 と併用前提
+
+### 効果測定の手順 (A/B/C 比較)
+
+同一条件で「素 → fifo → scx」を各 3 回走らせ、p99/max と CV の中央値で比較する。競合負荷は stress-ng で注入:
+
+```bash
+DEV=eth0; ARGS="-d $DEV -c 6m --pps 100k -l 2 --cpu-mode 2,3 --batch-interval 50ms"
+
+# 競合負荷 (全コア)
+stress-ng --cpu $(nproc) --timeout 240s &
+
+# A: baseline
+sudo ./xdperf run $ARGS
+# B: RT 優先度
+sudo ./xdperf run $ARGS --sched-policy fifo --sched-priority 90 --disable-rt-throttling
+# C: sched_ext 隔離
+sudo ./xdperf run $ARGS --scx
+```
+
+期待は「A > B > C の順で p99/max と cv_percent が単調に下がる」。B と C が変わらないなら、そのマシンのノイズ源はスケジューリング以外 (IRQ、governor、`--batch-interval` の床) にある。OTLP を有効にしていれば同じ値が `xdperf.pacing.error_seconds` (quantile 属性付き) でも取れる。
+
+### --scx が動かないとき
+
+| 症状 | 原因と対処 |
+|------|-----------|
+| `sched_ext is not available on this kernel` | `CONFIG_SCHED_EXT=y` の 6.12+ が必要。Ubuntu なら 24.04 HWE (6.14) 以降など |
+| `predates the scx_bpf_dsq_insert kfunc` | 6.12 は kfunc 改名前で非対応。6.13+ へ |
+| `another sched_ext scheduler is active (scx_lavd)` | scx_lavd 等の常駐スケジューラと排他。止めてから実行 |
+| `needs at least one non-worker CPU` | 全 CPU を worker にすると housekeeping が走れない。`--parallelism` を減らすか `--cpu-mode` を絞る |
+| `scx scheduler exited mid-run: ... ERROR_STALL` | watchdog 排除 (どこかのタスクが 30 秒走れなかった)。issue 報告歓迎 |
+
+カーネルを上げずに動作だけ見るなら、テストカーネルを vimto (QEMU/KVM) で:
+
+```bash
+./scripts/scx_kernel/build.sh   # ci-kernels config + SCHED_CLASS_EXT + VETH の 6.18 (要 Docker)
+vimto -kernel "$PWD/out/scx-kernel/bzImage" -smp 2 -- go test -v ./pkg/scx/ -run TestScx
+```
