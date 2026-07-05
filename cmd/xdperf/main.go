@@ -186,6 +186,16 @@ func newApp(version string) *cli.App {
 					Name:  "json, j",
 					Usage: "output results in JSON format",
 				},
+				cli.StringFlag{
+					Name:  "cpu-mode",
+					Value: "auto",
+					Usage: "CPU selection to evaluate environment checks against (same syntax as run)",
+				},
+				cli.IntFlag{
+					Name:  "parallelism, l",
+					Value: 1,
+					Usage: "worker count to evaluate environment checks against (same as run)",
+				},
 			},
 			Action: probe.RunProbe,
 		},
