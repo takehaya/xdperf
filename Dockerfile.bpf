@@ -18,7 +18,8 @@ ARG BPF_CFLAGS="-O2 -g -Wall -Werror"
 ENV BPF_CLANG=${BPF_CLANG}
 ENV BPF_CFLAGS=${BPF_CFLAGS}
 
-RUN go generate pkg/coreelf/elf.go
+RUN go generate ./pkg/coreelf ./pkg/scx
 
 FROM scratch
-COPY --from=builder /app/pkg/coreelf/bpf_* /
+COPY --from=builder /app/pkg/coreelf/bpf_* /coreelf/
+COPY --from=builder /app/pkg/scx/scx_* /scx/

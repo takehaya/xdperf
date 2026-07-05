@@ -138,3 +138,13 @@ check_live_frames() {
     out="$(ip netns exec "$ns" "${XDPERF_BIN}" probe --device "$dev" --json 2>/dev/null)" || return 2
     echo "$out" | grep -q '"live_frame_mode"[^,}]*true' || return 1
 }
+
+# Whether this kernel can run the --scx sched_ext scheduler (CONFIG_SCHED_EXT
+# and 6.13+ kfuncs); probe encodes the exact requirements as scx_usable.
+# Usage: check_scx_usable <namespace> <device>
+check_scx_usable() {
+    local ns="$1" dev="$2"
+    local out
+    out="$(ip netns exec "$ns" "${XDPERF_BIN}" probe --device "$dev" --json 2>/dev/null)" || return 1
+    echo "$out" | grep -q '"scx_usable"[^,}]*true' || return 1
+}
