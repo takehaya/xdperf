@@ -42,6 +42,7 @@ type Config struct {
 	DisableRTThrottling bool          // set sched_rt_runtime_us=-1 for the run (restored on exit)
 	BatchInterval       time.Duration // target batch interval for --pps pacing (default 100ms)
 	PacingMode          string        // batch pacing engine for --pps: "ticker" (default) / "busy"
+	Scx                 bool          // isolate worker CPUs via the sched_ext scheduler (kernel >= 6.13, opt-in)
 
 	OTLPEndpoint   string        // OTLP gRPC endpoint (host:port). Empty = metrics export disabled
 	OTLPInterval   time.Duration // OTLP metrics export interval
@@ -103,6 +104,9 @@ func (c *Config) Validate() error {
 		}
 		if c.PacingMode == PacingModeBusy {
 			return fmt.Errorf("--pacing-mode busy requires send mode")
+		}
+		if c.Scx {
+			return fmt.Errorf("--scx requires send mode (RX has no worker threads to isolate)")
 		}
 	}
 
@@ -180,6 +184,13 @@ func (c *Config) Validate() error {
 	}
 	if c.BatchInterval < 0 {
 		return fmt.Errorf("--batch-interval must be positive")
+	}
+	// Under --scx workers stay in the normal class and the BPF scheduler
+	// grants them their CPUs; a FIFO/RR worker would sit in the RT class
+	// above sched_ext and silently change what is being measured. Make the
+	// user pick one mechanism explicitly.
+	if c.Scx && c.SchedPolicy != SchedPolicyNone {
+		return fmt.Errorf("--scx and --sched-policy are mutually exclusive (realtime workers bypass the sched_ext scheduler)")
 	}
 
 	// PluginLanguage is derived by Normalize; if it is still empty here, the

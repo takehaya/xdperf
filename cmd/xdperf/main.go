@@ -145,6 +145,10 @@ func newApp(version string) *cli.App {
 			Value: "ticker",
 			Usage: "batch pacing engine for --pps: ticker or busy (busy-waits for microsecond precision, burns one core)",
 		},
+		cli.BoolFlag{
+			Name:  "scx",
+			Usage: "dedicate worker CPUs to xdperf via a sched_ext BPF scheduler (kernel >= 6.13 with CONFIG_SCHED_EXT; system-wide while running, restored on exit)",
+		},
 		cli.StringFlag{
 			Name:  "otlp-endpoint",
 			Usage: "OTLP gRPC endpoint (host:port, e.g., localhost:4317) to export metrics. Empty to disable",
@@ -232,6 +236,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.DisableRTThrottling = ctx.Bool("disable-rt-throttling")
 	c.BatchInterval = ctx.Duration("batch-interval")
 	c.PacingMode = ctx.String("pacing-mode")
+	c.Scx = ctx.Bool("scx")
 	c.OTLPEndpoint = ctx.String("otlp-endpoint")
 	c.OTLPInterval = ctx.Duration("otlp-interval")
 	c.OTLPInsecure = ctx.Bool("otlp-insecure")

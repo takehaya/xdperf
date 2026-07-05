@@ -11,7 +11,7 @@
 # Overridable via environment variables:
 #   COUNT (10k) / PPS (10k) / PAYLOAD_SIZE (256) / DST_PORT (10001)
 #   PLUGIN (simpleudp.tinygo) / VLAN_ID (0=untagged) / VLAN_PCP (0)
-#   ECHO (0) / ECHO_THRESHOLD (99) / PASS_THRESHOLD (100)
+#   ECHO (0) / ECHO_THRESHOLD (99) / PASS_THRESHOLD (100) / SCX (0)
 
 COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -40,6 +40,9 @@ PASS_THRESHOLD="${PASS_THRESHOLD:-100}"
 # hence the 99% default threshold.
 ECHO="${ECHO:-0}"
 ECHO_THRESHOLD="${ECHO_THRESHOLD:-99}"
+# SCX=1: isolate the TX worker CPUs with the sched_ext scheduler (--scx).
+# Requires kernel >= 6.13 with CONFIG_SCHED_EXT; the preflight SKIPs otherwise.
+SCX="${SCX:-0}"
 
 # Logs live in the root-only rundir (see test_utils.sh) to avoid symlink
 # risks and collisions on fixed /tmp paths
@@ -100,6 +103,21 @@ scenario_preflight() {
         print_info "SKIP: this kernel does not support XDP live-frames (BPF_PROG_RUN)"
         return 2
     fi
+
+    if [ "${SCX}" -eq 1 ]; then
+        if ! check_scx_usable "${NS_TX}" "${VETH_TX}"; then
+            print_info "SKIP: kernel cannot run --scx (needs >= 6.13 with CONFIG_SCHED_EXT)"
+            return 2
+        fi
+        if [ "$(cat /sys/kernel/sched_ext/state 2>/dev/null)" != "disabled" ]; then
+            print_info "SKIP: another sched_ext scheduler is active ($(cat /sys/kernel/sched_ext/root/ops 2>/dev/null))"
+            return 2
+        fi
+        if [ "$(nproc)" -lt 2 ]; then
+            print_info "SKIP: --scx needs >= 2 CPUs (worker + housekeeping)"
+            return 2
+        fi
+    fi
     return 0
 }
 
@@ -115,11 +133,13 @@ build_cfg() {
 
 # Send COUNT packets at PPS from the tx namespace; extra xdperf args are
 # passed through. Reports the failure (with log tail) itself.
+# stdin comes from /dev/null so the WASI stdio mapping works in minimal
+# environments (e.g. vimto VMs) where the inherited fd 0 is not openable.
 send_udp() {
     ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
         --plugin "${PLUGIN}" --plugin-path "${PLUGIN_PATH}" \
         --count "${COUNT}" --pps "${PPS}" "$@" \
-        --cfg "$(build_cfg)" > "${TX_LOG}" 2>&1 || {
+        --cfg "$(build_cfg)" > "${TX_LOG}" 2>&1 < /dev/null || {
         print_error "Send failed (log: ${TX_LOG})"
         tail -n 20 "${TX_LOG}"
         return 1
@@ -140,6 +160,9 @@ run_udp_test() {
         # for the XDP_TX return path
         tx_args+=(--recv)
     fi
+    if [ "${SCX}" -eq 1 ]; then
+        tx_args+=(--scx)
+    fi
     start_rx_server "${NS_RX}" "${VETH_RX}" "${RX_LOG}" "${rx_args[@]}" || return 1
 
     # veth counters are cumulative; measure deltas from a baseline
@@ -154,6 +177,23 @@ run_udp_test() {
     if ! send_udp "${tx_args[@]}"; then
         stop_rx_server
         return 1
+    fi
+
+    # Packet counters alone cannot tell whether the scheduler really ran;
+    # assert the attach/detach evidence from the sender log as a second axis.
+    if [ "${SCX}" -eq 1 ]; then
+        if ! grep -q '"ops": "xdperf"' "${TX_LOG}"; then
+            print_error "FAIL: --scx run has no scheduler-attached evidence (ops=xdperf) in ${TX_LOG}"
+            tail -n 10 "${TX_LOG}" 2>/dev/null || true
+            stop_rx_server
+            return 1
+        fi
+        if ! grep -q "default scheduler restored" "${TX_LOG}"; then
+            print_error "FAIL: --scx run did not log a clean scheduler detach"
+            tail -n 10 "${TX_LOG}" 2>/dev/null || true
+            stop_rx_server
+            return 1
+        fi
     fi
 
     sleep 1

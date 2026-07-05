@@ -1,5 +1,10 @@
 ---
-name: BPF load test
+# The upstream vimto images (ghcr.io/cilium/ci-kernels) ship without
+# CONFIG_SCHED_EXT, so the sched_ext scheduler is tested against a
+# purpose-built kernel (ci-kernels config + SCHED_CLASS_EXT + VETH). The
+# kernel build is cached on the build script + base config, so it only
+# reruns when the kernel recipe changes.
+name: scx load test
 
 on:
   push:
@@ -8,32 +13,24 @@ on:
       - '**.go'
       - '**.h'
       - '**.c'
-      - 'pkg/coreelf/**'
-      - '.github/workflows/bpf_load_test.yaml'
+      - 'pkg/scx/**'
+      - 'scripts/scx_kernel/**'
+      - '.github/workflows/scx_load_test.yaml'
   pull_request:
     paths:
       - 'go.*'
       - '**.go'
       - '**.h'
       - '**.c'
-      - 'pkg/coreelf/**'
-      - '.github/workflows/bpf_load_test.yaml'
+      - 'pkg/scx/**'
+      - 'scripts/scx_kernel/**'
+      - '.github/workflows/scx_load_test.yaml'
 
 jobs:
-  bpf-load-test:
-    name: BPF load test (kernel ${{ matrix.kernel }})
+  scx-load-test:
+    name: scx load test (sched_ext kernel)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        kernel:
-          - "6.1"
-          - "6.6"
-          - "6.12"
-          - "6.18"
-          - "7.0"
-          - "7.1"
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
@@ -78,14 +75,16 @@ jobs:
       - name: Enable KVM
         run: sudo chmod 0666 /dev/kvm
 
-      - name: Cache kernel images
+      - name: Cache sched_ext test kernel
         uses: actions/cache@v4
+        id: kernel-cache
         with:
-          path: ~/.cache/vimto
-          key: vimto-kernel-${{ matrix.kernel }}
+          path: out/scx-kernel
+          key: scx-kernel-${{ hashFiles('scripts/scx_kernel/build.sh', 'scripts/scx_kernel/config-base-6.18') }}
 
-      - name: Run BPF load test
-        # TestScx self-skips when the kernel lacks sched_ext (all ci-kernels
-        # today); the scx programs are exercised for real in scx_load_test.yaml
-        # against a purpose-built kernel.
-        run: vimto -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ ./pkg/scx/ -run 'TestBpf|TestScx'
+      - name: Build sched_ext test kernel
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: ./scripts/scx_kernel/build.sh
+
+      - name: Run scx load test
+        run: vimto -kernel "$PWD/out/scx-kernel/bzImage" -smp 2 -- go test -v -count 1 -timeout 5m ./pkg/scx/ -run TestScx

@@ -19,6 +19,7 @@ import (
 	"github.com/takehaya/xdperf/pkg/logger"
 	"github.com/takehaya/xdperf/pkg/numa"
 	"github.com/takehaya/xdperf/pkg/plugin"
+	"github.com/takehaya/xdperf/pkg/scx"
 	"github.com/takehaya/xdperf/pkg/telemetry"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
@@ -139,6 +140,24 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 		zap.Ints("selected_cpus", cpus),
 		zap.Int("parallelism", cfg.Parallelism),
 	)
+
+	if cfg.Scx {
+		// Fail fast on unsupported kernels instead of erroring after the
+		// plugin has run and packets are staged.
+		if err := scx.Supported(); err != nil {
+			return nil, fmt.Errorf("--scx: %w", err)
+		}
+		topo, err := numa.DetectTopology()
+		if err != nil {
+			return nil, fmt.Errorf("--scx: failed to detect CPU topology: %w", err)
+		}
+		// The scheduler confines every other task to non-worker CPUs; with
+		// none left, housekeeping (kworkers, stats, RCU) cannot run and the
+		// sched_ext watchdog would eject the scheduler mid-run.
+		if total := topo.TotalCPUs(); len(cpus) >= total {
+			return nil, fmt.Errorf("--scx needs at least one non-worker CPU for housekeeping (workers=%d, online=%d): lower --parallelism or narrow --cpu-mode", len(cpus), total)
+		}
+	}
 
 	xd = &Xdperf{
 		Logger:        logger,
@@ -490,6 +509,24 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		}
 		return nil
 	}()
+
+	// The one valid sched_ext attach point: every worker thread exists, is
+	// pinned, and has reported its TID, but no packet has been sent yet. An
+	// unregistered worker would be confined off its own CPU by the scheduler.
+	var scxMgr *scx.Manager
+	if barrierErr == nil && x.cfg.Scx {
+		scxMgr, barrierErr = scx.Attach(scx.Options{
+			WorkerTIDByCPU: workerTIDs,
+			TGID:           os.Getpid(),
+			Logger:         x.Logger,
+		})
+		if barrierErr != nil {
+			// Hard abort, no degrade: --scx is an explicit measurement
+			// condition; silently running unisolated would corrupt results.
+			barrierErr = fmt.Errorf("--scx: %w", barrierErr)
+		}
+	}
+
 	if barrierErr == nil {
 		x.Logger.Debug("all workers pinned", zap.Any("tid_by_cpu", workerTIDs))
 		close(start)
@@ -499,6 +536,30 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		// into its loop after cancellation would still send the whole batch.
 		x.Logger.Error("worker startup failed", zap.Error(barrierErr))
 		cancel()
+	}
+
+	// A watchdog eject silently falls back to the default scheduler, which
+	// would invalidate the measurement — detect it and fail the run instead.
+	if scxMgr != nil {
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if err := scxMgr.CheckHealth(); err != nil {
+						x.Logger.Error("sched_ext scheduler failed mid-run; results are invalid", zap.Error(err))
+						once.Do(func() {
+							firstErr = err
+							cancel()
+						})
+						return
+					}
+				}
+			}
+		}()
 	}
 
 	// Wait for either signal or all goroutines to complete
@@ -527,6 +588,16 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	}
 	cancel()
 	wg.Wait()
+
+	// Detach only after every worker has stopped, so no packet of the run is
+	// paced under the default scheduler ("tail" under different conditions).
+	if scxMgr != nil {
+		if err := scxMgr.Close(); err != nil {
+			x.Logger.Warn("failed to detach sched_ext scheduler", zap.Error(err))
+		} else {
+			x.Logger.Info("sched_ext scheduler detached; default scheduler restored")
+		}
+	}
 
 	if firstErr == nil && barrierErr != nil {
 		firstErr = barrierErr
