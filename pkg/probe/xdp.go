@@ -21,14 +21,15 @@ const (
 )
 
 type ProbeResult struct {
-	DeviceName       string `json:"device"`
-	XDPSupported     bool   `json:"xdp_supported"`
-	XDPDriverMode    bool   `json:"xdp_driver_mode"`
-	XDPGenericMode   bool   `json:"xdp_generic_mode"`
-	XDPOffloadMode   bool   `json:"xdp_offload_mode"`
-	LiveFrameMode    bool   `json:"live_frame_mode"`
-	CurrentXDPProgID uint32 `json:"current_xdp_prog_id"`
-	AttachedMode     string `json:"attached_mode"`
+	DeviceName       string     `json:"device"`
+	XDPSupported     bool       `json:"xdp_supported"`
+	XDPDriverMode    bool       `json:"xdp_driver_mode"`
+	XDPGenericMode   bool       `json:"xdp_generic_mode"`
+	XDPOffloadMode   bool       `json:"xdp_offload_mode"`
+	LiveFrameMode    bool       `json:"live_frame_mode"`
+	CurrentXDPProgID uint32     `json:"current_xdp_prog_id"`
+	AttachedMode     string     `json:"attached_mode"`
+	Environment      *EnvResult `json:"environment,omitempty"`
 }
 
 func getInterface(deviceName string) (*net.Interface, error) {

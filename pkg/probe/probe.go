@@ -37,6 +37,10 @@ func RunProbe(ctx *cli.Context) error {
 		return fmt.Errorf("probe failed: %w", err)
 	}
 
+	// Environment checks look at the same worker CPUs the run command would
+	// pick for this cpu-mode/parallelism.
+	result.Environment = ProbeEnv(deviceName, ctx.String("cpu-mode"), ctx.Int("parallelism"))
+
 	if jsonOutput {
 		return printProbeResultJSON(result)
 	}
@@ -68,6 +72,10 @@ func printProbeResultWithLogger(lg *zap.Logger, result *ProbeResult) {
 		zap.Bool("live_frame_mode", result.LiveFrameMode),
 	)
 
+	if env := result.Environment; env != nil {
+		printEnvWithLogger(lg, env)
+	}
+
 	// Summary
 	if result.XDPSupported && result.LiveFrameMode {
 		lg.Info("Summary: This device is fully compatible with xdperf")
@@ -77,6 +85,79 @@ func printProbeResultWithLogger(lg *zap.Logger, result *ProbeResult) {
 		)
 	} else {
 		lg.Error("Summary: XDP is not supported on this device")
+	}
+}
+
+// printEnvWithLogger renders the environment checks: informational lines for
+// capabilities, warnings for conditions known to add TX jitter.
+func printEnvWithLogger(lg *zap.Logger, env *EnvResult) {
+	lg.Info("Kernel", zap.String("release", env.KernelRelease))
+
+	se := env.SchedExt
+	fields := []zap.Field{
+		zap.Bool("available", se.Available),
+		zap.Bool("scx_usable", se.ScxUsable),
+	}
+	if se.State != "" {
+		fields = append(fields, zap.String("state", se.State))
+	}
+	if se.RootOps != "" {
+		fields = append(fields, zap.String("running_scheduler", se.RootOps))
+	}
+	if se.Reason != "" {
+		fields = append(fields, zap.String("reason", se.Reason))
+	}
+	lg.Info("sched_ext (--scx)", fields...)
+
+	if env.CPUSelectionError != "" {
+		lg.Warn("CPU selection failed", zap.String("error", env.CPUSelectionError))
+	} else if len(env.SelectedCPUs) > 0 {
+		lg.Info("Worker CPUs (as run would select)", zap.Ints("cpus", env.SelectedCPUs))
+	}
+
+	if env.RTRuntimeUs != "" && env.RTRuntimeUs != "-1" {
+		lg.Warn("RT throttling active: --sched-policy workers will stall periodically",
+			zap.String("sched_rt_runtime_us", env.RTRuntimeUs),
+			zap.String("hint", "use --disable-rt-throttling on the run, or write -1 to /proc/sys/kernel/sched_rt_runtime_us"),
+		)
+	}
+
+	for cpu, gov := range env.CPUGovernors {
+		if gov != "performance" {
+			lg.Warn("CPU frequency governor is not \"performance\"",
+				zap.Int("cpu", cpu), zap.String("governor", gov),
+				zap.String("hint", "frequency transitions add latency jitter"),
+			)
+		}
+	}
+
+	if env.IRQBalanceRunning {
+		lg.Warn("irqbalance is running: it may move device IRQs onto worker CPUs")
+	}
+	if env.IsolCPUs != "" {
+		lg.Info("Boot-time CPU isolation", zap.String("isolcpus", env.IsolCPUs))
+	}
+	if env.NohzFull != "" {
+		lg.Info("Tickless CPUs", zap.String("nohz_full", env.NohzFull))
+	}
+	if env.RCUNocbs != "" {
+		lg.Info("RCU callback offload", zap.String("rcu_nocbs", env.RCUNocbs))
+	}
+
+	overlapped := 0
+	for _, irq := range env.DeviceIRQs {
+		if irq.Overlaps {
+			overlapped++
+			lg.Warn("Device IRQ affinity overlaps a worker CPU",
+				zap.Int("irq", irq.IRQ),
+				zap.String("name", irq.Name),
+				zap.Ints("cpus", irq.CPUs),
+				zap.String("hint", "steer the IRQ elsewhere or pick other CPUs via --cpu-mode"),
+			)
+		}
+	}
+	if len(env.DeviceIRQs) > 0 && overlapped == 0 {
+		lg.Info("Device IRQs stay off the worker CPUs", zap.Int("irqs", len(env.DeviceIRQs)))
 	}
 }
 
