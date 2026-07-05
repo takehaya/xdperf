@@ -56,7 +56,8 @@ CLI (cmd/xdperf/main.go) → 設定パース → Xdperf初期化
 - **pkg/coreelf/** — cilium/ebpfによるeBPFオブジェクト読込。`go:generate`ディレクティブで`bpf2go`を実行し`src/xdp_prog.c`をコンパイル。`ReadCollection()`がdiff_mapサイズを動的に調整。
 - **pkg/plugin/** — wazeroランタイムによるWASMプラグインマネージャ。`.wasm`バイナリを読込、ホスト関数 (ログ、メトリクス、ARP解決) を公開、プラグインライフサイクル (init → process → cleanup) を管理。ホスト・ゲスト間はJSONベースで通信。
 - **pkg/guest/** — WASMプラグインがインポートするSDK。`PacketVariantSet`、`PacketVariant`、`ChecksumSpec`、`VariableParams`等の型を提供。プラグインは`//go:wasmexport`で`plugin_init`、`plugin_process`、`plugin_cleanup`をエクスポートする必要あり。
-- **pkg/probe/** — ネットワークデバイスごとのXDP機能検出 (native, generic, offloadモード)。
+- **pkg/probe/** — ネットワークデバイスごとのXDP機能検出 (native, generic, offloadモード)。加えて`env.go`がジッタ関連の環境チェック (kernel/sched_ext対応・RTスロットリング・governor・irqbalance・NIC IRQ affinityとworker CPUの重なり) をレポートする。
+- **pkg/scx/** — sched_ext (eBPF CPUスケジューラ、kernel 6.13+) による worker CPU 隔離 (`--scx`)。`detect.go`が対応判定 (sysfs + カーネルBTFのkfunc存在)、`loader.go`がロード・attach・ヘルスチェック・detach を担う。BPF本体は`src/scx_prog.c`。設計は [docs/ja/scx_design.md](docs/ja/scx_design.md)。
 - **pkg/telemetry/** — OTLP/gRPC pushによるメトリクス送信 (`--otlp-endpoint` 指定時のみ有効)。otel SDK / gRPC依存をこのパッケージに閉じ込め、MeterProviderの組み立てとshutdown (最終フラッシュ、5sタイムアウト) を担当。使い方は [docs/ja/otlp_metrics.md](docs/ja/otlp_metrics.md) を参照。
 - **pkg/logger/** — zapベースの構造化ロギング。
 
@@ -81,8 +82,12 @@ Cソースは`src/`に配置:
 - `xdp_packet.h` — データ構造定義 (`base_packet`, `diff_entry`, `diff_value`, `checksum_meta`, `pkt_state`)
 - `xdp_checksum.h` — IPv4/IPv6/TCP/UDP/ICMPv6チェックサム計算。`bpf_loop`とsafeコールバックでverifier制約を回避。
 - `xdp_utils.h` — ユーティリティマクロ
+- `scx_prog.c` — sched_ext CPUスケジューラ (`--scx`用、struct_ops)。worker CPU専有・percpu kthreadの有界割込み・その他タスクの共有DSQ隔離を実装。
+- `scx_kernel_defs.h` — sched_ext用のカーネル型・kfunc手書き宣言 (`preserve_access_index`によるCO-RE。vmlinux.hは導入しない方針)
 
-コンパイルはDocker (`Dockerfile.bpf`) 経由でclang → bpf2go → `pkg/coreelf/bpf_bpf{el,eb}.go`を生成。Cソース変更後: `make bpf-gen`。
+コンパイルはDocker (`Dockerfile.bpf`) 経由でclang → bpf2go。**2系統**あり、データプレーン (`src/xdp_prog.c` → `pkg/coreelf/bpf_bpf{el,eb}.go`) とスケジューラ (`src/scx_prog.c` → `pkg/scx/scx_bpf{el,eb}.go`) を`make bpf-gen`が両方生成する。Cソース変更後: `make bpf-gen`。
+
+sched_extのテストは、対応カーネル (ci-kernelsは全レグ非対応) を`scripts/scx_kernel/build.sh`でビルドしてvimtoで実行する (`.github/workflows/scx_load_test.yaml`)。
 
 > **パケットキャプチャについて:** `xdperf run` はXDPで送信し、自身ではpcapを書き出さない。生成トラフィックのキャプチャは、非侵襲にアタッチでき内側ヘッダ (GTP-U/VXLAN/MPLS/SRv6等) まで辿れる [xdp-ninja](https://github.com/takehaya/xdp-ninja) を使う。旧来の in-tree な xdpcap フックはホットパスから撤去済み。
 

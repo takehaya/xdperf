@@ -10,7 +10,9 @@ src/
 ├── xdp_utils.h     ユーティリティ（MAC/IPスワップ、swap_resp制御）
 ├── xdp_packet.h    データ構造とBPFマップ定義（システムの心臓部）
 ├── xdp_checksum.h  チェックサム計算エンジン（フル再計算用）
-└── xdp_prog.c      XDPプログラム本体（TX/RX/チェックサム）
+├── xdp_prog.c      XDPプログラム本体（TX/RX/チェックサム）
+├── scx_kernel_defs.h  sched_ext用カーネル型・kfunc宣言（CO-RE手書き定義）
+└── scx_prog.c      sched_ext CPUスケジューラ（--scx用、docs/ja/scx_design.md参照）
 ```
 
 ## 設計思想: Diffベースパケット生成
