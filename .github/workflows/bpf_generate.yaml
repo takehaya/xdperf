@@ -38,7 +38,7 @@ jobs:
           echo "prod_count=$(git diff --name-only | wc -l)" >> $GITHUB_OUTPUT
       - name: git commit and push
         id: commit
-        if: steps.generate.outputs.count > 0
+        if: steps.generate.outputs.prod_count > 0
         run: |
           git config --local user.email "hayatake396@gmail.net"
           git config --local user.name "takehaya(bot)"
