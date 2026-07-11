@@ -51,7 +51,41 @@ func (x *Xdperf) registerMetrics(meter metric.Meter, ty TrafficType) error {
 		}
 		return NICStats{TxXdpPackets: txPackets, TxXdpDropped: txDropped}, nil
 	}
-	return registerMetricsSource(meter, src, x.Logger)
+	if err := registerMetricsSource(meter, src, x.Logger); err != nil {
+		return err
+	}
+	if x.pacing != nil {
+		return registerPacingMetrics(meter, x.pacing)
+	}
+	return nil
+}
+
+// registerPacingMetrics exposes the batch pacing-error quantiles (over the
+// run so far) as an observable gauge. Only PPS-mode workers record samples;
+// until the first batch the callback observes nothing.
+func registerPacingMetrics(meter metric.Meter, set *pacingSet) error {
+	errGauge, err := meter.Float64ObservableGauge("xdperf.pacing.error_seconds",
+		metric.WithUnit("s"),
+		metric.WithDescription("TX batch pacing error (time past the scheduled batch start), quantiles over the run so far"))
+	if err != nil {
+		return err
+	}
+
+	q50 := metric.WithAttributes(attribute.String("quantile", "0.5"))
+	q99 := metric.WithAttributes(attribute.String("quantile", "0.99"))
+	qMax := metric.WithAttributes(attribute.String("quantile", "max"))
+
+	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		s := set.summarize()
+		if s.Count == 0 {
+			return nil
+		}
+		o.ObserveFloat64(errGauge, s.P50.Seconds(), q50)
+		o.ObserveFloat64(errGauge, s.P99.Seconds(), q99)
+		o.ObserveFloat64(errGauge, s.Max.Seconds(), qMax)
+		return nil
+	}, errGauge)
+	return err
 }
 
 func (x *Xdperf) statsReader(statMap *ebpf.Map) func() (statsTotals, error) {

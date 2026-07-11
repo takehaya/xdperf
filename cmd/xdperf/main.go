@@ -123,6 +123,29 @@ func newApp(version string) *cli.App {
 			Usage: "NUMA-aware CPU selection: auto, local, balanced, node:<N>, or CPU list (e.g., 0,2,4,6)",
 		},
 		cli.StringFlag{
+			Name:  "sched-policy",
+			Usage: "realtime scheduling class for TX worker threads: fifo or rr (default: keep normal scheduling)",
+		},
+		cli.IntFlag{
+			Name:  "sched-priority",
+			Value: 50,
+			Usage: "realtime priority 1-99, used with --sched-policy",
+		},
+		cli.BoolFlag{
+			Name:  "disable-rt-throttling",
+			Usage: "set kernel sched_rt_runtime_us=-1 while running (restored on exit; requires --sched-policy)",
+		},
+		cli.DurationFlag{
+			Name:  "batch-interval",
+			Value: 100 * time.Millisecond,
+			Usage: "target batch interval for --pps pacing (smaller = smoother traffic, more wakeups)",
+		},
+		cli.StringFlag{
+			Name:  "pacing-mode",
+			Value: "ticker",
+			Usage: "batch pacing engine for --pps: ticker or busy (busy-waits for microsecond precision, burns one core)",
+		},
+		cli.StringFlag{
 			Name:  "otlp-endpoint",
 			Usage: "OTLP gRPC endpoint (host:port, e.g., localhost:4317) to export metrics. Empty to disable",
 		},
@@ -194,6 +217,11 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.BatchSize = uint32(ctx.Int("batch-size"))
 	c.WasmCacheDir = ctx.String("wasm-cache-dir")
 	c.CPUMode = ctx.String("cpu-mode")
+	c.SchedPolicy = ctx.String("sched-policy")
+	c.SchedPriority = ctx.Int("sched-priority")
+	c.DisableRTThrottling = ctx.Bool("disable-rt-throttling")
+	c.BatchInterval = ctx.Duration("batch-interval")
+	c.PacingMode = ctx.String("pacing-mode")
 	c.OTLPEndpoint = ctx.String("otlp-endpoint")
 	c.OTLPInterval = ctx.Duration("otlp-interval")
 	c.OTLPInsecure = ctx.Bool("otlp-insecure")
@@ -215,6 +243,12 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 		return xdperf.Config{}, fmt.Errorf("invalid PPS value: %w", err)
 	}
 	c.PPS = pps
+
+	// --batch-interval only shapes --pps pacing; an explicit value without a
+	// rate would be silently ignored, so reject it (defaults pass through).
+	if ctx.IsSet("batch-interval") && c.PPS == 0 {
+		return xdperf.Config{}, fmt.Errorf("--batch-interval requires --pps")
+	}
 
 	if c.DebugMode > 0 {
 		// set verbose logging
