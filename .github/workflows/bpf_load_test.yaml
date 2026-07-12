@@ -153,7 +153,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential flex bison bc libelf-dev libssl-dev dwarves
           mkdir -p ~/.cache/rc-kernels /tmp/kernel-src
-          curl -sL "${{ matrix.source }}" | tar -xz -C /tmp/kernel-src --strip-components=1
+          curl -fsSL --retry 3 -o /tmp/kernel-src.tar.gz "${{ matrix.source }}"
+          tar -xzf /tmp/kernel-src.tar.gz -C /tmp/kernel-src --strip-components=1
           cd /tmp/kernel-src
           make defconfig
           ./scripts/kconfig/merge_config.sh -m .config \
