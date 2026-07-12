@@ -669,12 +669,9 @@ static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, __wsum cs
 // information is lost when passed through the void* callback context,
 // causing "R2 unbounded memory access" on the verifier.
 struct csum_diff_loop_ctx {
-    struct xdp_md *ctx;
-    struct checksum_meta *meta;
     __u32 local_idx;
     __u8 diff_count;
     __u8 csum_idx; // Which checksum we're processing (for affects_csum bitmask)
-    __u16 pkt_len;
     __wsum csum;
     bool error; // set if diff_map lookup fails inside callback
 };
@@ -742,9 +739,9 @@ static long csum_diff_loop_callback(__u32 idx, void *vctx)
 // information is lost when passed through the void* bpf_loop callback context.
 // Note: __noinline prevents verifier state explosion when called from outer loop
 // diff_count_csum_idx packs two values: low byte = diff_count, high byte = csum_idx.
-// This keeps the argument count at 5 (BPF limit).
+// This keeps the argument count within 5 (BPF register-argument limit).
 static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, __u32 local_idx,
-                                                __u16 diff_count_csum_idx, __u16 pkt_len)
+                                                __u16 diff_count_csum_idx)
 {
     __u8 diff_count = diff_count_csum_idx & 0xFF;
     __u8 csum_idx = (diff_count_csum_idx >> 8) & 0xFF;
@@ -769,12 +766,9 @@ static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct check
     // Use bpf_loop to apply diffs — the verifier checks the callback once,
     // avoiding per-iteration state explosion from apply_single_csum_diff branching.
     struct csum_diff_loop_ctx loop_ctx = {
-        .ctx = ctx,
-        .meta = meta,
         .local_idx = local_idx,
         .diff_count = diff_count,
         .csum_idx = csum_idx,
-        .pkt_len = pkt_len,
         .csum = csum,
     };
     bpf_loop(diff_count, csum_diff_loop_callback, &loop_ctx, 0);
@@ -1357,7 +1351,7 @@ int xdp_tx_csum_diff(struct xdp_md *ctx)
             checksum_errors++;
             break;
         }
-        if (!apply_csum_with_bpf_diff(ctx, meta, local_idx, diff_count | ((__u16)i << 8), target_len)) {
+        if (!apply_csum_with_bpf_diff(ctx, meta, local_idx, diff_count | ((__u16)i << 8))) {
             DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
             checksum_errors++;
         }
