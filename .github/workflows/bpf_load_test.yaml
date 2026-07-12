@@ -145,7 +145,7 @@ jobs:
         id: kernel-cache
         with:
           path: ~/.cache/rc-kernels/vmlinuz-${{ matrix.kernel }}
-          key: rc-kernel-${{ matrix.kernel }}-${{ hashFiles('.github/kernel-config/*') }}
+          key: rc-kernel-${{ runner.os }}-${{ runner.arch }}-${{ matrix.kernel }}-${{ hashFiles('.github/kernel-config/**') }}
 
       - name: Build kernel from source
         if: steps.kernel-cache.outputs.cache-hit != 'true'
