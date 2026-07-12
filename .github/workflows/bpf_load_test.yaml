@@ -86,3 +86,82 @@ jobs:
 
       - name: Run BPF load test
         run: vimto -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
+
+  # Same load test against kernels that ghcr.io/cilium/ci-kernels does not
+  # publish yet (release candidates). The kernel is built from source with the
+  # same config fragments the prebuilt images use (vendored under
+  # .github/kernel-config/) and cached, so only the first run per kernel
+  # version pays the build cost.
+  bpf-load-test-rc:
+    name: BPF load test (kernel ${{ matrix.kernel }}, from source)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 7.2 gained BPF stack arguments (0f6bd5e7a804), which changed how
+          # the verifier treats subprogs whose BTF declares >5 parameters.
+          # Keep an rc of the upcoming release here until ci-kernels ships it,
+          # then move the version to the prebuilt matrix above.
+          - kernel: "7.2-rc2"
+            source: "https://git.kernel.org/torvalds/t/linux-7.2-rc2.tar.gz"
+    permissions:
+      contents: read
+    env:
+      VIMTO_VERSION: v0.4.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ./go.mod
+
+      - name: Cache vimto binary
+        uses: actions/cache@v4
+        id: vimto-cache
+        with:
+          path: ~/go/bin/vimto
+          key: vimto-bin-${{ runner.os }}-${{ env.VIMTO_VERSION }}
+
+      - name: Install vimto
+        if: steps.vimto-cache.outputs.cache-hit != 'true'
+        run: CGO_ENABLED=0 go install lmb.io/vimto@${{ env.VIMTO_VERSION }}
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      - name: Enable KVM
+        run: sudo chmod 0666 /dev/kvm
+
+      - name: Cache built kernel
+        uses: actions/cache@v4
+        id: kernel-cache
+        with:
+          path: ~/.cache/rc-kernels/vmlinuz-${{ matrix.kernel }}
+          key: rc-kernel-${{ matrix.kernel }}-${{ hashFiles('.github/kernel-config/*') }}
+
+      - name: Build kernel from source
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            build-essential flex bison bc libelf-dev libssl-dev dwarves
+          mkdir -p ~/.cache/rc-kernels /tmp/kernel-src
+          curl -sL "${{ matrix.source }}" | tar -xz -C /tmp/kernel-src --strip-components=1
+          cd /tmp/kernel-src
+          make defconfig
+          ./scripts/kconfig/merge_config.sh -m .config \
+            "$GITHUB_WORKSPACE/.github/kernel-config/ci.config" \
+            "$GITHUB_WORKSPACE/.github/kernel-config/ci-x86_64.config"
+          make olddefconfig
+          make -j"$(nproc)" bzImage
+          cp arch/x86/boot/bzImage ~/.cache/rc-kernels/vmlinuz-${{ matrix.kernel }}
+
+      - name: Run BPF load test
+        run: |
+          vimto -kernel ~/.cache/rc-kernels/vmlinuz-${{ matrix.kernel }} -- \
+            go test -v -count 1 -timeout 5m ./pkg/coreelf/ -run TestBpf
