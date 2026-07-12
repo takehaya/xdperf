@@ -92,7 +92,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 						{
 							ByteStart:   srcPortOffset,
 							ByteSize:    2,
-							ByteRange:   guest.TemplateRange{Start: 1024, End: 1124},
+							ByteRange:   guest.TemplateRange{Start: uint64(req.SrcPortSweepStart), End: uint64(req.SrcPortSweepEnd)},
 							PatternType: guest.ValuePatternTypeSequential,
 						},
 					},
