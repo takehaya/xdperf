@@ -22,19 +22,21 @@ docker run -d --name "${OTEL_CONTAINER}" --network host \
     -v "${SCRIPT_DIR}/otelcol.yaml:/etc/otelcol/config.yaml:ro" \
     "${OTEL_IMAGE}" >/dev/null
 
-# Wait until the OTLP gRPC port is listening
+# Wait until both the OTLP gRPC receiver and the prometheus exporter
+# (scraped by test.sh) are listening
 for i in $(seq 1 100); do
     if ! docker ps -q -f "name=^${OTEL_CONTAINER}$" | grep -q .; then
         print_error "Collector container exited during startup"
         docker logs "${OTEL_CONTAINER}" 2>&1 | tail -n 20 || true
         exit 1
     fi
-    if ss -ltn "sport = :${OTLP_PORT}" | grep -q LISTEN; then
+    if ss -ltn "sport = :${OTLP_PORT}" | grep -q LISTEN \
+        && ss -ltn "sport = :${PROM_PORT}" | grep -q LISTEN; then
         print_success "Collector ready: OTLP gRPC :${OTLP_PORT}, prometheus :${PROM_PORT}"
         exit 0
     fi
     sleep 0.1
 done
-print_error "Collector did not listen on :${OTLP_PORT} within 10s"
+print_error "Collector did not listen on :${OTLP_PORT} and :${PROM_PORT} within 10s"
 docker logs "${OTEL_CONTAINER}" 2>&1 | tail -n 20 || true
 exit 1
