@@ -57,14 +57,24 @@ sleep 1
 # SIGTERM makes the server flush its final cumulative values before exiting
 stop_rx_server
 
-if ! curl -sf "localhost:${PROM_PORT}/metrics" > "${METRICS_DUMP}"; then
-    fail_with_logs "could not scrape collector prometheus endpoint :${PROM_PORT}"
-fi
-
 expected="$(to_number "${COUNT}")"
 required=$(( expected * PASS_THRESHOLD / 100 ))
-tx_pkts="$(prom_packets transmit client)"
-rx_pkts="$(prom_packets receive server)"
+
+# Both processes flush their final cumulative values before exiting, but the
+# collector may ingest them moments later; retry the scrape briefly (up to
+# 10s) instead of failing on the first snapshot
+tx_pkts=0
+rx_pkts=0
+for i in $(seq 1 20); do
+    if curl -sf "localhost:${PROM_PORT}/metrics" > "${METRICS_DUMP}"; then
+        tx_pkts="$(prom_packets transmit client)"
+        rx_pkts="$(prom_packets receive server)"
+        if [ "${tx_pkts}" -eq "${expected}" ] && [ "${rx_pkts}" -ge "${required}" ]; then
+            break
+        fi
+    fi
+    sleep 0.5
+done
 
 print_info "Collector saw: transmit=${tx_pkts} receive=${rx_pkts} (sent ${expected}, threshold ${PASS_THRESHOLD}%)"
 if [ "${tx_pkts}" -ne "${expected}" ]; then
