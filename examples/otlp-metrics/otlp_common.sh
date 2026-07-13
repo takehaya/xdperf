@@ -36,6 +36,7 @@ docker_available() {
 create_mgmt_veth() {
     local ns="$1" ns_dev="$2" ns_ip="$3" host_dev="$4" host_ip="$5"
 
+    delete_veth_if_ours "$ns_dev" || return 1
     delete_veth_if_ours "$host_dev" || return 1
     ip link add "$ns_dev" type veth peer name "$host_dev"
     ip link set "$ns_dev" netns "$ns"
