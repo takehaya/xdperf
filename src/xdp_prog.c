@@ -567,8 +567,10 @@ static __always_inline __u16 csum_fold_helper(__u64 csum)
 // Supported sizes: 1, 2, 4, 6, 8 bytes (validated in apply_diff)
 // Offset parity matters: checksum is computed over 16-bit words, so byte position affects calculation
 // csum_idx identifies which checksum we're processing (0-3), used with dv->affects_csum bitmask.
-static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_value *dv, struct checksum_meta *meta,
-                                                __u16 pkt_len, __wsum csum, __u8 csum_idx)
+// Keep this at <=5 parameters (see cache_csum_to_diffs): unused parameters here
+// previously made the BTF prototype (6 args) disagree with the emitted call after
+// clang's dead-argument elimination, failing the load on stack-argument kernels.
+static __noinline __wsum apply_single_csum_diff(struct diff_value *dv, __wsum csum, __u8 csum_idx)
 {
     // Skip if this diff doesn't affect the checksum (pre-computed bitmask by host)
     if (!(dv->affects_csum & (1 << csum_idx)))
@@ -667,12 +669,9 @@ static __noinline __wsum apply_single_csum_diff(struct xdp_md *ctx, struct diff_
 // information is lost when passed through the void* callback context,
 // causing "R2 unbounded memory access" on the verifier.
 struct csum_diff_loop_ctx {
-    struct xdp_md *ctx;
-    struct checksum_meta *meta;
     __u32 local_idx;
     __u8 diff_count;
     __u8 csum_idx; // Which checksum we're processing (for affects_csum bitmask)
-    __u16 pkt_len;
     __wsum csum;
     bool error; // set if diff_map lookup fails inside callback
 };
@@ -728,7 +727,7 @@ static long csum_diff_loop_callback(__u32 idx, void *vctx)
     default:
         return 1;
     }
-    c->csum = apply_single_csum_diff(c->ctx, dv, c->meta, c->pkt_len, c->csum, c->csum_idx);
+    c->csum = apply_single_csum_diff(dv, c->csum, c->csum_idx);
     return 0;
 }
 
@@ -740,9 +739,9 @@ static long csum_diff_loop_callback(__u32 idx, void *vctx)
 // information is lost when passed through the void* bpf_loop callback context.
 // Note: __noinline prevents verifier state explosion when called from outer loop
 // diff_count_csum_idx packs two values: low byte = diff_count, high byte = csum_idx.
-// This keeps the argument count at 5 (BPF limit).
+// This keeps the argument count within 5 (BPF register-argument limit).
 static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct checksum_meta *meta, __u32 local_idx,
-                                                __u16 diff_count_csum_idx, __u16 pkt_len)
+                                                __u16 diff_count_csum_idx)
 {
     __u8 diff_count = diff_count_csum_idx & 0xFF;
     __u8 csum_idx = (diff_count_csum_idx >> 8) & 0xFF;
@@ -767,12 +766,9 @@ static __noinline bool apply_csum_with_bpf_diff(struct xdp_md *ctx, struct check
     // Use bpf_loop to apply diffs — the verifier checks the callback once,
     // avoiding per-iteration state explosion from apply_single_csum_diff branching.
     struct csum_diff_loop_ctx loop_ctx = {
-        .ctx = ctx,
-        .meta = meta,
         .local_idx = local_idx,
         .diff_count = diff_count,
         .csum_idx = csum_idx,
-        .pkt_len = pkt_len,
         .csum = csum,
     };
     bpf_loop(diff_count, csum_diff_loop_callback, &loop_ctx, 0);
@@ -1032,8 +1028,13 @@ static __noinline bool cache_one_diff(struct diff_entry *diff, __u8 dc, __u16 of
 // Sets csum_cached=1 ONLY if ALL required values were successfully stored.
 // For encapsulated packets (SRv6/MPLS with inner IPs), safely bails out if the packet structure
 // is too complex to enumerate length fields from checksum_meta alone.
+// Keep this at <=5 parameters: BPF subprogs with >5 args get stack-passed
+// arguments (BTF keeps the full prototype even when clang's dead-argument
+// elimination drops one), which kernels with stack-argument support but
+// without the static-subprog fallback fix reject at load time with
+// "callee expects N args, stack arg1 is not initialized".
 static __noinline void cache_csum_to_diffs(struct xdp_md *ctx, __u32 local_idx, __u32 base_idx, __u8 checksum_count,
-                                           __u8 len_changed, __u16 target_len)
+                                           __u8 len_changed)
 {
     struct diff_entry *diff = bpf_map_lookup_elem(&diff_map, &local_idx);
     if (!diff || diff->csum_cached)
@@ -1296,7 +1297,7 @@ int xdp_tx_csum_recalc(struct xdp_md *ctx)
     }
 
     // Cache computed checksums (and length fields) into diff_entry for future skip
-    cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, 1, target_len);
+    cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, 1);
 
     update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
     DEBUG_PRINT("xdp_tx_csum_recalc: idx=%u len=%u\n", local_idx, target_len);
@@ -1350,14 +1351,14 @@ int xdp_tx_csum_diff(struct xdp_md *ctx)
             checksum_errors++;
             break;
         }
-        if (!apply_csum_with_bpf_diff(ctx, meta, local_idx, diff_count | ((__u16)i << 8), target_len)) {
+        if (!apply_csum_with_bpf_diff(ctx, meta, local_idx, diff_count | ((__u16)i << 8))) {
             DEBUG_PRINT("apply_csum_with_bpf_diff failed at %d\n", i);
             checksum_errors++;
         }
     }
 
     // Cache computed checksums into diff_entry for future skip
-    cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, 0, target_len);
+    cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, 0);
 
     update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
     DEBUG_PRINT("xdp_tx_csum_diff: idx=%u len=%u\n", local_idx, target_len);
