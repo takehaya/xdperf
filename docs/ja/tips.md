@@ -423,3 +423,32 @@ INFO  CPU selection  {"mode": "local", "selected_cpus": [24,25,26,27,28,29,30,31
 ```
 あとは `auto`/`local` 指定で `numa_node=-1`(affinity なし)のデバイスを掴むと、ローカルノードに寄せられず先頭 N コアにフォールバックする点に注意。物理 NIC ならまず付いてるはずだけど、veth とかだと付いてないことがある。
 
+
+## veth は multi-queue にできる (コンテナ相当環境のスループット) 20260713
+
+veth のデフォルトは 1 キューで、この場合 XDP の受信処理 (NAPI) が1コアに直列化される。
+送信側の parallelism をいくら増やしても受け口が1本なので頭打ちになり、むしろ enqueue 競合で劣化する。
+
+```shell
+# 作成時にしか指定できない (既存ペアは作り直し。作成時の上限内なら ethtool -L で増減は可)
+ip link add veth0 numtxqueues 8 numrxqueues 8 type veth peer name veth1 numtxqueues 8 numrxqueues 8
+```
+
+veth の ndo_xdp_xmit は送信 CPU ごとに受信キューへ振るので、multi-queue にすると
+worker の並列がそのまま受信側 NAPI の並列になる。
+
+実測 (kernel 7.2、Xeon 8362、netns ペア、xdperf 64B/1500B 片方向、受信側 recv/s):
+
+| 構成 | 64B | 1500B |
+|---|---:|---:|
+| 1キュー (デフォルト)、ピーク par=2 | 7.4 Mpps | 4.6 Mpps (55Gbps) |
+| 8キュー、par=16 | **61.3 Mpps (8.2倍)** | **36.7 Mpps (≈440Gbps 相当)** |
+
+par スイープ (8キュー・64B): par2=14.9 / par4=29.8 / par8=59.5 / par16=60.9 → キュー数=8 でほぼ飽和。
+キュー数にほぼ線形にスケールする。
+
+- キュー数の上限は 4096 (veth 固有ではなく rtnetlink の汎用上限、`net/core/rtnetlink.c` の
+  `num_tx_queues > 4096` チェック)。実用上の上限はコア数。
+- Kubernetes 的な含意: 実際の Pod の veth はほぼ全 CNI がデフォルト 1 キューで作るため、
+  Pod 間通信の XDP 性能はカーネルの限界ではなく CNI が作る veth の設定で頭打ちになっている。
+  「61Mpps は現実の Pod でも出るのか?」への答えは「CNI が multi-queue veth を作れば」。
