@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/takehaya/xdperf/pkg/guest"
@@ -54,6 +55,11 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 			}
 			copy(dstMAC[:], dmac)
 		}
+	}
+
+	if req.SrcPortSweepStart > req.SrcPortSweepEnd {
+		guest.Log(3, fmt.Sprintf("invalid src port sweep range: start %d > end %d", req.SrcPortSweepStart, req.SrcPortSweepEnd))
+		return -6
 	}
 
 	payload := make([]byte, req.PayloadSize)
