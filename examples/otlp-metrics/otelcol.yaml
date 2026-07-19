@@ -1,0 +1,22 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+exporters:
+  # Log received metrics so `docker logs xdperf-otelcol` shows the pushes
+  debug:
+    verbosity: normal
+  # Scrape endpoint used by test.sh to verify the cumulative counters
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # Expand resource attributes (xdperf.mode, --otlp-attributes contents)
+    # into metric labels; otherwise they land in target_info and cannot be
+    # used to filter
+    resource_to_telemetry_conversion:
+      enabled: true
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [debug, prometheus]
