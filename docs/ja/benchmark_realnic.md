@@ -176,7 +176,8 @@ mpstat では par=32 時に送信スレッドと受信 softirq が全物理コ�
 
 ### フロー数スケーリング
 
-simpleudp の `src_port_sweep_start` / `src_port_sweep_end` でフロー数（= src port 掃引幅）を変えて測定した
+simpleudp.go プラグイン（Go 版。TinyGo 版には未実装）の `src_port_sweep_start` / `src_port_sweep_end` で
+フロー数（= src port 掃引幅）を変えて測定した
 （`--count` はフロー数に一致させる）。
 
 | フロー数 | 64B 片方向 par=32 |
