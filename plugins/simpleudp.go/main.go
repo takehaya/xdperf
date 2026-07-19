@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/takehaya/xdperf/pkg/guest"
@@ -56,6 +57,11 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		}
 	}
 
+	if req.SrcPortSweepStart > req.SrcPortSweepEnd {
+		guest.Log(3, fmt.Sprintf("invalid src port sweep range: start %d > end %d", req.SrcPortSweepStart, req.SrcPortSweepEnd))
+		return -6
+	}
+
 	payload := make([]byte, req.PayloadSize)
 	for i := range payload {
 		payload[i] = byte(i % 256)
@@ -92,7 +98,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 						{
 							ByteStart:   srcPortOffset,
 							ByteSize:    2,
-							ByteRange:   guest.TemplateRange{Start: 1024, End: 1124},
+							ByteRange:   guest.TemplateRange{Start: uint64(req.SrcPortSweepStart), End: uint64(req.SrcPortSweepEnd)},
 							PatternType: guest.ValuePatternTypeSequential,
 						},
 					},
