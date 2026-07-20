@@ -179,6 +179,12 @@ func (x *Xdperf) setupOTLPMetrics() error {
 	case x.cfg.Receiver:
 		mode = "server"
 	}
+	// Only export xdperf.rx_device when the RX attach really is split off;
+	// --rx-device equal to --device behaves exactly like the single-device case.
+	rxDevice := ""
+	if x.RxDevice.Index != x.Device.Index {
+		rxDevice = x.RxDevice.Name
+	}
 	// The gRPC exporter dials lazily, so Background is fine here even though
 	// NewXdperf has no ctx parameter; reachability is not checked at setup.
 	meter, shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
@@ -188,7 +194,7 @@ func (x *Xdperf) setupOTLPMetrics() error {
 		Attributes: attrs,
 		Mode:       mode,
 		Device:     x.cfg.Device,
-		RxDevice:   x.cfg.RxDevice,
+		RxDevice:   rxDevice,
 		Version:    x.cfg.Version,
 	}, x.Logger)
 	if err != nil {
