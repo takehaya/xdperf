@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.16.0](https://github.com/takehaya/xdperf/compare/v0.15.0...v0.16.0) (2026-07-20)
+
+
+### 🎉 Features
+
+* **examples:** OTLP metrics export scenario ([#105](https://github.com/takehaya/xdperf/issues/105)) ([b70665f](https://github.com/takehaya/xdperf/commit/b70665f90564753d615db9d9a479c46c8ce6e0cf))
+* **examples:** veth-based end-to-end test scenarios with CI ([#96](https://github.com/takehaya/xdperf/issues/96)) ([06f3fc2](https://github.com/takehaya/xdperf/commit/06f3fc268a30fd1cb393cea13b750745cb581feb))
+* **metrics:** OTLP push export for TX/RX and NIC statistics ([#98](https://github.com/takehaya/xdperf/issues/98)) ([5556084](https://github.com/takehaya/xdperf/commit/5556084cef5ba26d1d9f8cf51bc8902a6425de31))
+* **plugins:** configurable simpleudp sweep range; docs: kernel 7.2 benchmark addendum ([#106](https://github.com/takehaya/xdperf/issues/106)) ([a37437c](https://github.com/takehaya/xdperf/commit/a37437cbcaebe933d8c47a9c4579b343c2333310))
+* XDP attach mode selection (--xdp-mode) with generic fallback ([#107](https://github.com/takehaya/xdperf/issues/107)) ([2f5b9fc](https://github.com/takehaya/xdperf/commit/2f5b9fcfc3bf2b13ebb16f89544ecee6d1aae66d))
+
+
+### 🐛 Bug Fixes
+
+* **bpf:** load on kernel 7.2+ by keeping subprogs within 5 register args; CI coverage for rc kernels ([#104](https://github.com/takehaya/xdperf/issues/104)) ([2e49b97](https://github.com/takehaya/xdperf/commit/2e49b9739f5be13c6776110be36bd0d3af080f47))
+* **ci:** reference prod_count output in bpf generate auto-commit gate ([#99](https://github.com/takehaya/xdperf/issues/99)) ([4ac2158](https://github.com/takehaya/xdperf/commit/4ac215807d5fcc4ba17d6c52f104d053143d264e))
+
+
+### 📝 Documentation
+
+* **examples:** convert topology diagrams to mermaid ([#108](https://github.com/takehaya/xdperf/issues/108)) ([1f33f15](https://github.com/takehaya/xdperf/commit/1f33f155224880db958181c71b8ffbabed2205ff))
+* **tips:** veth multi-queue for container-grade throughput ([1c8260e](https://github.com/takehaya/xdperf/commit/1c8260e477cdc5eadd043c99b85c0a235507642f))
+
 ## [0.15.0](https://github.com/takehaya/xdperf/compare/v0.14.0...v0.15.0) (2026-06-29)
 
 
