@@ -424,6 +424,25 @@ INFO  CPU selection  {"mode": "local", "selected_cpus": [24,25,26,27,28,29,30,31
 あとは `auto`/`local` 指定で `numa_node=-1`(affinity なし)のデバイスを掴むと、ローカルノードに寄せられず先頭 N コアにフォールバックする点に注意。物理 NIC ならまず付いてるはずだけど、veth とかだと付いてないことがある。
 
 
+## XDP attach モードの選択 (--xdp-mode) 20260720
+
+XDP プログラムのアタッチモードを `--xdp-mode` で制御できる(デフォルト `auto`)。
+
+| モード | 挙動 |
+|--------|------|
+| `auto` (デフォルト) | フラグなしでアタッチ(ドライバ対応なら native)。失敗したら warn ログを出して generic (SKB) mode にフォールバック |
+| `native` | driver (native) mode を強制。非対応ならエラー(fail fast) |
+| `generic` | generic (SKB) mode を強制 |
+
+ContainerLab の veth みたいに native アタッチが通らない環境でも、`auto` のままなら generic に落ちて動く。
+逆に性能測定で「知らないうちに generic で走ってた」を避けたいなら `native` を指定しておくと失敗で気付ける。
+generic mode は skb 経由のスローパスなので性能は大きく落ちる。フォールバック発動時は warn ログ
+(`native XDP attach failed; fell back to generic (SKB) mode ...`)が出るので見逃さないこと。
+
+なお veth + generic mode で受ける場合、native アタッチと違って peer の NAPI が起きないので、
+live-frames 送信のフレームが黙って落ちる。受信デバイスで `ethtool -K <dev> gro on` して NAPI を
+有効にする必要がある([examples/simpleudp-xdp-generic](../../examples/simpleudp-xdp-generic/) 参照)。
+
 ## veth は multi-queue にできる (コンテナ相当環境のスループット) 20260713
 
 veth のデフォルトは 1 キューで、この場合 XDP の受信処理 (NAPI) が1コアに直列化される。
