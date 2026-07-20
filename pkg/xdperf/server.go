@@ -37,12 +37,9 @@ func (x *Xdperf) StartServer(ctx context.Context) error {
 func (x *Xdperf) runRxPacket(_ context.Context) (link.Link, error) {
 	x.Logger.Info("start rx packet processing")
 	// dummy XDP Prog attachment
-	l, err := link.AttachXDP(link.XDPOptions{
-		Program:   x.bpfobjs.XdpRx,
-		Interface: x.Device.Index,
-	})
+	l, err := x.attachXDP(x.bpfobjs.XdpRx)
 	if err != nil {
-		return l, fmt.Errorf("failed to attach XDP program: %w", err)
+		return l, err
 	}
 
 	return l, nil

@@ -123,6 +123,77 @@ func TestConfigValidateOTLP(t *testing.T) {
 	}
 }
 
+func TestConfigValidateXDPMode(t *testing.T) {
+	// Server mode (recv only) is the smallest valid baseline; the XDP mode
+	// check runs before the server-mode early return.
+	base := func() Config {
+		return Config{Device: "eth0", Receiver: true, Sender: false}
+	}
+
+	tests := []struct {
+		name    string
+		mode    string
+		wantErr bool
+	}{
+		{name: "empty_defaults_to_auto", mode: ""},
+		{name: "auto", mode: "auto"},
+		{name: "native", mode: "native"},
+		{name: "generic", mode: "generic"},
+		{name: "unknown_mode", mode: "offload", wantErr: true},
+		{name: "case_sensitive", mode: "Native", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := base()
+			c.XDPMode = tt.mode
+			err := c.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseXDPMode(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    XDPMode
+		wantErr bool
+	}{
+		{in: "", want: XDPModeAuto},
+		{in: "auto", want: XDPModeAuto},
+		{in: "native", want: XDPModeNative},
+		{in: "generic", want: XDPModeGeneric},
+		{in: "offload", wantErr: true},
+		{in: "Native", wantErr: true},
+	}
+	for _, tt := range tests {
+		got, err := ParseXDPMode(tt.in)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("ParseXDPMode(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+			continue
+		}
+		if !tt.wantErr && got != tt.want {
+			t.Errorf("ParseXDPMode(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestConfigNormalizeXDPMode(t *testing.T) {
+	c := Config{}
+	c.Normalize()
+	if c.XDPMode != XDPModeAuto.String() {
+		t.Errorf("Normalize() XDPMode = %q, want %q", c.XDPMode, XDPModeAuto.String())
+	}
+
+	c = Config{XDPMode: "generic"}
+	c.Normalize()
+	if c.XDPMode != "generic" {
+		t.Errorf("Normalize() overwrote XDPMode = %q, want %q", c.XDPMode, "generic")
+	}
+}
+
 func TestSafeDelta(t *testing.T) {
 	tests := []struct {
 		name      string
