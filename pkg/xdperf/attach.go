@@ -78,14 +78,16 @@ func (x *Xdperf) attachXDP(prog *ebpf.Program) (link.Link, error) {
 		return nil, fmt.Errorf("failed to attach XDP program in %s mode: %w", mode, err)
 	}
 
-	nativeErr := err
+	// The first attempt ran with no mode flag (kernel-preferred, usually
+	// native); retry explicitly in generic mode.
+	defaultErr := err
 	opts.Flags = link.XDPGenericMode
 	l, err = link.AttachXDP(opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to attach XDP program in both native and generic mode: %w", errors.Join(nativeErr, err))
+		return nil, fmt.Errorf("failed to attach XDP program in both default and generic mode: %w", errors.Join(defaultErr, err))
 	}
-	x.Logger.Warn("native XDP attach failed; fell back to generic (SKB) mode with much lower performance",
+	x.Logger.Warn("default XDP attach failed; fell back to generic (SKB) mode with much lower performance",
 		zap.String("device", x.Device.Name),
-		zap.NamedError("native_error", nativeErr))
+		zap.NamedError("default_attach_error", defaultErr))
 	return l, nil
 }

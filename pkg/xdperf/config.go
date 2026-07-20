@@ -46,8 +46,8 @@ type Config struct {
 	Version string // xdperf version (from build info), used as service.version
 }
 
-// Normalize fills in config fields derived from user input (currently
-// PluginLanguage, parsed from a "<name>.<lang>" PluginName). It is idempotent
+// Normalize fills in config fields derived from user input (the XDPMode
+// default and PluginLanguage, parsed from a "<name>.<lang>" PluginName). It is idempotent
 // and only mutates the receiver; call it before Validate. Keeping the derivation
 // here — rather than hidden inside Validate — makes Validate side-effect-free.
 func (c *Config) Normalize() {

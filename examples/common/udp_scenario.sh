@@ -150,8 +150,9 @@ run_udp_test() {
     fi
     start_rx_server "${NS_RX}" "${VETH_RX}" "${RX_LOG}" "${rx_args[@]}" || return 1
 
-    # When a specific mode is requested, verify the receiver really attached
-    # in that mode (ip -d link reports "xdpgeneric" for generic/SKB mode)
+    # When generic mode is requested, verify the receiver really attached in
+    # that mode (ip -d link reports "xdpgeneric" for generic/SKB mode). Other
+    # modes have no distinct marker worth asserting here.
     if [ "${XDP_MODE}" = "generic" ]; then
         if ip netns exec "${NS_RX}" ip -d link show dev "${VETH_RX}" | grep -q "xdpgeneric"; then
             print_success "Receiver attached in generic (SKB) mode"

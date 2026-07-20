@@ -437,7 +437,7 @@ XDP プログラムのアタッチモードを `--xdp-mode` で制御できる(�
 ContainerLab の veth みたいに native アタッチが通らない環境でも、`auto` のままなら generic に落ちて動く。
 逆に性能測定で「知らないうちに generic で走ってた」を避けたいなら `native` を指定しておくと失敗で気付ける。
 generic mode は skb 経由のスローパスなので性能は大きく落ちる。フォールバック発動時は warn ログ
-(`native XDP attach failed; fell back to generic (SKB) mode ...`)が出るので見逃さないこと。
+(`default XDP attach failed; fell back to generic (SKB) mode ...`)が出るので見逃さないこと。
 
 なお veth + generic mode で受ける場合、native アタッチと違って peer の NAPI が起きないので、
 live-frames 送信のフレームが黙って落ちる。受信デバイスで `ethtool -K <dev> gro on` して NAPI を
