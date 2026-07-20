@@ -12,6 +12,7 @@
 #   COUNT (10k) / PPS (10k) / PAYLOAD_SIZE (256) / DST_PORT (10001)
 #   PLUGIN (simpleudp.tinygo) / VLAN_ID (0=untagged) / VLAN_PCP (0)
 #   ECHO (0) / ECHO_THRESHOLD (99) / PASS_THRESHOLD (100)
+#   XDP_MODE (empty=xdperf default) — passed as --xdp-mode to both sides
 
 COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -40,6 +41,9 @@ PASS_THRESHOLD="${PASS_THRESHOLD:-100}"
 # hence the 99% default threshold.
 ECHO="${ECHO:-0}"
 ECHO_THRESHOLD="${ECHO_THRESHOLD:-99}"
+# XDP_MODE: --xdp-mode value for both the receiver and the sender
+# (empty = do not pass the flag, i.e. xdperf's default "auto")
+XDP_MODE="${XDP_MODE:-}"
 
 # Logs live in the root-only rundir (see test_utils.sh) to avoid symlink
 # risks and collisions on fixed /tmp paths
@@ -133,6 +137,10 @@ run_udp_test() {
     [ "${rc}" -ne 0 ] && return 1
 
     local rx_args=() tx_args=()
+    if [ -n "${XDP_MODE}" ]; then
+        rx_args+=(--xdp-mode "${XDP_MODE}")
+        tx_args+=(--xdp-mode "${XDP_MODE}")
+    fi
     if [ "${ECHO}" -eq 1 ]; then
         rx_args+=(--swap-resp)
         # Send+receive mode: xdperf attaches xdp_rx to the tx device, which
@@ -141,6 +149,19 @@ run_udp_test() {
         tx_args+=(--recv)
     fi
     start_rx_server "${NS_RX}" "${VETH_RX}" "${RX_LOG}" "${rx_args[@]}" || return 1
+
+    # When generic mode is requested, verify the receiver really attached in
+    # that mode (ip -d link reports "xdpgeneric" for generic/SKB mode). Other
+    # modes have no distinct marker worth asserting here.
+    if [ "${XDP_MODE}" = "generic" ]; then
+        if ip netns exec "${NS_RX}" ip -d link show dev "${VETH_RX}" | grep -q "xdpgeneric"; then
+            print_success "Receiver attached in generic (SKB) mode"
+        else
+            print_error "FAIL: receiver is not attached in xdpgeneric mode"
+            stop_rx_server
+            return 1
+        fi
+    fi
 
     # veth counters are cumulative; measure deltas from a baseline
     local base after delta expected

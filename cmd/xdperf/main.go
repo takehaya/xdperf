@@ -123,6 +123,11 @@ func newApp(version string) *cli.App {
 			Usage: "NUMA-aware CPU selection: auto, local, balanced, node:<N>, or CPU list (e.g., 0,2,4,6)",
 		},
 		cli.StringFlag{
+			Name:  "xdp-mode",
+			Value: "auto",
+			Usage: "XDP attach mode: auto (fall back to generic when native fails), native, or generic",
+		},
+		cli.StringFlag{
 			Name:  "otlp-endpoint",
 			Usage: "OTLP gRPC endpoint (host:port, e.g., localhost:4317) to export metrics. Empty to disable",
 		},
@@ -194,6 +199,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.BatchSize = uint32(ctx.Int("batch-size"))
 	c.WasmCacheDir = ctx.String("wasm-cache-dir")
 	c.CPUMode = ctx.String("cpu-mode")
+	c.XDPMode = ctx.String("xdp-mode")
 	c.OTLPEndpoint = ctx.String("otlp-endpoint")
 	c.OTLPInterval = ctx.Duration("otlp-interval")
 	c.OTLPInsecure = ctx.Bool("otlp-insecure")

@@ -36,6 +36,7 @@ type Config struct {
 	ShowNICStats bool   // show NIC-level statistics (may include other traffic on the same interface)
 	WasmCacheDir string // WASM compilation cache directory (empty = default ~/.cache/xdperf/wasm/)
 	CPUMode      string // NUMA-aware CPU selection mode (auto/local/balanced/node:N/CPU list)
+	XDPMode      string // XDP attach mode (auto/native/generic); auto falls back to generic when native attach fails
 
 	OTLPEndpoint   string        // OTLP gRPC endpoint (host:port). Empty = metrics export disabled
 	OTLPInterval   time.Duration // OTLP metrics export interval
@@ -45,11 +46,14 @@ type Config struct {
 	Version string // xdperf version (from build info), used as service.version
 }
 
-// Normalize fills in config fields derived from user input (currently
-// PluginLanguage, parsed from a "<name>.<lang>" PluginName). It is idempotent
+// Normalize fills in config fields derived from user input (the XDPMode
+// default and PluginLanguage, parsed from a "<name>.<lang>" PluginName). It is idempotent
 // and only mutates the receiver; call it before Validate. Keeping the derivation
 // here — rather than hidden inside Validate — makes Validate side-effect-free.
 func (c *Config) Normalize() {
+	if c.XDPMode == "" {
+		c.XDPMode = XDPModeAuto.String()
+	}
 	if c.PluginLanguage != "" {
 		return
 	}
@@ -61,6 +65,11 @@ func (c *Config) Normalize() {
 func (c *Config) Validate() error {
 	if c.Device == "" {
 		return fmt.Errorf("device is required")
+	}
+
+	// XDP attach mode applies to both client and server mode.
+	if _, err := ParseXDPMode(c.XDPMode); err != nil {
+		return err
 	}
 
 	// OTLP export applies to both client and server mode, so validate it

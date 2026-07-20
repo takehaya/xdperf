@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/link"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/takehaya/xdperf/pkg/logger"
@@ -369,12 +368,9 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		rxprog = x.bpfobjs.XdpRx
 	}
 	// dummy XDP Prog attachment
-	l, err := link.AttachXDP(link.XDPOptions{
-		Program:   rxprog,
-		Interface: x.Device.Index,
-	})
+	l, err := x.attachXDP(rxprog)
 	if err != nil {
-		return fmt.Errorf("failed to attach XDP program: %w", err)
+		return err
 	}
 	defer l.Close()
 
