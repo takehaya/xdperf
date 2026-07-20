@@ -46,13 +46,15 @@ sudo ./setup.sh && sudo ./test.sh && sudo ./teardown.sh
 
 ## How it works
 
-```
-ns: xdperf-tx                      ns: xdperf-rx
-+------------------+   veth pair  +------------------+
-| xdp-tx           |==============| xdp-rx           |
-| 192.168.100.1/24 |              | 192.168.100.2/24 |
-| live-frames TX   |              | xdp_rx attach    |
-+------------------+              +------------------+
+```mermaid
+flowchart LR
+    subgraph nstx["ns: xdperf-tx"]
+        txdev["xdp-tx<br/>192.168.100.1/24<br/>live-frames TX"]
+    end
+    subgraph nsrx["ns: xdperf-rx"]
+        rxdev["xdp-rx<br/>192.168.100.2/24<br/>xdp_rx attach"]
+    end
+    txdev <==>|veth pair| rxdev
 ```
 
 - The sender does not attach XDP to the device; it transmits from the veth via

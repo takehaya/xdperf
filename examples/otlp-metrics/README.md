@@ -16,16 +16,35 @@ The receive-side XDP program drops every IPv4/IPv6 frame on the measurement
 link, so the gRPC push cannot travel over it — each netns gets a separate
 management veth into the root netns where the Collector listens:
 
+```mermaid
+flowchart LR
+    subgraph nstx["ns: xdperf-tx"]
+        xdptx["xdp-tx<br/>192.168.100.1"]
+        mgmttx["mgmt-tx<br/>192.168.200.1"]
+    end
+    subgraph nsrx["ns: xdperf-rx"]
+        xdprx["xdp-rx<br/>192.168.100.2"]
+        mgmtrx["mgmt-rx<br/>192.168.201.1"]
+    end
+    subgraph root["root netns"]
+        mgmttxh["mgmt-txh<br/>192.168.200.2"]
+        mgmtrxh["mgmt-rxh<br/>192.168.201.2"]
+        otel["otel collector<br/>(docker --network host)<br/>:4317 OTLP gRPC receiver<br/>:8889 prometheus exporter"]
+        verify["test.sh<br/>(verification)"]
+    end
+    xdptx <==>|"measurement veth<br/>(XDP drops everything)"| xdprx
+    mgmttx ---|management veth| mgmttxh
+    mgmtrx ---|management veth| mgmtrxh
+    mgmttx -.->|"OTLP/gRPC push → :4317"| otel
+    mgmtrx -.->|"OTLP/gRPC push → :4317"| otel
+    verify -.->|"curl :8889/metrics<br/>xdperf_packets_total == sent count?"| otel
 ```
-ns: xdperf-tx                              root netns
-  xdp-tx 192.168.100.1 ═══ measurement ═══ xdp-rx 192.168.100.2 (ns: xdperf-rx)
-  mgmt-tx 192.168.200.1 ── management ──── mgmt-txh 192.168.200.2
-ns: xdperf-rx
-  mgmt-rx 192.168.201.1 ── management ──── mgmt-rxh 192.168.201.2
 
-root netns: otel collector (docker --network host)
-  :4317 OTLP gRPC receiver / :8889 prometheus exporter
-```
+Note that no Prometheus server is involved: `test.sh` scrapes the
+Collector's prometheus **exporter** endpoint directly with `curl` and
+compares the cumulative counters against the send count. For a real
+Prometheus + Grafana pipeline, see
+[docs/ja/otlp_metrics.md](../../docs/ja/otlp_metrics.md).
 
 ## Run
 

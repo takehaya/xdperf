@@ -16,13 +16,16 @@ sending (`xdp_pass_dummy`, or `xdp_rx` in send+receive mode — see
 `runTXPacket` in `pkg/xdperf/xdperf.go`). This scenario exercises exactly
 that return path end-to-end:
 
-```
-ns: xdperf-tx                        ns: xdperf-rx
-+-------------------+   veth pair   +-------------------+
-| xdp-tx            |===============| xdp-rx            |
-| live-frames TX  --|--------------->-- xdp_rx counts   |
-| xdp_rx counts   --<---------------|-- XDP_TX (echo)   |
-+-------------------+               +-------------------+
+```mermaid
+flowchart LR
+    subgraph nstx["ns: xdperf-tx"]
+        txdev["xdp-tx<br/>live-frames TX<br/>xdp_rx counts echoes"]
+    end
+    subgraph nsrx["ns: xdperf-rx"]
+        rxdev["xdp-rx<br/>xdp_rx counts<br/>+ XDP_TX echo (--swap-resp)"]
+    end
+    txdev ==>|"UDP (live-frames TX)"| rxdev
+    rxdev ==>|"XDP_TX (echo)"| txdev
 ```
 
 If the sender-side attach were missing, the echo counter would read ~0 and
