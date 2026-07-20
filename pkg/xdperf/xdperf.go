@@ -30,6 +30,7 @@ type Xdperf struct {
 	cleanupFnList []CancelFunc
 	bpfobjs       *coreelf.BpfObjects
 	Device        *net.Interface
+	RxDevice      *net.Interface // RX attach target; == Device unless --rx-device splits it off
 	cfg           Config
 	bpfSpec       *ebpf.CollectionSpec
 	cpus          []int // resolved CPU list for workers
@@ -120,6 +121,13 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed get device %s: %w", cfg.Device, err)
 	}
+	rxdev := dev
+	if cfg.RxDevice != "" && cfg.RxDevice != cfg.Device {
+		rxdev, err = net.InterfaceByName(cfg.RxDevice)
+		if err != nil {
+			return nil, fmt.Errorf("failed get rx device %s: %w", cfg.RxDevice, err)
+		}
+	}
 
 	// Resolve CPU list based on NUMA topology
 	cpus, err := numa.SelectCPUs(cfg.CPUMode, cfg.Parallelism, cfg.Device)
@@ -142,6 +150,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 		bpfobjs:       obj,
 		cfg:           cfg,
 		Device:        dev,
+		RxDevice:      rxdev,
 		bpfSpec:       bpfSpec,
 		cpus:          cpus,
 	}
@@ -170,6 +179,12 @@ func (x *Xdperf) setupOTLPMetrics() error {
 	case x.cfg.Receiver:
 		mode = "server"
 	}
+	// Only export xdperf.rx_device when the RX attach really is split off;
+	// --rx-device equal to --device behaves exactly like the single-device case.
+	rxDevice := ""
+	if x.RxDevice.Index != x.Device.Index {
+		rxDevice = x.RxDevice.Name
+	}
 	// The gRPC exporter dials lazily, so Background is fine here even though
 	// NewXdperf has no ctx parameter; reachability is not checked at setup.
 	meter, shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
@@ -179,6 +194,7 @@ func (x *Xdperf) setupOTLPMetrics() error {
 		Attributes: attrs,
 		Mode:       mode,
 		Device:     x.cfg.Device,
+		RxDevice:   rxDevice,
 		Version:    x.cfg.Version,
 	}, x.Logger)
 	if err != nil {
@@ -367,8 +383,18 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		ttype = TrafficTypeBoth
 		rxprog = x.bpfobjs.XdpRx
 	}
+	if x.RxDevice.Index != x.Device.Index {
+		// Split mode: xdp_rx counts on the dedicated RX device, while the TX
+		// device keeps a dummy program so its own veth XDP_TX path stays alive.
+		lrx, err := x.attachXDP(rxprog, x.RxDevice)
+		if err != nil {
+			return err
+		}
+		defer lrx.Close()
+		rxprog = x.bpfobjs.XdpPassDummy
+	}
 	// dummy XDP Prog attachment
-	l, err := x.attachXDP(rxprog)
+	l, err := x.attachXDP(rxprog, x.Device)
 	if err != nil {
 		return err
 	}

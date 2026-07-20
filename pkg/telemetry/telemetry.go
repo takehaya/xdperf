@@ -34,7 +34,8 @@ type Config struct {
 	Insecure   bool              // use plaintext gRPC
 	Attributes map[string]string // extra resource attributes
 	Mode       string            // client / server / both
-	Device     string            // network interface name
+	Device     string            // network interface name (TX side in client mode)
+	RxDevice   string            // dedicated RX device when --rx-device splits it off; empty otherwise
 	Version    string            // xdperf version
 }
 
@@ -90,6 +91,9 @@ func newResource(ctx context.Context, cfg Config) (*resource.Resource, error) {
 	}
 	if cfg.Device != "" {
 		attrs = append(attrs, semconv.NetworkInterfaceName(cfg.Device))
+	}
+	if cfg.RxDevice != "" {
+		attrs = append(attrs, attribute.String("xdperf.rx_device", cfg.RxDevice))
 	}
 	for k, v := range cfg.Attributes {
 		attrs = append(attrs, attribute.String(k, v))

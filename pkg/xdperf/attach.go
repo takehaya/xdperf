@@ -3,6 +3,7 @@ package xdperf
 import (
 	"errors"
 	"fmt"
+	"net"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -46,18 +47,18 @@ func ParseXDPMode(s string) (XDPMode, error) {
 	}
 }
 
-// attachXDP attaches prog to the target device according to cfg.XDPMode.
+// attachXDP attaches prog to dev according to cfg.XDPMode.
 // In auto mode it first attaches with no mode flag (the kernel picks native
 // when the driver supports it) and retries in generic mode when that fails,
 // e.g. on veth interfaces where the native attach can be rejected.
-func (x *Xdperf) attachXDP(prog *ebpf.Program) (link.Link, error) {
+func (x *Xdperf) attachXDP(prog *ebpf.Program, dev *net.Interface) (link.Link, error) {
 	mode, err := ParseXDPMode(x.cfg.XDPMode)
 	if err != nil {
 		return nil, err
 	}
 	opts := link.XDPOptions{
 		Program:   prog,
-		Interface: x.Device.Index,
+		Interface: dev.Index,
 	}
 	switch mode {
 	case XDPModeNative:
@@ -70,7 +71,7 @@ func (x *Xdperf) attachXDP(prog *ebpf.Program) (link.Link, error) {
 	if err == nil {
 		if mode == XDPModeGeneric {
 			x.Logger.Info("XDP attached in generic (SKB) mode; expect much lower performance than native mode",
-				zap.String("device", x.Device.Name))
+				zap.String("device", dev.Name))
 		}
 		return l, nil
 	}
@@ -87,7 +88,7 @@ func (x *Xdperf) attachXDP(prog *ebpf.Program) (link.Link, error) {
 		return nil, fmt.Errorf("failed to attach XDP program in both default and generic mode: %w", errors.Join(defaultErr, err))
 	}
 	x.Logger.Warn("default XDP attach failed; fell back to generic (SKB) mode with much lower performance",
-		zap.String("device", x.Device.Name),
+		zap.String("device", dev.Name),
 		zap.NamedError("default_attach_error", defaultErr))
 	return l, nil
 }

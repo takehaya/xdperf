@@ -42,6 +42,7 @@ sudo ./setup.sh && sudo ./test.sh && sudo ./teardown.sh
 | [simpleudp-echo](simpleudp-echo/) | Echo server (`--swap-resp`) round-trip. Verifies the `XDP_TX` return path over veth |
 | [simpleudp-no-rx-attach](simpleudp-no-rx-attach/) | Negative case: without peer XDP attach (and GRO off) packets are silently dropped; with GRO on they arrive |
 | [simpleudp-xdp-generic](simpleudp-xdp-generic/) | Forced generic (SKB) mode via `--xdp-mode generic` on both sides. Verifies the attach mode and end-to-end delivery |
+| [simpleudp-split-rx](simpleudp-split-rx/) | One process with `--rx-device`: TX on one veth, forwarded by a middle "DUT" netns, counted by `xdp_rx` on a second veth |
 | [otlp-metrics](otlp-metrics/) | OTLP metrics push (`--otlp-endpoint`) to an OTel Collector in docker. Verifies the exported counters via the prometheus exporter. SKIPs without docker |
 
 ## How it works
