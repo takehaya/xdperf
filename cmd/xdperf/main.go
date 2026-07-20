@@ -77,6 +77,11 @@ func newApp(version string) *cli.App {
 			Required: true,
 			Usage:    "network device name to send packets",
 		},
+		cli.StringFlag{
+			Name: "rx-device",
+			Usage: "device to attach the receive/count XDP program in client mode " +
+				"(implies --recv); defaults to --device",
+		},
 		cli.IntFlag{
 			Name:  "parallelism, l",
 			Value: 1,
@@ -189,6 +194,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.Sender = ctx.Bool("send")
 	c.Receiver = ctx.Bool("recv")
 	c.Device = ctx.String("device")
+	c.RxDevice = ctx.String("rx-device")
 	c.Parallelism = ctx.Int("parallelism")
 	c.Duration = ctx.Duration("duration")
 	c.DebugMode = ctx.Int("debugmode")

@@ -76,6 +76,30 @@ func TestNewResource(t *testing.T) {
 			t.Errorf("resource attribute %s = %q, want %q", k, got[k], v)
 		}
 	}
+	if _, ok := got["xdperf.rx_device"]; ok {
+		t.Error("xdperf.rx_device present without RxDevice set")
+	}
+}
+
+func TestNewResourceRxDevice(t *testing.T) {
+	res, err := newResource(context.Background(), Config{
+		Mode:     "both",
+		Device:   "eth0",
+		RxDevice: "eth1",
+	})
+	if err != nil {
+		t.Fatalf("newResource() error = %v", err)
+	}
+	got := make(map[string]string)
+	for _, kv := range res.Attributes() {
+		got[string(kv.Key)] = kv.Value.String()
+	}
+	if got["xdperf.rx_device"] != "eth1" {
+		t.Errorf("xdperf.rx_device = %q, want %q", got["xdperf.rx_device"], "eth1")
+	}
+	if got["network.interface.name"] != "eth0" {
+		t.Errorf("network.interface.name = %q, want %q", got["network.interface.name"], "eth0")
+	}
 }
 
 func TestZapErrorHandlerSuppressesRepeats(t *testing.T) {

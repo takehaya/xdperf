@@ -123,6 +123,62 @@ func TestConfigValidateOTLP(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRxDevice(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			name: "unset_server_ok",
+			cfg:  Config{Device: "eth0", Receiver: true},
+		},
+		{
+			name: "server_mode_err",
+			cfg:  Config{Device: "eth0", RxDevice: "eth1", Receiver: true},
+
+			wantErr: true,
+		},
+		{
+			name: "send_recv_ok",
+			cfg: Config{
+				Device: "eth0", RxDevice: "eth1", Sender: true, Receiver: true,
+				PluginName: "simpleudp.tinygo", Parallelism: 1, Count: 1,
+			},
+		},
+		{
+			name: "same_as_device_ok",
+			cfg: Config{
+				Device: "eth0", RxDevice: "eth0", Sender: true, Receiver: true,
+				PluginName: "simpleudp.tinygo", Parallelism: 1, Count: 1,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfigNormalizeRxDeviceImpliesRecv(t *testing.T) {
+	c := Config{Device: "eth0", RxDevice: "eth1", Sender: true}
+	c.Normalize()
+	if !c.Receiver {
+		t.Error("Normalize() with RxDevice set did not enable Receiver")
+	}
+
+	// Server mode must not be promoted (it errors in Validate instead).
+	c = Config{Device: "eth0", RxDevice: "eth1", Sender: false}
+	c.Normalize()
+	if c.Receiver {
+		t.Error("Normalize() enabled Receiver for a non-sender config")
+	}
+}
+
 func TestConfigValidateXDPMode(t *testing.T) {
 	// Server mode (recv only) is the smallest valid baseline; the XDP mode
 	// check runs before the server-mode early return.

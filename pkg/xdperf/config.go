@@ -24,6 +24,7 @@ type Config struct {
 	Receiver    bool
 	SwapResp    bool
 	Device      string
+	RxDevice    string // device to attach the receive/count XDP program in client mode; empty = same as Device
 	Parallelism int
 	Count       uint64        // total packets to send
 	PPS         uint64        // 0 = unlimited (max speed)
@@ -54,6 +55,11 @@ func (c *Config) Normalize() {
 	if c.XDPMode == "" {
 		c.XDPMode = XDPModeAuto.String()
 	}
+	// A dedicated RX device only makes sense to count on, so it implies
+	// receive mode for a sending client.
+	if c.RxDevice != "" && c.Sender {
+		c.Receiver = true
+	}
 	if c.PluginLanguage != "" {
 		return
 	}
@@ -65,6 +71,11 @@ func (c *Config) Normalize() {
 func (c *Config) Validate() error {
 	if c.Device == "" {
 		return fmt.Errorf("device is required")
+	}
+	// RxDevice splits the client's RX attach off the TX device; server mode
+	// already has a single device role, so --device is the one to use there.
+	if c.RxDevice != "" && !c.Sender {
+		return fmt.Errorf("--rx-device is only valid in client mode; use --device in server mode")
 	}
 
 	// XDP attach mode applies to both client and server mode.
