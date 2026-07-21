@@ -226,7 +226,7 @@ static __noinline void capture_old_values(struct xdp_md *ctx, struct diff_entry 
 
 // Helper: Traverse IPv6 extension headers to find transport layer
 // Returns true if transport layer found, outputs protocol and L4 offset
-// If final_dst is non-NULL and SRH is found, copies the final destination (segment[LastEntry]) to it
+// If final_dst is non-NULL and SRH with Segments Left > 0 is found, copies the final destination (segment[0]) to it
 // Supports: Hop-by-Hop (0), Routing (43), Fragment (44), Destination Options (60)
 // Also recognizes IPPROTO_ETHERNET (143), IPPROTO_IPIP (4), IPPROTO_IPV6 (41) as terminal protocols
 static __always_inline bool ipv6_find_transport(struct xdp_md *ctx, __u16 l3_offset, __u8 *out_proto, __u16 *out_l4_offset,
