@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0](https://github.com/takehaya/xdperf/compare/v0.16.0...v0.17.0) (2026-07-21)
+
+
+### 🎉 Features
+
+* add --rx-device to split TX and RX devices in one process ([#109](https://github.com/takehaya/xdperf/issues/109)) ([c4ee3a6](https://github.com/takehaya/xdperf/commit/c4ee3a6fea521f2ac44dd619b740aa6f8b305926))
+
+
+### 📝 Documentation
+
+* **xdp:** fix ipv6_find_transport comment to say segment[0] ([#111](https://github.com/takehaya/xdperf/issues/111)) ([93f6f2b](https://github.com/takehaya/xdperf/commit/93f6f2b0bd863bf930d72d6e2cad57198f7927d4))
+
 ## [0.16.0](https://github.com/takehaya/xdperf/compare/v0.15.0...v0.16.0) (2026-07-20)
 
 
