@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/takehaya/xdperf/compare/v0.17.0...v0.18.0) (2026-07-26)
+
+
+### 🎉 Features
+
+* **plugins:** add srv6 plugin (RFC 8754) ([#112](https://github.com/takehaya/xdperf/issues/112)) ([65310ee](https://github.com/takehaya/xdperf/commit/65310eeb96b532a4f992e13127942cb8e9452c97))
+
 ## [0.17.0](https://github.com/takehaya/xdperf/compare/v0.16.0...v0.17.0) (2026-07-21)
 
 
