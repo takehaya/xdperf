@@ -21,13 +21,14 @@ const (
 // IPv6 header the pseudo header is derived from, transportOffset at the start
 // of the transport header, and csumFieldOffset at the checksum field within the
 // transport header (UDPChecksumFieldOffset / TCPChecksumFieldOffset).
-// HeaderLen 0 lets the data plane derive the transport length from the IPv6
-// payload length.
+// HeaderLen 0 lets the data plane derive the transport length itself: for
+// IPv6 it walks the extension headers and uses everything from the transport
+// header to the end of the packet (recalc_checksum in src/xdp_prog.c).
 func IPv6TransportChecksumSpec(ipHeaderOffset, transportOffset, csumFieldOffset uint16) ChecksumSpec {
 	return ChecksumSpec{
 		ChecksumOffset: transportOffset + csumFieldOffset,
 		HeaderStart:    transportOffset,
-		HeaderLen:      0, // 0 = derived from the IPv6 payload length by the data plane
+		HeaderLen:      0, // 0 = derived by the data plane (transport start to packet end)
 		IPHeaderOffset: ipHeaderOffset,
 	}
 }
