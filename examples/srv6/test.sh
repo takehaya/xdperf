@@ -15,7 +15,7 @@ MODES=(l3vpn_ipv4 l2vpn_eth ipv6)
 SEGMENTS='["2001:db8:100::1","2001:db8:200::1"]'
 
 # Plugin config for one mode: 2-segment SID list, flow-label + inner-port
-# sweeps, IMIX sizes above every mode's minimum (138..158 with 2 segments).
+# sweeps, IMIX sizes above every mode's minimum (122..142 with 2 segments).
 build_srv6_cfg() {
     local mode="$1" dst_mac="$2"
     echo "{\"mode\":\"${mode}\",\"segments\":${SEGMENTS},\"src_ip\":\"2001:db8::1\",\"dst_mac\":\"${dst_mac}\",\"is_arp_resolve\":false,\"flow_label_start\":0,\"flow_label_end\":1000,\"vary_inner_src_port\":true,\"imix_sizes\":[256,768,1400],\"imix_weights\":[7,2,1]}"
