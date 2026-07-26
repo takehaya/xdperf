@@ -384,3 +384,29 @@ func TestBelowMinFrameLen(t *testing.T) {
 		t.Error("expected an error for frame below the minimum length")
 	}
 }
+
+// TestExactFrameLengths guards against gopacket's 60-byte Ethernet padding of
+// the inner frame leaking into the total length: sizes 92..109 used to come
+// out 110 bytes long because the inner Ethernet frame (< 60 bytes) was padded
+// before encapsulation.
+func TestExactFrameLengths(t *testing.T) {
+	p := sampleParams()
+	for totalLen := MinFrameLen(p); totalLen <= 120; totalLen++ {
+		info, err := BuildVXLANPacket(p, totalLen)
+		if err != nil {
+			t.Fatalf("totalLen=%d: %v", totalLen, err)
+		}
+		if len(info.Data) != totalLen {
+			t.Errorf("totalLen=%d: len(Data) = %d", totalLen, len(info.Data))
+		}
+		// The inner IPv4/UDP lengths and checksums must stay consistent with the
+		// trimmed frame.
+		innerOff := int(info.Offsets["inner.ip.start"])
+		if !ipv4ChecksumValid(info.Data, innerOff) {
+			t.Errorf("totalLen=%d: inner IPv4 checksum invalid", totalLen)
+		}
+		if !udpChecksumValid(info.Data, innerOff) {
+			t.Errorf("totalLen=%d: inner UDP checksum invalid", totalLen)
+		}
+	}
+}
