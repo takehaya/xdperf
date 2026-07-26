@@ -94,6 +94,7 @@ WASMプラグインがパケットテンプレートを生成。`plugins/`にリ
 - `imixudp.go/` — IMIXトラフィックパターン
 - `gtpv1u.go/` — GTP-U (5G/4G) トラフィック。外側UDP/GTP-Uヘッダ + 内側IP/UDPを生成し、内側ポートをスイープ可能。
 - `vxlan.go/` — VXLAN (RFC 7348) トラフィック。外側UDP(4789)/VXLANヘッダ + 内側Ethernetフレーム(IPv4/UDP)を生成し、VNI・内側ポート・内側IP・外側ポートをスイープ可能。任意で外側802.1Q VLANタグ(vlan_id、不要なら0で省略)。外側UDPチェックサムは0固定。
+- `srv6.go/` — SRv6 (RFC 8754) トラフィック。外側 IPv6 + SRH を生成し、`mode` で内側を選択 (`l3vpn_ipv4`: IPv4/UDP、`l2vpn_eth`: Ethernet+IPv4/UDP、`ipv6`: IPv6/UDP)。セグメントリスト可変 (1〜127)、flow label・SRHタグ・内側ポート・内側IPをスイープ可能。外側 IPv6 にチェックサムはなく、内側チェックサムのみ再計算。
 - `test_e2e_variety.go/` — 全プロトコルE2Eテスト (IPv4/IPv6/VLAN/QinQ/ICMP/TCP/ARP/EAPOL/LLDP/SRv6/MPLS)
 
 プラグインは `GeneratorProcessResponse` を返す。2つのテンプレートタイプ:

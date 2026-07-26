@@ -16,6 +16,22 @@ const (
 	TCPChecksumFieldOffset = 16 // checksum field offset within the TCP header
 )
 
+// IPv6TransportChecksumSpec returns the checksum spec for a transport-layer
+// checksum computed over an IPv6 pseudo header. ipHeaderOffset points at the
+// IPv6 header the pseudo header is derived from, transportOffset at the start
+// of the transport header, and csumFieldOffset at the checksum field within the
+// transport header (UDPChecksumFieldOffset / TCPChecksumFieldOffset).
+// HeaderLen 0 lets the data plane derive the transport length from the IPv6
+// payload length.
+func IPv6TransportChecksumSpec(ipHeaderOffset, transportOffset, csumFieldOffset uint16) ChecksumSpec {
+	return ChecksumSpec{
+		ChecksumOffset: transportOffset + csumFieldOffset,
+		HeaderStart:    transportOffset,
+		HeaderLen:      0, // 0 = derived from the IPv6 payload length by the data plane
+		IPHeaderOffset: ipHeaderOffset,
+	}
+}
+
 // IPv4UDPChecksumSpecs returns the standard checksum specs for an
 // Ethernet/IPv4/UDP packet whose IPv4 header begins at ipHeaderOffset (typically
 // EthernetHeaderLen for an untagged frame): the IPv4 header checksum and the UDP

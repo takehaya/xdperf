@@ -10,8 +10,8 @@ builds:
   - id: xdperf
     binary: xdperf
     main: ./cmd/xdperf
-    goos: [ linux ]
-    goarch: [ amd64 ]
+    goos: [linux]
+    goarch: [amd64]
   - id: plugin-simpleudp.tinygo
     dir: ./plugins/simpleudp.tinygo
     main: .
@@ -32,8 +32,8 @@ builds:
     dir: ./plugins/simpleudp.go
     main: .
     binary: simpleudp.go
-    goos: [ wasip1 ]
-    goarch: [ wasm ]
+    goos: [wasip1]
+    goarch: [wasm]
     buildmode: c-shared
     ldflags:
       - -X main.version={{ .Version }}
@@ -43,8 +43,8 @@ builds:
     dir: ./plugins/test_e2e_variety.go
     main: .
     binary: test_e2e_variety.go
-    goos: [ wasip1 ]
-    goarch: [ wasm ]
+    goos: [wasip1]
+    goarch: [wasm]
     buildmode: c-shared
     ldflags:
       - -X main.version={{ .Version }}
@@ -54,8 +54,8 @@ builds:
     dir: ./plugins/imixudp.go
     main: .
     binary: imixudp.go
-    goos: [ wasip1 ]
-    goarch: [ wasm ]
+    goos: [wasip1]
+    goarch: [wasm]
     buildmode: c-shared
     ldflags:
       - -X main.version={{ .Version }}
@@ -65,8 +65,8 @@ builds:
     dir: ./plugins/gtpv1u.go
     main: .
     binary: gtpv1u.go
-    goos: [ wasip1 ]
-    goarch: [ wasm ]
+    goos: [wasip1]
+    goarch: [wasm]
     buildmode: c-shared
     ldflags:
       - -X main.version={{ .Version }}
@@ -76,8 +76,19 @@ builds:
     dir: ./plugins/vxlan.go
     main: .
     binary: vxlan.go
-    goos: [ wasip1 ]
-    goarch: [ wasm ]
+    goos: [wasip1]
+    goarch: [wasm]
+    buildmode: c-shared
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+  - id: plugin-srv6.go
+    dir: ./plugins/srv6.go
+    main: .
+    binary: srv6.go
+    goos: [wasip1]
+    goarch: [wasm]
     buildmode: c-shared
     ldflags:
       - -X main.version={{ .Version }}
@@ -86,39 +97,44 @@ builds:
 archives:
   - id: xdperf
     formats:
-    - 'binary'
+      - 'binary'
     ids:
-    - xdperf
+      - xdperf
   - id: plugin-simpleudp.tinygo
     formats:
-    - 'binary'
+      - 'binary'
     ids:
-    - plugin-simpleudp.tinygo
+      - plugin-simpleudp.tinygo
   - id: plugin-simpleudp.go
     formats:
-    - 'binary'
+      - 'binary'
     ids:
-    - plugin-simpleudp.go
+      - plugin-simpleudp.go
   - id: plugin-test_e2e_variety.go
     formats:
-    - 'binary'
+      - 'binary'
     ids:
-    - plugin-test_e2e_variety.go
+      - plugin-test_e2e_variety.go
   - id: plugin-imixudp.go
     formats:
-    - 'binary'
+      - 'binary'
     ids:
-    - plugin-imixudp.go
+      - plugin-imixudp.go
   - id: plugin-gtpv1u.go
     formats:
-    - 'binary'
+      - 'binary'
     ids:
-    - plugin-gtpv1u.go
+      - plugin-gtpv1u.go
   - id: plugin-vxlan.go
     formats:
-    - 'binary'
+      - 'binary'
     ids:
-    - plugin-vxlan.go
+      - plugin-vxlan.go
+  - id: plugin-srv6.go
+    formats:
+      - 'binary'
+    ids:
+      - plugin-srv6.go
 checksum:
   name_template: 'checksums.txt'
 snapshot:
