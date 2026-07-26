@@ -200,6 +200,13 @@ func BuildVXLANPacket(p PacketParams, totalLen int) (*PacketInfo, error) {
 		if err != nil {
 			return nil, err
 		}
+		// gopacket pads Ethernet frames shorter than 60 bytes on serialization.
+		// The inner frame is encapsulated (no FCS/minimum-size requirement of its
+		// own), so strip the pad to keep totalLen exact; the inner IP/UDP length
+		// fields already exclude it.
+		if want := innerOverhead + payloadLen; len(innerBytes) > want {
+			innerBytes = innerBytes[:want]
+		}
 	}
 	vxlanHeader := buildVXLANHeader(p.VNI)
 	vxlanPayload := make([]byte, 0, len(vxlanHeader)+len(innerBytes))
