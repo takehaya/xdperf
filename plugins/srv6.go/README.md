@@ -69,7 +69,7 @@ Pass config inline with `--cfg` (alias `--plugin-config`) or from a file with
 | `segments` | []string | `["2001:db8:100::1"]` | SID list in visiting order, 1-127 IPv6 addresses |
 | `src_ip` | string | `2001:db8::1` | Outer IPv6 source |
 | `dst_ip` | string | (empty) | Outer IPv6 destination; empty = `segments[0]` (first-visited) |
-| `dst_mac` | string | `ff:ff:ff:ff:ff:ff` | Outer dst MAC (ignored when `is_arp_resolve`) |
+| `dst_mac` | string | `ff:ff:ff:ff:ff:ff` | Outer dst MAC; with `is_arp_resolve` it is the fallback when NDP returns no entry |
 | `is_arp_resolve` | bool | `true` | Resolve the outer dst MAC via NDP for the outer dst IP |
 | `traffic_class` | uint8 | `0` | Outer IPv6 traffic class |
 | `flow_label_start` / `flow_label_end` | uint32 | `0` / `0` | 20-bit flow label range 0-1048575 (`end > start` to sweep) |

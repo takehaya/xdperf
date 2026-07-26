@@ -96,7 +96,10 @@ type PacketParams struct {
 
 	// SRH
 	Mode     Mode
-	Segments []net.IP // pre-parsed IPv6 segment list, segments[0] = final segment
+	// Segments is the pre-parsed SID list in visiting order: Segments[0] is the
+	// first segment to visit and Segments[n-1] the final one. buildSRH reverses
+	// it into the on-wire order (RFC 8754).
+	Segments []net.IP
 	SRHTag   uint16   // base value when the tag is swept
 
 	// inner L2 (ModeL2VPNEth only)
