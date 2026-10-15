@@ -145,6 +145,81 @@ func newApp(version string) *cli.App {
 			Name:  "otlp-insecure",
 			Usage: "use insecure (plaintext) gRPC connection for OTLP export",
 		},
+		cli.BoolFlag{
+			Name:  "tcp",
+			Usage: "TCP stream mode: open --tcp-flows connections to --tcp-dst from XDP and stream data (no plugin). See docs/ja/design_xdp_tcp.md",
+		},
+		cli.StringFlag{
+			Name:  "tcp-dst",
+			Usage: "TCP stream destination host:port ([v6]:port for IPv6)",
+		},
+		cli.StringFlag{
+			Name:  "tcp-src-ip",
+			Usage: "TCP stream source address (default: the route's preferred source on --device)",
+		},
+		cli.StringFlag{
+			Name:  "tcp-dst-mac",
+			Usage: "TCP stream next-hop MAC override (default: ARP/NDP via the kernel neighbor cache)",
+		},
+		cli.IntFlag{
+			Name:  "tcp-flows",
+			Value: 1,
+			Usage: "TCP stream concurrent connections (1..65536)",
+		},
+		cli.IntFlag{
+			Name:  "tcp-port-base",
+			Value: 10000,
+			Usage: "TCP stream first source port; flows use port-base..port-base+flows-1",
+		},
+		cli.IntFlag{
+			Name:  "tcp-window",
+			Value: 32,
+			Usage: "TCP stream max segments in flight per flow (fixed window)",
+		},
+		cli.IntFlag{
+			Name:  "tcp-mss",
+			Usage: "TCP stream payload bytes per segment (default: MTU-sized, 1448 for IPv4 / 1428 for IPv6)",
+		},
+		cli.StringFlag{
+			Name:  "tcp-bytes",
+			Usage: "TCP stream bytes to send per flow (e.g. 100m, 1g); 0 = stream until --duration",
+		},
+		cli.DurationFlag{
+			Name:  "tcp-rto",
+			Value: 200 * time.Millisecond,
+			Usage: "TCP stream retransmission timeout",
+		},
+		cli.IntFlag{
+			Name:  "tcp-vlan-id",
+			Usage: "TCP stream 802.1Q VLAN id (0 = untagged)",
+		},
+		cli.IntFlag{
+			Name:  "tcp-vlan-pcp",
+			Usage: "TCP stream 802.1Q priority",
+		},
+		cli.BoolFlag{
+			Name:  "tcp-server",
+			Usage: "TCP responder mode: answer SYN/data/FIN on --tcp-listen from XDP (no kernel socket, data discarded). Implies --recv",
+		},
+		cli.StringFlag{
+			Name:  "tcp-listen",
+			Value: ":5201",
+			Usage: "TCP responder listen address [ip]:port (no ip = any IPv4, [::]:port = any IPv6)",
+		},
+		cli.IntFlag{
+			Name:  "tcp-max-conns",
+			Value: 262144,
+			Usage: "TCP responder flow table size (LRU)",
+		},
+		cli.DurationFlag{
+			Name:  "tcp-sweep-after",
+			Usage: "TCP responder: retire half-open / half-closed flows idle this long (0 = max(65*tcp-rto, 2s))",
+		},
+		cli.IntFlag{
+			Name:  "tcp-ack-every",
+			Value: 1,
+			Usage: "TCP responder: ACK every N in-order data segments (PSH/FIN/out-of-order are always acked)",
+		},
 		cli.StringFlag{
 			Name:  "otlp-attributes",
 			Usage: "additional OTLP resource attributes (key=value,key=value)",
@@ -211,6 +286,27 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.OTLPInsecure = ctx.Bool("otlp-insecure")
 	c.OTLPAttributes = ctx.String("otlp-attributes")
 	c.Version = version
+	c.TCP = ctx.Bool("tcp")
+	c.TCPDst = ctx.String("tcp-dst")
+	c.TCPSrcIP = ctx.String("tcp-src-ip")
+	c.TCPDstMAC = ctx.String("tcp-dst-mac")
+	c.TCPFlows = ctx.Int("tcp-flows")
+	c.TCPPortBase = ctx.Int("tcp-port-base")
+	c.TCPWindow = ctx.Int("tcp-window")
+	c.TCPMSS = ctx.Int("tcp-mss")
+	c.TCPRTO = ctx.Duration("tcp-rto")
+	c.TCPVlanID = ctx.Int("tcp-vlan-id")
+	c.TCPVlanPCP = ctx.Int("tcp-vlan-pcp")
+	c.TCPServer = ctx.Bool("tcp-server")
+	c.TCPListen = ctx.String("tcp-listen")
+	c.TCPMaxConns = ctx.Int("tcp-max-conns")
+	c.TCPAckEvery = ctx.Int("tcp-ack-every")
+	c.TCPSweepAfter = ctx.Duration("tcp-sweep-after")
+	tcpBytes, err := xdperf.ParseCount(ctx.String("tcp-bytes"))
+	if err != nil {
+		return xdperf.Config{}, fmt.Errorf("invalid --tcp-bytes value: %w", err)
+	}
+	c.TCPBytes = tcpBytes
 
 	// Parse count
 	countStr := ctx.String("count")

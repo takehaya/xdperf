@@ -29,7 +29,18 @@ type XdpMd struct {
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -I ./src -I /usr/include/x86_64-linux-gnu
 
+// ReadCollection loads the BPF objects with diff_map sized to diffMapSize.
+// See ReadCollectionWithSizes for the general form.
 func ReadCollection(constants map[string]any, diffMapSize uint32, debug ...bool) (*BpfObjects, *ebpf.CollectionSpec, error) {
+	return ReadCollectionWithSizes(constants, map[string]uint32{"diff_map": diffMapSize}, debug...)
+}
+
+// ReadCollectionWithSizes loads the BPF objects, overriding max_entries of the
+// maps named in sizes before load (0 keeps the compiled-in size). diff_map is
+// clamped to MaxDiffEntries. Known resizable maps:
+//   - diff_map          per-CPU diff pool of the replay client
+//   - tcp_srv_flow_map  flow table of --tcp-server (LRU hash; 1 in other modes)
+func ReadCollectionWithSizes(constants map[string]any, sizes map[string]uint32, debug ...bool) (*BpfObjects, *ebpf.CollectionSpec, error) {
 	debugMode := len(debug) > 0 && debug[0]
 	// Remove memory limit for BPF
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -43,16 +54,18 @@ func ReadCollection(constants map[string]any, diffMapSize uint32, debug ...bool)
 		return nil, nil, fmt.Errorf("fail to load bpf spec: %w", err)
 	}
 
-	// Dynamically set diff_map size before loading. Clamp to the data-plane cap
-	// (MaxDiffEntries) so the control plane never sizes the map beyond what the
-	// kernel round-robin will actually read.
-	if mapSpec, ok := spec.Maps["diff_map"]; ok {
-		if diffMapSize > MaxDiffEntries {
-			diffMapSize = MaxDiffEntries
+	// Dynamically size maps before loading. diff_map is clamped to the
+	// data-plane cap (MaxDiffEntries) so the control plane never sizes it
+	// beyond what the kernel round-robin will actually read.
+	for name, n := range sizes {
+		mapSpec, ok := spec.Maps[name]
+		if !ok || n == 0 {
+			continue
 		}
-		if diffMapSize > 0 {
-			mapSpec.MaxEntries = diffMapSize
+		if name == "diff_map" && n > MaxDiffEntries {
+			n = MaxDiffEntries
 		}
+		mapSpec.MaxEntries = n
 	}
 
 	for name, value := range constants {

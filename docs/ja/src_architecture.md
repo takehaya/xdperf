@@ -10,6 +10,8 @@ src/
 ├── xdp_utils.h     ユーティリティ（MAC/IPスワップ、swap_resp制御）
 ├── xdp_packet.h    データ構造とBPFマップ定義（システムの心臓部）
 ├── xdp_checksum.h  チェックサム計算エンジン（フル再計算用）
+├── xdp_tcp.h       TCP ストリームモード（xdp_tx_tcp / xdp_rx_tcp、フロー状態マップ、tcp_reply_inplace）
+├── xdp_tcp_server.h XDP TCP レスポンダ（xdp_rx_tcp_server、--tcp-server、LRU_HASH のフローテーブル）
 └── xdp_prog.c      XDPプログラム本体（TX/RX/チェックサム）
 ```
 

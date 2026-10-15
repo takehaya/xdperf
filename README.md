@@ -81,6 +81,30 @@ sudo xdperf run --device ens4 --count 100k --parallelism 10 \
     --cfg '{"dst_port": 10001, "src_ip": "192.168.1.1", "dst_ip": "192.168.1.2", "payload_size": 64}'
 ```
 
+### TCP Stream Mode
+
+`--tcp` opens real TCP connections entirely from XDP (SYN, data, retransmissions, FIN) against any
+TCP server, iperf3-style, without using a kernel socket on the sender. See
+[docs/ja/tcp_stream.md](docs/ja/tcp_stream.md) and the design notes in
+[docs/ja/design_xdp_tcp.md](docs/ja/design_xdp_tcp.md).
+
+```bash
+# receiver: any TCP sink; xdperf-sink counts connections and bytes
+xdperf-sink -listen 10.0.0.2:5201
+
+# sender: 64 connections x 1 GB over 4 CPUs
+sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.0.2:5201 --tcp-flows 64 --tcp-bytes 1g --parallelism 4
+
+# IPv6 / VLAN-tagged / time-bounded
+sudo xdperf run --tcp --device eth0 --tcp-dst '[fd00::2]:5201' --tcp-flows 16 --duration 30s
+sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.100.2:5201 --tcp-vlan-id 100 --tcp-flows 8 --tcp-bytes 100m
+
+# XDP responder: answer SYN / data / FIN from XDP too (no kernel socket on either side).
+# Works with the --tcp client above or with any one-way Linux TCP sender (socat, nc).
+# It never sends data back, so request/response clients (iperf3 -c, curl) do not work.
+sudo xdperf run --tcp-server --device eth0 --tcp-listen 10.0.0.2:5201
+```
+
 ### Server Mode (Receive Only)
 
 ```shell

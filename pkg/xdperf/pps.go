@@ -26,6 +26,9 @@ func ParseCount(s string) (uint64, error) {
 	} else if strings.HasSuffix(s, "m") {
 		multiplier = 1000000
 		s = s[:len(s)-1]
+	} else if strings.HasSuffix(s, "g") {
+		multiplier = 1000000000
+		s = s[:len(s)-1]
 	}
 
 	value, err := strconv.ParseUint(s, 10, 64)
