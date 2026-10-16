@@ -553,13 +553,25 @@ static __always_inline int tcp_tx_build(struct xdp_md *ctx, const struct tcp_cfg
             return -1;
     }
 
-    // 3. L2 + IP headers from the template (never trust the recycled frame)
-    __u8 hdr[64];
-    __builtin_memcpy(hdr, (const void *)cfg->hdr_tmpl, sizeof(hdr));
+    // 3. L2 + IP headers from the template (never trust the recycled frame).
+    // l3_off is 14 or 18 (802.1Q). The IP header is edited in its own stack
+    // buffer at constant offsets: a stack access through hdr + l3_off has a
+    // variable offset, which some kernels' verifiers reject ("invalid read
+    // from stack ... var_off").
+    __u8 ih[40];
+    __u32 eth_len;
+    if (l3_off == 18) {
+        __builtin_memcpy(ih, (const void *)(cfg->hdr_tmpl + 18), sizeof(ih));
+        eth_len = 18;
+    } else if (l3_off == 14) {
+        __builtin_memcpy(ih, (const void *)(cfg->hdr_tmpl + 14), sizeof(ih));
+        eth_len = 14;
+    } else {
+        return -1;
+    }
+    if (bpf_xdp_store_bytes(ctx, 0, (void *)cfg->hdr_tmpl, eth_len) < 0)
+        return -1;
     if (cfg->ip_version == 4) {
-        __u8 *ih = hdr + l3_off;
-        if (l3_off > 18) // bound for the verifier (already checked above)
-            return -1;
         put_be16(ih + 2, (__u16)(20 + tcp_len));
         put_be16(ih + 4, (__u16)cs->ip_id++);
         ih[10] = 0;
@@ -567,25 +579,12 @@ static __always_inline int tcp_tx_build(struct xdp_md *ctx, const struct tcp_cfg
         __u64 isum = 0;
         SUM16_BUF(isum, ih, 20);
         put_be16(ih + 10, tcp_csum_fold(isum));
-        if (l3_off == 18) {
-            if (bpf_xdp_store_bytes(ctx, 0, hdr, 38) < 0)
-                return -1;
-        } else {
-            if (bpf_xdp_store_bytes(ctx, 0, hdr, 34) < 0)
-                return -1;
-        }
-    } else {
-        __u8 *ih = hdr + l3_off;
-        if (l3_off > 18)
+        if (bpf_xdp_store_bytes(ctx, eth_len, ih, 20) < 0)
             return -1;
+    } else {
         put_be16(ih + 4, (__u16)tcp_len);
-        if (l3_off == 18) {
-            if (bpf_xdp_store_bytes(ctx, 0, hdr, 58) < 0)
-                return -1;
-        } else {
-            if (bpf_xdp_store_bytes(ctx, 0, hdr, 54) < 0)
-                return -1;
-        }
+        if (bpf_xdp_store_bytes(ctx, eth_len, ih, 40) < 0)
+            return -1;
     }
     return 0;
 }
