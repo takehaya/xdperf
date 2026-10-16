@@ -9,7 +9,8 @@
 //
 // There is no timer: SYN-ACK and FIN+ACK are retransmitted only when the
 // peer retransmits its SYN / FIN (reactive, like dperf's server side). Flow
-// state lives in an LRU hash keyed by the peer (address, port); stale
+// state lives in an LRU hash keyed by (peer address, peer port, local
+// address); stale
 // entries are evicted by the LRU or recycled by a new SYN from the same
 // peer. No spin lock: one flow's packets arrive on one RSS queue, so the
 // updates are serialized by the NIC in practice. See docs/ja/design_xdp_tcp.md
@@ -26,8 +27,9 @@ enum tcp_srv_state {
 };
 
 struct tcp_srv_key {
-    __u32 addr[4]; // peer address, network byte order; IPv4 in addr[0]
-    __u16 port;    // peer port, host byte order
+    __u32 addr[4];  // peer address, network byte order; IPv4 in addr[0]
+    __u32 local[4]; // our address (the listen address may be a wildcard)
+    __u16 port;     // peer port, host byte order
     __u16 pad;
 };
 
@@ -73,7 +75,9 @@ struct tcp_srv_stats {
     __u64 unexpected; // bad ACK number in SYN_RCVD
     __u64 build_errors;
     __u64 rst_sent;
-    __u64 reset_est; // RSTs that removed an established (or closing) flow
+    __u64 reset_est;    // RSTs that removed an established (or closing) flow
+    __u64 recycled_est; // new SYNs that replaced an established (or closing) flow
+    __u64 bad_len;      // IP / TCP lengths inconsistent with the frame: dropped
 };
 
 struct {
@@ -138,6 +142,7 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
     struct tcp_srv_key key = {0};
     __u32 l4_off;
     __u32 payload_len;
+    __u32 ip_end; // end of the IP datagram as declared by its header
     if (cfg->ip_version == 4) {
         if (proto != bpf_htons(ETH_P_IP))
             return XDP_PASS;
@@ -151,8 +156,10 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
         if ((bpf_ntohs(iph->frag_off) & 0x1FFF) != 0)
             return XDP_PASS;
         key.addr[0] = iph->saddr;
+        key.local[0] = iph->daddr;
         l4_off = l3_off + sizeof(*iph);
         __u32 tot = bpf_ntohs(iph->tot_len);
+        ip_end = l3_off + tot;
         payload_len = tot >= sizeof(*iph) ? tot - sizeof(*iph) : 0;
     } else {
         if (proto != bpf_htons(ETH_P_IPV6))
@@ -170,8 +177,13 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
         key.addr[1] = ip6h->saddr.in6_u.u6_addr32[1];
         key.addr[2] = ip6h->saddr.in6_u.u6_addr32[2];
         key.addr[3] = ip6h->saddr.in6_u.u6_addr32[3];
+        key.local[0] = ip6h->daddr.in6_u.u6_addr32[0];
+        key.local[1] = ip6h->daddr.in6_u.u6_addr32[1];
+        key.local[2] = ip6h->daddr.in6_u.u6_addr32[2];
+        key.local[3] = ip6h->daddr.in6_u.u6_addr32[3];
         l4_off = l3_off + sizeof(*ip6h);
         payload_len = bpf_ntohs(ip6h->payload_len);
+        ip_end = l4_off + payload_len;
     }
 
     struct tcphdr *th = data + l4_off;
@@ -188,9 +200,14 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
     __u8 flags = ((__u8 *)th)[13];
     __u32 doff = th->doff;
     __u32 hl = doff * 4;
-    if (hl < TCP_HDR_LEN)
+    // The declared lengths must fit in the frame (trailing Ethernet padding
+    // is fine) and leave room for the TCP header; otherwise the segment
+    // would be acked for bytes that never arrived.
+    if (hl < TCP_HDR_LEN || payload_len < hl || ip_end > (__u32)(data_end - data)) {
+        st->bad_len++;
         return XDP_DROP;
-    payload_len = payload_len >= hl ? payload_len - hl : 0;
+    }
+    payload_len -= hl;
 
     __u64 now = bpf_ktime_get_ns();
     struct tcp_srv_flow *f = bpf_map_lookup_elem(&tcp_srv_flow_map, &key);
@@ -215,8 +232,11 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
             f->last_ns = now;
             nf = *f;
         } else {
-            if (f)
+            if (f) {
                 st->recycled++; // fast recycle of a stale entry (no TIME_WAIT)
+                if (f->state != TS_SYN_RCVD)
+                    st->recycled_est++;
+            }
             __u8 ws = 0xFF;
             __u16 peer_mss = 0;
             if (doff > 5)
@@ -288,24 +308,32 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
     __u8 fin_in_order = 0;
     __u32 rcv_nxt = f->rcv_nxt;
     if (payload_len > 0) {
-        if (seq == rcv_nxt) {
+        __u32 end = seq + payload_len;
+        if (!seq_after(seq, rcv_nxt) && seq_after(end, rcv_nxt)) {
+            // Starts at or before rcv_nxt and carries new bytes. A
+            // retransmission may be repacketized, so only the part beyond
+            // rcv_nxt is new (RFC 9293 3.10.7.4 trimming).
             if (state == TS_ESTABLISHED) {
-                f->rcv_nxt += payload_len;
-                rcv_nxt = f->rcv_nxt;
-                f->bytes_rcvd += payload_len;
-                st->bytes_rcvd += payload_len;
+                __u32 n = end - rcv_nxt;
+                __u8 trimmed = (seq != rcv_nxt);
+                f->rcv_nxt = end;
+                rcv_nxt = end;
+                f->bytes_rcvd += n;
+                st->bytes_rcvd += n;
                 st->data_segs++;
                 f->unacked_segs++;
-                if (f->unacked_segs >= cfg->ack_every || (flags & (TCPF_PSH | TCPF_FIN)))
+                if (f->unacked_segs >= cfg->ack_every || (flags & (TCPF_PSH | TCPF_FIN)) || trimmed)
                     need_ack = 1;
             } else {
                 need_ack = 1; // data after the peer's FIN: just ack
             }
             fin_in_order = 1;
-        } else if (seq_after(rcv_nxt, seq)) {
-            // Duplicate / already received: ack what we have.
+        } else if (!seq_after(end, rcv_nxt)) {
+            // Duplicate / already received: ack what we have. A FIN right
+            // after the duplicate data is still in order.
             need_ack = 1;
             st->dup_acks_sent++;
+            fin_in_order = (end == rcv_nxt);
         } else {
             // Hole before this segment: duplicate ACK triggers the peer's
             // fast retransmit. The segment (and any FIN on it) is discarded.

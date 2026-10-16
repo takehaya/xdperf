@@ -20,6 +20,9 @@ import (
 	"time"
 )
 
+// version can be set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 type counters struct {
 	Accepted   atomic.Uint64 `json:"-"`
 	Closed     atomic.Uint64 `json:"-"`
@@ -46,7 +49,16 @@ func main() {
 	interval := flag.Duration("interval", time.Second, "stats print interval (0 = disable)")
 	readBuf := flag.Int("read-buf", 256*1024, "per-connection read buffer size")
 	xdpPassDev := flag.String("xdp-pass-dev", "", "attach a pass-through XDP program to this device (veth test beds only, see comment in source)")
+	showVersion := flag.Bool("v", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("xdperf-sink", version)
+		return
+	}
+	if *readBuf <= 0 {
+		log.Fatalf("invalid -read-buf %d: must be > 0", *readBuf)
+	}
 
 	// veth quirk: the peer's XDP_TX frames are queued into this device's
 	// xdp_ring, but the kernel only schedules this side's NAPI to drain the

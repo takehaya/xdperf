@@ -170,10 +170,11 @@ type BpfTcpSrvFlow struct {
 }
 
 type BpfTcpSrvKey struct {
-	_    structs.HostLayout
-	Addr [4]uint32
-	Port uint16
-	Pad  uint16
+	_     structs.HostLayout
+	Addr  [4]uint32
+	Local [4]uint32
+	Port  uint16
+	Pad   uint16
 }
 
 type BpfTcpSrvStats struct {
@@ -197,6 +198,8 @@ type BpfTcpSrvStats struct {
 	BuildErrors uint64
 	RstSent     uint64
 	ResetEst    uint64
+	RecycledEst uint64
+	BadLen      uint64
 }
 
 type BpfTcpStats struct {

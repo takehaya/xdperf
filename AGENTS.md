@@ -91,7 +91,7 @@ Cソースは`src/`に配置:
 - `xdp_checksum.h` — IPv4/IPv6/TCP/UDP/ICMPv6チェックサム計算。`bpf_loop`とsafeコールバックでverifier制約を回避。
 - `xdp_utils.h` — ユーティリティマクロ
 - `xdp_tcp.h` — TCP ストリームモードのデータ構造・マップと `xdp_tx_tcp` / `xdp_rx_tcp` プログラム。フロー状態は `tcp_flow_map` (ARRAY + `bpf_spin_lock`) に置き、TX/RX 間で共有する。受信フレームをその場で応答に書き換える `tcp_reply_inplace` もここ (レスポンダと共有)。
-- `xdp_tcp_server.h` — XDP TCP レスポンダ `xdp_rx_tcp_server` (`--tcp-server`)。フロー状態は `tcp_srv_flow_map` (LRU_HASH、相手の IP とポートがキー、lock 無し)。
+- `xdp_tcp_server.h` — XDP TCP レスポンダ `xdp_rx_tcp_server` (`--tcp-server`)。フロー状態は `tcp_srv_flow_map` (LRU_HASH、相手の IP・ポートと自分の IP がキー、lock 無し)。
 
 コンパイルはDocker (`Dockerfile.bpf`) 経由でclang → bpf2go → `pkg/coreelf/bpf_bpf{el,eb}.go`を生成。Cソース変更後: `make bpf-gen`。
 

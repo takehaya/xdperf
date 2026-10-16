@@ -347,10 +347,11 @@ run_tcp_server_case() {
     sleep 0.5
     stop_xdp_server
 
-    local tx_done tx_failed tx_acked tx_rtx tx_segs srv_accepted srv_closed srv_bytes srv_unexpected
+    local tx_done tx_failed tx_acked tx_rtx tx_segs srv_accepted srv_closed srv_bytes srv_unexpected srv_badlen
     tx_done="$(tx_field done)"; tx_failed="$(tx_field failed)"; tx_acked="$(tx_field bytes_acked)"; tx_rtx="$(tx_field retransmits)"
     tx_segs="$(tx_field data_segments)"
     srv_accepted="$(srv_field accepted)"; srv_closed="$(srv_field closed)"; srv_bytes="$(srv_field bytes)"; srv_unexpected="$(srv_field unexpected)"
+    srv_badlen="$(srv_field bad_length)"
     echo "  sender:    done=${tx_done} failed=${tx_failed} bytes_acked=${tx_acked} retransmits=${tx_rtx}"
     echo "  responder: accepted=${srv_accepted} closed=${srv_closed} bytes=${srv_bytes} unexpected=${srv_unexpected}"
 
@@ -362,6 +363,8 @@ run_tcp_server_case() {
     [ "${srv_closed:-0}" -eq "${FLOWS}" ] || { print_error "responder: closed=${srv_closed} != ${FLOWS}"; ok=0; }
     [ "${srv_bytes:-0}" -eq "${expected_bytes}" ] || { print_error "responder: bytes=${srv_bytes} != ${expected_bytes}"; ok=0; }
     [ "${srv_unexpected:-1}" -eq 0 ] || { print_error "responder: unexpected=${srv_unexpected}"; ok=0; }
+    # truncated frames (IP length beyond the frame) must never reach the responder
+    [ "${srv_badlen:-1}" -eq 0 ] || { print_error "responder: bad_length=${srv_badlen}"; ok=0; }
     # No loss is injected here, so retransmissions mean the client and the
     # responder disagree (e.g. a missing PSH leaves the tail of each window
     # unacked until RTO with --tcp-ack-every). Allow 1% for scheduling noise.
@@ -421,14 +424,17 @@ run_linux_client_case() {
         return 1
     fi
 
-    local srv_accepted srv_closed srv_bytes srv_unexpected
+    local srv_accepted srv_closed srv_bytes srv_unexpected srv_badlen
     srv_accepted="$(srv_field accepted)"; srv_closed="$(srv_field closed)"; srv_bytes="$(srv_field bytes)"; srv_unexpected="$(srv_field unexpected)"
+    srv_badlen="$(srv_field bad_length)"
     echo "  responder: accepted=${srv_accepted} closed=${srv_closed} bytes=${srv_bytes} unexpected=${srv_unexpected}"
     local ok=1
     [ "${srv_accepted:-0}" -eq 1 ] || { print_error "responder: accepted=${srv_accepted} != 1"; ok=0; }
     [ "${srv_closed:-0}" -eq 1 ] || { print_error "responder: closed=${srv_closed} != 1"; ok=0; }
     [ "${srv_bytes:-0}" -eq "${expected_bytes}" ] || { print_error "responder: bytes=${srv_bytes} != ${expected_bytes}"; ok=0; }
     [ "${srv_unexpected:-1}" -eq 0 ] || { print_error "responder: unexpected=${srv_unexpected}"; ok=0; }
+    # truncated frames (IP length beyond the frame) must never reach the responder
+    [ "${srv_badlen:-1}" -eq 0 ] || { print_error "responder: bad_length=${srv_badlen}"; ok=0; }
     if [ "$ok" -eq 1 ]; then
         print_success "case ${name}: PASS"
         return 0

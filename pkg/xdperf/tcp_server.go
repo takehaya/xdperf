@@ -197,8 +197,11 @@ func (x *Xdperf) tcpServerSweepAfter() time.Duration {
 	return d
 }
 
+// tcpServerActive is the number of accepted flows that have not ended. An
+// entry silently evicted by the LRU (table full, see table_full) is not seen
+// and stays counted.
 func tcpServerActive(s coreelf.BpfTcpSrvStats, sw *tcpServerSweep) uint64 {
-	gone := s.Closed + s.ResetEst + sw.closedImplicit.Load()
+	gone := s.Closed + s.ResetEst + s.RecycledEst + sw.closedImplicit.Load()
 	if s.Accepted < gone {
 		return 0
 	}
@@ -439,11 +442,13 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 		zap.Uint64("fin_sent", s.FinSent),
 		zap.Uint64("rst_rcvd", s.RstRcvd),
 		zap.Uint64("recycled", s.Recycled),
+		zap.Uint64("recycled_established", s.RecycledEst),
 		zap.Uint64("table_full", s.TableFull),
 		zap.Uint64("stray", s.Stray),
 		zap.Uint64("rst_sent", s.RstSent),
 		zap.Uint64("reset_established", s.ResetEst),
 		zap.Uint64("unexpected", s.Unexpected),
+		zap.Uint64("bad_length", s.BadLen),
 		zap.Uint64("build_errors", s.BuildErrors),
 	)
 	return nil

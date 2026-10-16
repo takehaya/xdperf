@@ -523,11 +523,19 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 			interval = time.Millisecond
 		}
 	}
+	// The live frame is one byte longer than the largest segment, so every
+	// segment resizes it with bpf_xdp_adjust_tail. The kernel refreshes the
+	// xdp_frame length after a run only when the program changed data_end;
+	// a full-size segment on an unresized frame would otherwise go out with
+	// whatever length the previous user of the recycled page left (on veth,
+	// the peer's XDP program shrinking it in place into an ACK), i.e. a
+	// header-only frame claiming mss bytes of payload.
+	liveFrame := append(append([]byte(nil), template...), 0)
 	runOpts := &ebpf.RunOptions{
-		Data:      template,
+		Data:      liveFrame,
 		Repeat:    repeat,
 		Flags:     unix.BPF_F_TEST_XDP_LIVE_FRAMES,
-		Context:   coreelf.XdpMd{DataEnd: uint32(len(template)), IngressIfindex: uint32(x.Device.Index)},
+		Context:   coreelf.XdpMd{DataEnd: uint32(len(liveFrame)), IngressIfindex: uint32(x.Device.Index)},
 		BatchSize: x.cfg.BatchSize,
 	}
 

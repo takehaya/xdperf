@@ -349,8 +349,9 @@ DPDK 系のステートフル負荷ツール (TRex ASTF、WARP17、dperf) はい
 ### 12.3 データ構造 (src/xdp_tcp_server.h)
 
 ```c
-struct tcp_srv_key {            // クライアント側の (IP, ポート)。IPv4 は addr[0] のみ
+struct tcp_srv_key {            // (相手の IP, 相手のポート, 自分の IP)。IPv4 は [0] のみ
     __u32 addr[4];
+    __u32 local[4];             // 待ち受けがワイルドカードでも宛先 IP ごとに別フロー
     __u16 port;
     __u16 pad;
 };
@@ -375,7 +376,8 @@ struct tcp_srv_cfg {
 
 struct tcp_srv_stats {  // PERCPU
     __u64 syn_rcvd, synack_sent, accepted, data_segs, bytes_rcvd, acks_sent, dup_acks_sent, out_of_order,
-          fin_rcvd, fin_sent, closed, rst_rcvd, recycled, table_full, stray, unexpected, build_errors;
+          fin_rcvd, fin_sent, closed, rst_rcvd, recycled, table_full, stray, unexpected, build_errors,
+          rst_sent, reset_est, recycled_est, bad_len;
 };
 ```
 
@@ -391,24 +393,28 @@ LRU による自動掃除を優先した。RSS が同一フローを複数キュ
 
 1. L2/L3/L4 のフィルタはクライアント RX と同じ方針。VLAN、IP バージョン、(any_addr でなければ) 宛先 IP、TCP、
    `dport == listen_port` のどれかが外れたら XDP_PASS。ここを通ったパケットは絶対に PASS しない。
-2. キー = (saddr, sport) で `tcp_srv_flow_map` を引く。
+2. IP の申告長 (IPv4 `tot_len` / IPv6 `payload_len`) がフレームに収まり、TCP ヘッダ長 (`doff`) が IP の申告長に収まることを
+   確認する。外れたら状態を変えずに DROP (`bad_len++`)。フレーム末尾の Ethernet パディングは許す。
+3. キー = (saddr, sport, daddr) で `tcp_srv_flow_map` を引く。
 
    | 受信 | エントリ | 処理 | 応答 |
    |---|---|---|---|
    | RST | あり | 削除、`rst_rcvd++` | なし |
    | SYN (ACK なし) | なし | 作成: SYN_RCVD、`iss = prandom`、`rcv_nxt = seq+1`、WS の有無を記録。作成失敗は `table_full++` | SYN-ACK (MSS、WS) |
    | SYN (ACK なし) | あり、SYN_RCVD、`rcv_nxt == seq+1` | 同じ SYN の再送 (SYN-ACK ロス) | 同じ SYN-ACK を再送 |
-   | SYN (ACK なし) | あり、それ以外 | dperf の fast recycle。作り直して `recycled++` | SYN-ACK |
+   | SYN (ACK なし) | あり、それ以外 | dperf の fast recycle。作り直して `recycled++` (確立済みだったら `recycled_est++` も) | SYN-ACK |
    | ACK, `ack == snd_nxt` | SYN_RCVD | ESTABLISHED、`accepted++`。同乗データがあれば続けて処理 (seq が先に進んでいても確立扱いにし、下の「穴」の行で重複 ACK を返す) | (データ次第) |
    | データ, `seq == rcv_nxt` | ESTABLISHED | `rcv_nxt += len`、`bytes_rcvd += len`、`unacked_segs++` | `unacked_segs >= ack_every` か PSH か FIN なら ACK |
-   | データ, `seq < rcv_nxt` (重複) | ESTABLISHED / LAST_ACK | 捨てる | ACK (現在の `rcv_nxt`) |
+   | データ, `seq < rcv_nxt < seq+len` (一部重複) | ESTABLISHED | 再送で区切りが変わった。`rcv_nxt` より先の部分だけを受理 (RFC 9293 3.10.7.4) | ACK |
+   | データ, `seq+len <= rcv_nxt` (重複) | ESTABLISHED / LAST_ACK | 捨てる。末尾が `rcv_nxt` ちょうどなら同乗の FIN は順序どおり | ACK (現在の `rcv_nxt`) |
    | データ, `seq > rcv_nxt` (穴) | ESTABLISHED | 捨てる、`out_of_order++` | 重複 ACK (クライアントの高速再送を促す) |
    | FIN, 順序どおり | ESTABLISHED | `rcv_nxt += 1`、LAST_ACK、`fin_rcvd++` | FIN+ACK (`seq = snd_nxt`、`snd_nxt += 1`) |
    | FIN | LAST_ACK | 自分の FIN+ACK がロスした (相手の FIN 再送) | FIN+ACK を再送 (`seq = snd_nxt-1`) |
    | ACK, `ack == snd_nxt` | LAST_ACK | 削除、`closed++` | なし |
-   | その他 | なし | `stray++` (エントリ無し / ACK 無し)、`unexpected++` (SYN_RCVD で ack 不一致) | なし (RST は返さない) |
+   | SYN 以外 | なし | `stray++` | RST (ACK 付きなら `seq = SEG.ACK`、無ければ `RST|ACK`) |
+   | ACK, `ack != snd_nxt` | SYN_RCVD | `unexpected++` | RST (`seq = SEG.ACK`) |
 
-3. 応答は受信フレームをその場で書き換えて XDP_TX する。MAC / IP / ポートの入れ替え、長さ、IPv4 ヘッダチェックサム、
+4. 応答は受信フレームをその場で書き換えて XDP_TX する。MAC / IP / ポートの入れ替え、長さ、IPv4 ヘッダチェックサム、
    TCP チェックサム (擬似ヘッダはパケットの IP ヘッダから計算) は、クライアント RX の ACK 生成と同じ
    ヘルパ `tcp_reply_inplace` を共有する。SYN-ACK だけ 8 バイトのオプション (MSS、NOP、WS。WS 不要なら NOP×4) を付ける。
    VLAN 設定時にタグ無しで届いたフレームには `bpf_xdp_adjust_head` でタグを押し戻す。
@@ -464,6 +470,12 @@ tcp-server: active 64 accepted 64 closed 0 | 9.401 Gbps rcvd, 811,922 segs/s, 81
   SYN / FIN を再送するので実用上は問題ない。
 - `--tcp-server` 1 プロセスで 1 待ち受けポート。複数ポートはプロセスを分ける (別デバイスでないと attach が競合する)。
 - 固定レスポンス (HTTP 風) の送信、SACK、QinQ、IPv6 拡張ヘッダは未対応。
+- 受信した TCP / IPv4 ヘッダのチェックサムは検証しない (クライアント RX も同じ)。ペイロード全体の和を XDP で取ると
+  100G でのレスポンダのコストが数倍になるため。壊れたセグメントを ACK すると相手は再送しないので、バイト数は
+  「届いたと主張された量」になる。NIC の RX チェックサムオフロード結果を XDP から読めるようになれば
+  (`bpf_xdp_metadata_rx_*` に checksum が入れば) そこで落とす。
+- LRU による追い出し (テーブル満杯) は検出できないので、表示上の active には残る。`table_full` が 0 でなければ
+  `--tcp-max-conns` を増やす。
 
 ## 13. コードレビュー (OCR round 1) への対応
 
@@ -493,3 +505,27 @@ tcp-server: active 64 accepted 64 closed 0 | 9.401 Gbps rcvd, 811,922 segs/s, 81
 ロス注入の注意: XDP_TX と live frames は qdisc を通らないので、XDP 側の veth に netem を付けても落ちない。カーネルが送る側 (egress netem) と受ける側 (XDP_PASS 後の tc ingress の gact random drop) に入れる。
 
 見送り: 実行ごとに送信元ポートをずらす方式 (RST を落とす中間装置向け)、Suggestions 区分の指摘 (パース処理の共通化、TCP マップの常時ロード、OTLP 対応など)。
+
+## 14. Copilot レビュー (PR #114) への対応
+
+| 指摘 | 対応 |
+|---|---|
+| xdperf-sink の `-read-buf` が 0 だと空読みで CPU を回し、負数だと panic | 起動時に `> 0` を検査してエラー終了 |
+| xdperf-sink に `-v` が無く、`make test-runnable` (CI) が失敗する | `-v` でバージョンを表示して終了 |
+| 単体テストが `LastSendNs = 0` と RTO 1e15ns (約 11.6 日) を前提にしており、稼働時間が長いホストで RTO が発火する | 既定の RTO を `1 << 56` ns (約 2.3 年、`<< 6` しても 64bit に収まる) に |
+| レスポンダの active が、新しい SYN による確立済みフローの置き換えを反映しない | `recycled_est` を追加して active から引く。LRU の追い出しは検出できないので制約に明記 |
+| レスポンダのキーに宛先 IP が無く、ワイルドカード待ち受けで同じ送信元 (IP, ポート) から別の宛先 IP への接続が衝突する | キーに自分の IP (`local`) を追加 |
+| IP / TCP の申告長をフレーム長と照合していない | レスポンダとクライアント RX の両方で、状態更新前に検査して DROP |
+| 受信チェックサムを検証していない | 見送り。コストの理由を 12.8 に記載 |
+| 一部が重複するセグメント (再送で区切りが変わったもの) の新しい部分を捨てる | `rcv_nxt` より先の部分だけ受理する。クライアント RX も同様 |
+
+長さ検査を入れたことで、クライアント送信側の不具合が見つかった。veth でレスポンダ相手に送ると、フルサイズのデータセグメントの一部が
+「IP ヘッダは 1488 バイトを名乗るが、フレームは 54 バイト」で出ていた。それまでのレスポンダはこれを 1448 バイトの受信として数えていた。
+そのため example のバイト数一致は見かけ上のもので、実際にはヘッダしか運んでいないセグメントがあった。
+
+原因は live frames のフレーム長の扱い。カーネル (`xdp_test_run_batch`) は、プログラムが `data_end` を変えたときしか
+`xdp_frame` の長さを更新しない。リサイクルされるページの再初期化 (`reset_ctx`) も、`data` と `flags` が変わったときしか行わない。
+テンプレートが最大セグメント長ちょうどだと、フルサイズのセグメントはサイズ調整をしないので `data_end` が変わらない。
+その結果、前回そのページを使った側の長さが残る。veth では、対向の XDP プログラムが同じページをその場で 54 バイトの ACK に縮めて返している。
+対策として、live frames に渡すフレームを最大セグメント長 + 1 バイトにし、毎回 `bpf_xdp_adjust_tail` が走るようにした。
+example のレスポンダケースでは `bad_length == 0` も検査する。

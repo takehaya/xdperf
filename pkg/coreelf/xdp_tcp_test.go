@@ -343,7 +343,9 @@ func setupClient(t *testing.T, objs *BpfObjects, o clientOpts, flows ...BpfTcpFl
 		o.window = 32
 	}
 	if o.rtoNs == 0 {
-		o.rtoNs = 1e15 // ~11 days (> uptime, since LastSendNs = 0): no RTO unless a test asks for one
+		// ~2.3 years, longer than any uptime (LastSendNs = 0 means "sent at
+		// boot"); still fits in 64 bits after the largest backoff shift (<< 6)
+		o.rtoNs = 1 << 56 // no RTO unless a test asks for one
 	}
 	if o.maxData == 0 {
 		o.maxData = 8
@@ -461,6 +463,20 @@ func TestTcpRxSynAckEstablishes(t *testing.T) {
 				t.Fatalf("flow = %+v", f)
 			}
 		})
+	}
+}
+
+func TestTcpRxDropsBadLength(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupClient(t, objs, clientOpts{}, synSent(1000))
+	// SYN-ACK whose IP header claims 1000 bytes that are not in the frame.
+	frame := buildSeg(t, fromPeer(false, 0, 5000, 1001, tcpSYN|tcpACK))
+	binary.BigEndian.PutUint16(frame[14+2:], 20+20+1000)
+	if ret, _ := runProg(t, objs.XdpRxTcp, frame); ret != xdpDrop {
+		t.Fatalf("ret = %d, want XDP_DROP", ret)
+	}
+	if f := getFlow(t, objs, 0); f.State != tfSynSent {
+		t.Fatalf("flow changed by a truncated segment: %+v", f)
 	}
 }
 
@@ -883,11 +899,29 @@ func toServer(v6 bool, seq, ack uint32, flags uint8, payload int) seg {
 }
 
 func srvKey(v6 bool) BpfTcpSrvKey {
-	k := BpfTcpSrvKey{Addr: ipWords(ipA4), Port: testPortBase}
+	k := BpfTcpSrvKey{Addr: ipWords(ipA4), Local: ipWords(ipB4), Port: testPortBase}
 	if v6 {
 		k.Addr = ipWords(ipA6)
+		k.Local = ipWords(ipB6)
 	}
 	return k
+}
+
+func srvStats(t *testing.T, objs *BpfObjects) BpfTcpSrvStats {
+	t.Helper()
+	n, _ := ebpf.PossibleCPU()
+	recs := make([]BpfTcpSrvStats, n)
+	zero := uint32(0)
+	if err := objs.TcpSrvStatsMap.Lookup(&zero, &recs); err != nil {
+		t.Fatal(err)
+	}
+	var s BpfTcpSrvStats
+	for _, r := range recs {
+		s.RecycledEst += r.RecycledEst
+		s.BadLen += r.BadLen
+		s.BytesRcvd += r.BytesRcvd
+	}
+	return s
 }
 
 func srvFlow(t *testing.T, objs *BpfObjects, v6 bool) (BpfTcpSrvFlow, bool) {
@@ -1063,6 +1097,77 @@ func TestTcpServerResets(t *testing.T) {
 	ret, d = srvRun(t, objs, toServer(false, 101, 12345, tcpACK, 0))
 	if ret != xdpTx || tcpFlags(d.tcp) != tcpRST || d.tcp.Seq != 12345 {
 		t.Fatalf("SYN_RCVD bad ACK: ret %d", ret)
+	}
+}
+
+func TestTcpServerTrimsPartialOverlap(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupServer(t, objs, false, 1, false)
+	iss := handshake(t, objs, false)
+	if ret, d := srvRun(t, objs, toServer(false, 101, iss+1, tcpACK, 1000)); ret != xdpTx || d.tcp.Ack != 1101 {
+		t.Fatalf("1st segment: ret %d", ret)
+	}
+	// Repacketized retransmission: 601..1601, of which 1101..1601 is new.
+	if ret, d := srvRun(t, objs, toServer(false, 601, iss+1, tcpACK, 1000)); ret != xdpTx || d.tcp.Ack != 1601 {
+		t.Fatalf("overlapping segment: ret %d ack %d, want 1601", ret, d.tcp.Ack)
+	}
+	if f, _ := srvFlow(t, objs, false); f.BytesRcvd != 1500 {
+		t.Fatalf("bytes_rcvd = %d, want 1500", f.BytesRcvd)
+	}
+	// Fully duplicate data with a FIN at rcv_nxt: the FIN is accepted.
+	ret, d := srvRun(t, objs, toServer(false, 1101, iss+1, tcpFIN|tcpACK, 500))
+	if ret != xdpTx || tcpFlags(d.tcp) != tcpFIN|tcpACK || d.tcp.Ack != 1602 {
+		t.Fatalf("duplicate data + FIN: ret %d flags %#x ack %d", ret, tcpFlags(d.tcp), d.tcp.Ack)
+	}
+	if f, _ := srvFlow(t, objs, false); f.BytesRcvd != 1500 {
+		t.Fatalf("bytes_rcvd = %d after duplicate, want 1500", f.BytesRcvd)
+	}
+}
+
+func TestTcpServerDropsBadLength(t *testing.T) {
+	for _, v6 := range []bool{false, true} {
+		objs := loadTCPObjs(t)
+		setupServer(t, objs, v6, 1, false)
+		iss := handshake(t, objs, v6)
+		// Header-only frame whose IP header claims 1000 bytes of payload.
+		frame := buildSeg(t, toServer(v6, 101, iss+1, tcpACK, 0))
+		if v6 {
+			binary.BigEndian.PutUint16(frame[14+4:], 20+1000)
+		} else {
+			binary.BigEndian.PutUint16(frame[14+2:], 20+20+1000)
+		}
+		if ret, _ := runProg(t, objs.XdpRxTcpServer, frame); ret != xdpDrop {
+			t.Fatalf("v6=%v: truncated segment: ret %d, want XDP_DROP", v6, ret)
+		}
+		if f, _ := srvFlow(t, objs, v6); f.BytesRcvd != 0 || f.RcvNxt != 101 {
+			t.Fatalf("v6=%v: truncated segment changed the flow: %+v", v6, f)
+		}
+		if st := srvStats(t, objs); st.BadLen != 1 {
+			t.Fatalf("v6=%v: bad_len = %d", v6, st.BadLen)
+		}
+	}
+}
+
+func TestTcpServerKeysOnLocalAddress(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupServer(t, objs, false, 1, true) // wildcard listen address
+	iss := handshake(t, objs, false)
+	// Same peer address and port, another local address: a separate flow.
+	syn := toServer(false, 5000, 0, tcpSYN, 0)
+	syn.dst = net.IP{192, 168, 110, 3}
+	if ret, d := srvRun(t, objs, syn); ret != xdpTx || d.tcp.Ack != 5001 {
+		t.Fatalf("second SYN: ret %d", ret)
+	}
+	if f, ok := srvFlow(t, objs, false); !ok || f.State != tsEstablished || f.Iss != iss {
+		t.Fatalf("first flow disturbed: %+v ok=%v", f, ok)
+	}
+	if st := srvStats(t, objs); st.RecycledEst != 0 {
+		t.Fatalf("recycled_est = %d, want 0", st.RecycledEst)
+	}
+	// A new SYN on the first flow's own key replaces it and is counted.
+	srvRun(t, objs, toServer(false, 9000, 0, tcpSYN, 0))
+	if st := srvStats(t, objs); st.RecycledEst != 1 {
+		t.Fatalf("recycled_est = %d, want 1", st.RecycledEst)
 	}
 }
 

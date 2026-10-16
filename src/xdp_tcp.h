@@ -1009,8 +1009,9 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
 
     if (in->payload_len > 0) {
         // the peer sent data: swallow it, acknowledge it
-        if (in->seq == f->rcv_nxt)
-            f->rcv_nxt += in->payload_len;
+        __u32 end = in->seq + in->payload_len;
+        if (!seq_after(in->seq, f->rcv_nxt) && seq_after(end, f->rcv_nxt))
+            f->rcv_nxt = end; // only the part beyond rcv_nxt is new
         need_ack = 1;
     }
     if (flags & TCPF_FIN) {
@@ -1083,6 +1084,7 @@ int xdp_rx_tcp(struct xdp_md *ctx)
 
     struct tcp_rx_info in = {0};
     __u32 l4_off;
+    __u32 ip_end; // end of the IP datagram as declared by its header
     if (cfg->ip_version == 4) {
         if (proto != bpf_htons(ETH_P_IP))
             return XDP_PASS;
@@ -1097,6 +1099,7 @@ int xdp_rx_tcp(struct xdp_md *ctx)
             return XDP_PASS;
         l4_off = l3_off + sizeof(*iph);
         __u32 tot = bpf_ntohs(iph->tot_len);
+        ip_end = l3_off + tot;
         in.payload_len = tot >= sizeof(*iph) ? tot - sizeof(*iph) : 0; // minus TCP header below
     } else {
         if (proto != bpf_htons(ETH_P_IPV6))
@@ -1114,6 +1117,7 @@ int xdp_rx_tcp(struct xdp_md *ctx)
             return XDP_PASS;
         l4_off = l3_off + sizeof(*ip6h);
         in.payload_len = bpf_ntohs(ip6h->payload_len);
+        ip_end = l4_off + in.payload_len;
     }
 
     struct tcphdr *th = data + l4_off;
@@ -1138,10 +1142,12 @@ int xdp_rx_tcp(struct xdp_md *ctx)
     in.wscale = 0xFF;
     in.mss = 0;
     {
+        // Lengths inconsistent with the frame: drop instead of acting on
+        // bytes that never arrived.
         __u32 hl = (__u32)in.doff * 4;
-        if (hl < TCP_HDR_LEN)
+        if (hl < TCP_HDR_LEN || in.payload_len < hl || ip_end > (__u32)(data_end - data))
             return XDP_DROP;
-        in.payload_len = in.payload_len >= hl ? in.payload_len - hl : 0;
+        in.payload_len -= hl;
     }
     if ((in.flags & (TCPF_SYN | TCPF_ACK)) == (TCPF_SYN | TCPF_ACK) && in.doff > 5)
         tcp_parse_syn_opts(ctx, l4_off, in.doff, &in.wscale, &in.mss);
