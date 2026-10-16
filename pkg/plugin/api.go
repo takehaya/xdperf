@@ -105,6 +105,13 @@ func neighborResolveFunc(ctx context.Context, mod api.Module, ipPtr uint32, ipLe
 	return uint32(len(macBytes))
 }
 
+// ResolveNeighborMAC returns the L2 address of ip (ARP/NDP via the kernel
+// neighbor cache, triggering resolution on ifaceName if needed), or "" when
+// it cannot be resolved. Shared with the host-side TCP stream mode.
+func ResolveNeighborMAC(ip string, ifaceName string) string {
+	return neighborResolveFuncImpl(ip, ifaceName)
+}
+
 func neighborResolveFuncImpl(ip string, ifaceName string) string {
 	targetIP := net.ParseIP(ip)
 	if targetIP == nil {

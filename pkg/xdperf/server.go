@@ -13,6 +13,9 @@ import (
 
 func (x *Xdperf) StartServer(ctx context.Context) error {
 	x.Logger.Info("start server mode")
+	if x.cfg.TCPServer {
+		return x.runTCPServer(ctx)
+	}
 	l, err := x.runRxPacket(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to run rx packet processing: %w", err)

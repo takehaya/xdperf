@@ -33,7 +33,8 @@ func TestParseCount(t *testing.T) {
 		{"negative number", "-100", 0, true},
 		{"invalid string", "abc", 0, true},
 		{"float value", "2.5m", 0, true},
-		{"invalid suffix", "100g", 0, true},
+		{"invalid suffix", "100x", 0, true},
+		{"giga suffix", "2g", 2000000000, false},
 	}
 
 	for _, tt := range tests {
@@ -80,7 +81,8 @@ func TestParsePPS(t *testing.T) {
 		{"negative number", "-100", 0, true},
 		{"invalid string", "abc", 0, true},
 		{"float value", "2.5m", 0, true},
-		{"invalid suffix", "100g", 0, true},
+		{"invalid suffix", "100x", 0, true},
+		{"giga suffix", "2g", 2000000000, false},
 	}
 
 	for _, tt := range tests {

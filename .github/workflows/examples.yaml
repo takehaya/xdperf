@@ -46,10 +46,12 @@ jobs:
             sudo apt-get install -y ./tinygo_0.39.0_amd64.deb
             rm tinygo_0.39.0_amd64.deb
           fi
-      - name: install ethtool
+      - name: install ethtool and socat
+        # socat drives the tcpstream cases with a kernel TCP client
+        # (linux4, linux6, linux4loss); they are skipped without it
         run: |
-          if ! command -v ethtool >/dev/null; then
-            sudo apt-get update && sudo apt-get install -y ethtool
+          if ! command -v ethtool >/dev/null || ! command -v socat >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y ethtool socat
           fi
       - name: build binary and plugins
         run: make build

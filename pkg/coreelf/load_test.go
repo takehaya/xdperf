@@ -43,6 +43,9 @@ func TestBpfProgramsLoad(t *testing.T) {
 		{"xdp_tx_csum_recalc", objs.XdpTxCsumRecalc},
 		{"xdp_rx", objs.XdpRx},
 		{"xdp_pass_dummy", objs.XdpPassDummy},
+		{"xdp_tx_tcp", objs.XdpTxTcp},
+		{"xdp_rx_tcp", objs.XdpRxTcp},
+		{"xdp_rx_tcp_server", objs.XdpRxTcpServer},
 	} {
 		if p.prog == nil {
 			t.Errorf("program %s is nil", p.name)

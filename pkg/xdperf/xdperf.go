@@ -60,7 +60,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	}
 	cleanupFnList = append(cleanupFnList, cleanup)
 	var pm *plugin.Manager
-	if cfg.Sender {
+	if cfg.Sender && !cfg.TCP {
 		managerOpts := []plugin.ManagerOption{plugin.WithLogger(logger)}
 		if cfg.WasmCacheDir != "" {
 			managerOpts = append(managerOpts, plugin.WithCacheDir(cfg.WasmCacheDir))
@@ -90,7 +90,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	// round-robin pool to coreelf.MaxDiffEntries (= MAX_DIFF_ENTRIES); sizing the
 	// map beyond that just wastes entries the data plane never reads, so clamp here.
 	var diffMapSize uint32
-	if cfg.Sender {
+	if cfg.Sender && !cfg.TCP {
 		// Sender mode: size based on Count / Parallelism, clamped to the cap.
 		diffMapSize = uint32(cfg.Count/uint64(cfg.Parallelism)) + 1
 		if diffMapSize > coreelf.MaxDiffEntries {
@@ -105,7 +105,14 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 		zap.Uint32("max_diff_entries", coreelf.MaxDiffEntries),
 	)
 
-	obj, bpfSpec, err := coreelf.ReadCollection(consts, diffMapSize, cfg.DebugMode > 0)
+	// The --tcp-server flow table is an LRU hash preallocated at load time:
+	// size it only in that mode so the other modes do not pay for it.
+	tcpSrvFlows := uint32(1)
+	if cfg.TCPServer {
+		tcpSrvFlows = uint32(cfg.TCPMaxConns)
+	}
+	obj, bpfSpec, err := coreelf.ReadCollectionWithSizes(consts,
+		map[string]uint32{"diff_map": diffMapSize, "tcp_srv_flow_map": tcpSrvFlows}, cfg.DebugMode > 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load eBPF objects: %w", err)
 	}
@@ -226,6 +233,9 @@ func (x *Xdperf) setupOTLPMetrics() error {
 
 func (x *Xdperf) StartClient(ctx context.Context) error {
 	x.Logger.Info("start client mode")
+	if x.cfg.TCP {
+		return x.runTCP(ctx)
+	}
 
 	resp, err := x.callPlugin(ctx)
 	if err != nil {

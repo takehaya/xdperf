@@ -76,6 +76,165 @@ type BpfTailCallCtx struct {
 	Pad            [1]uint8
 }
 
+type BpfTcpCfg struct {
+	_              structs.HostLayout
+	FlowCount      uint32
+	WindowSegs     uint32
+	Mss            uint16
+	PortBase       uint16
+	DstPort        uint16
+	HdrLen         uint16
+	L3Off          uint16
+	L4Off          uint16
+	VlanId         uint16
+	IpVersion      uint8
+	MaxSynRetries  uint8
+	MaxFinRetries  uint8
+	Drain          uint8
+	VlanPcp        uint8
+	Abort          uint8
+	MaxDataRetries uint8
+	Pad            [3]uint8
+	PseudoSum      uint32
+	SrcIp          [4]uint32
+	DstIp          [4]uint32
+	_              [4]byte
+	BytesPerFlow   uint64
+	RtoNs          uint64
+	HdrTmpl        [64]uint8
+}
+
+type BpfTcpCpuState struct {
+	_      structs.HostLayout
+	First  uint32
+	Stride uint32
+	Count  uint32
+	Cursor uint32
+	IpId   uint32
+}
+
+type BpfTcpFlow struct {
+	_    structs.HostLayout
+	Lock struct {
+		_   structs.HostLayout
+		Val uint32
+	}
+	State       uint8
+	SynRetries  uint8
+	FinRetries  uint8
+	DupAcks     uint8
+	RtxPending  uint8
+	PeerFin     uint8
+	Wscale      uint8
+	RtxRetries  uint8
+	SrcPort     uint16
+	Mss         uint16
+	SynRst      uint8
+	Pad         [3]uint8
+	Iss         uint32
+	SndUna      uint32
+	SndNxt      uint32
+	SndMax      uint32
+	RcvNxt      uint32
+	SndWnd      uint32
+	_           [4]byte
+	BytesTarget uint64
+	BytesAcked  uint64
+	LastSendNs  uint64
+	LastAckNs   uint64
+}
+
+type BpfTcpSrvCfg struct {
+	_          structs.HostLayout
+	ListenPort uint16
+	VlanId     uint16
+	VlanPcp    uint8
+	IpVersion  uint8
+	AckEvery   uint8
+	AnyAddr    uint8
+	Mss        uint16
+	Pad        uint16
+	ListenIp   [4]uint32
+}
+
+type BpfTcpSrvFlow struct {
+	_           structs.HostLayout
+	State       uint8
+	WscaleOk    uint8
+	UnackedSegs uint16
+	Iss         uint32
+	SndNxt      uint32
+	RcvNxt      uint32
+	BytesRcvd   uint64
+	LastNs      uint64
+}
+
+type BpfTcpSrvKey struct {
+	_     structs.HostLayout
+	Addr  [4]uint32
+	Local [4]uint32
+	Port  uint16
+	Pad   uint16
+}
+
+type BpfTcpSrvStats struct {
+	_             structs.HostLayout
+	SynRcvd       uint64
+	SynackSent    uint64
+	Accepted      uint64
+	DataSegs      uint64
+	BytesRcvd     uint64
+	AcksSent      uint64
+	DupAcksSent   uint64
+	OutOfOrder    uint64
+	FinRcvd       uint64
+	FinSent       uint64
+	Closed        uint64
+	RstRcvd       uint64
+	Recycled      uint64
+	TableFull     uint64
+	Stray         uint64
+	Unexpected    uint64
+	BuildErrors   uint64
+	RstSent       uint64
+	ResetEst      uint64
+	RecycledEst   uint64
+	BadLen        uint64
+	ChallengeAcks uint64
+}
+
+type BpfTcpStats struct {
+	_                structs.HostLayout
+	SynSent          uint64
+	SynackRcvd       uint64
+	Established      uint64
+	DataSegs         uint64
+	DataBytes        uint64
+	BytesAcked       uint64
+	RtxSegs          uint64
+	RtxTimeouts      uint64
+	RtxDupack        uint64
+	FinSent          uint64
+	Done             uint64
+	Failed           uint64
+	RstRcvd          uint64
+	AcksRcvd         uint64
+	AcksSent         uint64
+	IdleIters        uint64
+	WindowStalls     uint64
+	Unexpected       uint64
+	BuildErrors      uint64
+	RstSent          uint64
+	FailedEst        uint64
+	Skipped          uint64
+	Aborted          uint64
+	RtxGiveups       uint64
+	FinWait2Timeouts uint64
+	AckProbes        uint64
+	WindowProbes     uint64
+	ChallengeAcks    uint64
+}
+
 // LoadBpf returns the embedded CollectionSpec for Bpf.
 func LoadBpf() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_BpfBytes)
@@ -120,10 +279,13 @@ type BpfSpecs struct {
 type BpfProgramSpecs struct {
 	XdpPassDummy    *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
 	XdpRx           *ebpf.ProgramSpec `ebpf:"xdp_rx"`
+	XdpRxTcp        *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpServer  *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_server"`
 	XdpTx           *ebpf.ProgramSpec `ebpf:"xdp_tx"`
 	XdpTxChecksum   *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
 	XdpTxCsumDiff   *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_diff"`
 	XdpTxCsumRecalc *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_recalc"`
+	XdpTxTcp        *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -136,6 +298,13 @@ type BpfMapSpecs struct {
 	PktStateMap     *ebpf.MapSpec `ebpf:"pkt_state_map"`
 	RxStatsMap      *ebpf.MapSpec `ebpf:"rx_stats_map"`
 	TailCallCtxMap  *ebpf.MapSpec `ebpf:"tail_call_ctx_map"`
+	TcpCfgMap       *ebpf.MapSpec `ebpf:"tcp_cfg_map"`
+	TcpCpuStateMap  *ebpf.MapSpec `ebpf:"tcp_cpu_state_map"`
+	TcpFlowMap      *ebpf.MapSpec `ebpf:"tcp_flow_map"`
+	TcpSrvCfgMap    *ebpf.MapSpec `ebpf:"tcp_srv_cfg_map"`
+	TcpSrvFlowMap   *ebpf.MapSpec `ebpf:"tcp_srv_flow_map"`
+	TcpSrvStatsMap  *ebpf.MapSpec `ebpf:"tcp_srv_stats_map"`
+	TcpStatsMap     *ebpf.MapSpec `ebpf:"tcp_stats_map"`
 	TxStatsMap      *ebpf.MapSpec `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.MapSpec `ebpf:"xdp_progs"`
 }
@@ -178,6 +347,13 @@ type BpfMaps struct {
 	PktStateMap     *ebpf.Map `ebpf:"pkt_state_map"`
 	RxStatsMap      *ebpf.Map `ebpf:"rx_stats_map"`
 	TailCallCtxMap  *ebpf.Map `ebpf:"tail_call_ctx_map"`
+	TcpCfgMap       *ebpf.Map `ebpf:"tcp_cfg_map"`
+	TcpCpuStateMap  *ebpf.Map `ebpf:"tcp_cpu_state_map"`
+	TcpFlowMap      *ebpf.Map `ebpf:"tcp_flow_map"`
+	TcpSrvCfgMap    *ebpf.Map `ebpf:"tcp_srv_cfg_map"`
+	TcpSrvFlowMap   *ebpf.Map `ebpf:"tcp_srv_flow_map"`
+	TcpSrvStatsMap  *ebpf.Map `ebpf:"tcp_srv_stats_map"`
+	TcpStatsMap     *ebpf.Map `ebpf:"tcp_stats_map"`
 	TxStatsMap      *ebpf.Map `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.Map `ebpf:"xdp_progs"`
 }
@@ -190,6 +366,13 @@ func (m *BpfMaps) Close() error {
 		m.PktStateMap,
 		m.RxStatsMap,
 		m.TailCallCtxMap,
+		m.TcpCfgMap,
+		m.TcpCpuStateMap,
+		m.TcpFlowMap,
+		m.TcpSrvCfgMap,
+		m.TcpSrvFlowMap,
+		m.TcpSrvStatsMap,
+		m.TcpStatsMap,
 		m.TxStatsMap,
 		m.XdpProgs,
 	)
@@ -213,20 +396,26 @@ type BpfVariables struct {
 type BpfPrograms struct {
 	XdpPassDummy    *ebpf.Program `ebpf:"xdp_pass_dummy"`
 	XdpRx           *ebpf.Program `ebpf:"xdp_rx"`
+	XdpRxTcp        *ebpf.Program `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpServer  *ebpf.Program `ebpf:"xdp_rx_tcp_server"`
 	XdpTx           *ebpf.Program `ebpf:"xdp_tx"`
 	XdpTxChecksum   *ebpf.Program `ebpf:"xdp_tx_checksum"`
 	XdpTxCsumDiff   *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
 	XdpTxCsumRecalc *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
+	XdpTxTcp        *ebpf.Program `ebpf:"xdp_tx_tcp"`
 }
 
 func (p *BpfPrograms) Close() error {
 	return _BpfClose(
 		p.XdpPassDummy,
 		p.XdpRx,
+		p.XdpRxTcp,
+		p.XdpRxTcpServer,
 		p.XdpTx,
 		p.XdpTxChecksum,
 		p.XdpTxCsumDiff,
 		p.XdpTxCsumRecalc,
+		p.XdpTxTcp,
 	)
 }
 

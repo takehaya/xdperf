@@ -2,6 +2,8 @@
 #include "xdp_packet.h"
 #include "xdp_checksum.h"
 #include "xdp_utils.h"
+#include "xdp_tcp.h"
+#include "xdp_tcp_server.h"
 
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>

@@ -44,6 +44,7 @@ sudo ./setup.sh && sudo ./test.sh && sudo ./teardown.sh
 | [simpleudp-xdp-generic](simpleudp-xdp-generic/) | Forced generic (SKB) mode via `--xdp-mode generic` on both sides. Verifies the attach mode and end-to-end delivery |
 | [simpleudp-split-rx](simpleudp-split-rx/) | One process with `--rx-device`: TX on one veth, forwarded by a middle "DUT" netns, counted by `xdp_rx` on a second veth |
 | [srv6](srv6/) | SRv6 (RFC 8754) traffic via the srv6.go plugin, all three encapsulation modes (`l3vpn_ipv4`/`l2vpn_eth`/`ipv6`). Verifies rx counter == packets sent per mode |
+| [tcpstream](tcpstream/) | `xdperf run --tcp` (XDP-implemented TCP client) streaming into `xdperf-sink` (kernel TCP) and into `xdperf run --tcp-server` (XDP responder) over IPv4, IPv6 and both with an 802.1Q tag, plus `socat` (kernel TCP) into the XDP responder. Verifies sender `bytes_acked` == receiver bytes and connection counts |
 | [otlp-metrics](otlp-metrics/) | OTLP metrics push (`--otlp-endpoint`) to an OTel Collector in docker. Verifies the exported counters via the prometheus exporter. SKIPs without docker |
 
 ## How it works
