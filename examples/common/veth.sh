@@ -23,7 +23,15 @@ create_veth_pair() {
     delete_veth_if_ours "$veth1"
     delete_veth_if_ours "$veth2"
 
-    ip link add "$veth1" type veth peer name "$veth2"
+    # VETH_QUEUES > 1 gives each sender CPU its own receive queue on the
+    # peer (veth picks the peer rq by the sending CPU), so several XDP
+    # workers do not overflow one 256-entry xdp_ring.
+    local q="${VETH_QUEUES:-1}"
+    if [ "$q" -gt 1 ]; then
+        ip link add "$veth1" numtxqueues "$q" numrxqueues "$q" type veth peer name "$veth2" numtxqueues "$q" numrxqueues "$q"
+    else
+        ip link add "$veth1" type veth peer name "$veth2"
+    fi
     ip link set "$veth1" netns "$ns1"
     ip link set "$veth2" netns "$ns2"
     ip netns exec "$ns1" ip link set "$veth1" up
