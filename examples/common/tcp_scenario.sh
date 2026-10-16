@@ -134,6 +134,7 @@ kill_stale_sink() {
 start_sink() {
     local listen="$1"
     kill_stale_sink
+    : > "${SINK_LOG}" # the readiness check must not see the previous case's line
     setsid ip netns exec "${NS_RX}" "${SINK_BIN}" -listen "$listen" -interval 0 -xdp-pass-dev "${VETH_RX}" \
         > "${SINK_LOG}" 2>&1 &
     SINK_PID=$!
@@ -219,6 +220,9 @@ start_xdp_server() {
     local listen="$1"
     shift
     stop_xdp_server
+    # Truncate here, not only in the child's redirect: the readiness check
+    # below must not see the previous case's "started" line.
+    : > "${SRV_LOG}"
     setsid ip netns exec "${NS_RX}" "${XDPERF_BIN}" run --tcp-server --device "${VETH_RX}" \
         --tcp-listen "$listen" "$@" > "${SRV_LOG}" 2>&1 &
     echo "$!" > "${SRV_PID_FILE}"
