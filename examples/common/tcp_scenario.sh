@@ -20,7 +20,13 @@
 #     linux4 linux6                socat (kernel TCP) -> --tcp-server
 #     v4loss                       --tcp client -> xdperf-sink with ~1% loss each way
 #     linux4loss                   socat -> --tcp-server with ~1% loss each way
+#     v4bigsrv                     --tcp -> --tcp-server, 1 flow x BIG_BYTES (5g):
+#                                  past 4 GiB, the 32-bit sequence space wraps
+#     v6manysrv                    --tcp -> --tcp-server over IPv6, MANY_FLOWS (64)
+#                                  x MANY_BYTES (64m) concurrently
 #   LOSS_PCT (1) — loss for the *loss cases
+#   BIG_BYTES (5g) / MANY_FLOWS (64) / MANY_BYTES (64m) / BIG_WINDOW (64) —
+#   sizes of the large cases (they ignore FLOWS / BYTES / WINDOW)
 
 COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -47,8 +53,12 @@ BYTES="${BYTES:-1m}"
 WINDOW="${WINDOW:-16}"
 PARALLELISM="${PARALLELISM:-1}"
 DST_PORT="${DST_PORT:-5201}"
-CASES="${CASES:-v4 v6 v4vlan v6vlan v4srv v6srv v4vlansrv v6vlansrv v4ack2srv linux4 linux6 v4loss linux4loss}"
+CASES="${CASES:-v4 v6 v4vlan v6vlan v4srv v6srv v4vlansrv v6vlansrv v4ack2srv linux4 linux6 v4loss linux4loss v4bigsrv v6manysrv}"
 LOSS_PCT="${LOSS_PCT:-1}"
+BIG_BYTES="${BIG_BYTES:-5g}"
+MANY_FLOWS="${MANY_FLOWS:-64}"
+MANY_BYTES="${MANY_BYTES:-64m}"
+BIG_WINDOW="${BIG_WINDOW:-64}"
 
 SINK_BIN="${SINK_BIN:-${REPO_ROOT}/out/bin/xdperf-sink}"
 SINK_PID_FILE="${SINK_PID_FILE:-${XDPERF_EXAMPLE_RUNDIR}/tcp-sink.pid}"
@@ -487,6 +497,14 @@ run_tcp_test() {
                 add_loss "${NS_RX}" "${VETH_RX}"
                 run_tcp_case v4loss "${RX_IP4}:${DST_PORT}" "${RX_IP4}:${DST_PORT}" || failed=1
                 del_loss "${NS_RX}" "${VETH_RX}" ;;
+            # Both ends XDP with large transfers. Prefix assignments on a
+            # function call last for that call only.
+            v4bigsrv)
+                FLOWS=1 BYTES="${BIG_BYTES}" WINDOW="${BIG_WINDOW}" \
+                    run_tcp_server_case v4bigsrv "${RX_IP4}:${DST_PORT}" "${RX_IP4}:${DST_PORT}" "" || failed=1 ;;
+            v6manysrv)
+                FLOWS="${MANY_FLOWS}" BYTES="${MANY_BYTES}" WINDOW="${BIG_WINDOW}" \
+                    run_tcp_server_case v6manysrv "[${RX_IP6}]:${DST_PORT}" "[${RX_IP6}]:${DST_PORT}" "" || failed=1 ;;
             linux4loss)
                 add_loss "${NS_TX}" "${VETH_TX}"
                 run_linux_client_case linux4loss "${RX_IP4}:${DST_PORT}" "TCP4:${RX_IP4}:${DST_PORT}" || failed=1

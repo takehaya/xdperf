@@ -42,8 +42,10 @@ flowchart LR
 | `linux4` / `linux6` | `socat` → `192.168.110.2:5201` / `[fd00:110::2]:5201` | one kernel-TCP connection of `FLOWS*BYTES` bytes into `--tcp-server` |
 | `v4loss` | `192.168.110.2:5201` | like `v4`, with `LOSS_PCT` (1)% loss each way on the sink's veth (netem egress + tc gact random drop on ingress) |
 | `linux4loss` | `socat` → `192.168.110.2:5201` | like `linux4`, with the same loss on the client's veth |
+| `v4bigsrv` | `192.168.110.2:5201` | XDP on both ends, 1 flow of `BIG_BYTES` (5g), window `BIG_WINDOW` (64): more than 4 GiB on one connection, so the 32-bit sequence space wraps |
+| `v6manysrv` | `[fd00:110::2]:5201` | XDP on both ends, `MANY_FLOWS` (64) concurrent flows of `MANY_BYTES` (64m), window `BIG_WINDOW` (64) |
 
-Each `--tcp` case sends `FLOWS` (16) connections of `BYTES` (1m) and passes
+Each `--tcp` case sends `FLOWS` (16) connections of `BYTES` (1m) (the two large cases use their own sizes, see above) and passes
 when the sender reports `done == FLOWS`, `failed == 0`,
 `bytes_acked == FLOWS*BYTES` and the receiver (sink or responder) reports the
 same number of accepted/closed connections and bytes (and, for the
