@@ -189,6 +189,13 @@ func (x *Xdperf) resolveTCPTarget() (*tcpTarget, error) {
 			// keep the on-wire frame at MTU+14 regardless of the tag
 			mss -= 4
 		}
+		// a smaller device MTU (overlay, tunnel, IPv6 minimum) caps the default
+		if maxMSS := x.Device.MTU - int(t.hdrLen-t.l3Off); mss > maxMSS {
+			mss = maxMSS
+		}
+		if mss < tcpMinMSS {
+			return nil, fmt.Errorf("device MTU %d of %s is too small for TCP stream mode", x.Device.MTU, x.Device.Name)
+		}
 	}
 	frameLen := int(t.hdrLen) + mss
 	if frameLen > x.getBpfConstant("max_packet_size") {

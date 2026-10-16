@@ -332,6 +332,16 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
         state = TS_ESTABLISHED;
         st->accepted++;
     }
+    if (seq_after(ack, f->snd_nxt)) {
+        // Acks something we never sent (RFC 9293 3.10.7.4): answer with our
+        // current ACK and drop the segment, data and FIN included.
+        st->unexpected++;
+        r.seq = f->snd_nxt;
+        r.ack = f->rcv_nxt;
+        r.flags = TCPF_ACK;
+        st->acks_sent++;
+        goto send;
+    }
     f->last_ns = now;
 
     __u8 need_ack = 0;

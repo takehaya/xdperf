@@ -999,6 +999,7 @@ func srvStats(t *testing.T, objs *BpfObjects) BpfTcpSrvStats {
 		s.ChallengeAcks += r.ChallengeAcks
 		s.BadLen += r.BadLen
 		s.BytesRcvd += r.BytesRcvd
+		s.Unexpected += r.Unexpected
 	}
 	return s
 }
@@ -1303,6 +1304,30 @@ func TestTcpServerRstSeqCheck(t *testing.T) {
 	}
 	if _, ok := srvFlow(t, objs, false); ok {
 		t.Fatal("flow kept after an RST at rcv_nxt")
+	}
+}
+
+func TestTcpServerAckBeyondSndNxt(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupServer(t, objs, false, 1, false)
+	iss := handshake(t, objs, false)
+	// Data and FIN acking a sequence number we never sent: plain ACK of the
+	// current state, nothing accepted.
+	for _, flags := range []uint8{tcpACK | tcpPSH, tcpFIN | tcpACK} {
+		ret, d := srvRun(t, objs, toServer(false, 101, iss+2, flags, 100))
+		if ret != xdpTx || tcpFlags(d.tcp) != tcpACK || d.tcp.Seq != iss+1 || d.tcp.Ack != 101 {
+			t.Fatalf("flags %#x: ret %d flags %#x seq %d ack %d", flags, ret, tcpFlags(d.tcp), d.tcp.Seq, d.tcp.Ack)
+		}
+		if f, _ := srvFlow(t, objs, false); f.State != tsEstablished || f.RcvNxt != 101 || f.BytesRcvd != 0 {
+			t.Fatalf("flags %#x: state %d rcv_nxt %d bytes %d", flags, f.State, f.RcvNxt, f.BytesRcvd)
+		}
+	}
+	if st := srvStats(t, objs); st.Unexpected != 2 || st.BytesRcvd != 0 {
+		t.Fatalf("unexpected %d bytes %d", st.Unexpected, st.BytesRcvd)
+	}
+	// The same data with a valid ACK is accepted.
+	if ret, d := srvRun(t, objs, toServer(false, 101, iss+1, tcpACK|tcpPSH, 100)); ret != xdpTx || d.tcp.Ack != 201 {
+		t.Fatalf("valid data: ret %d", ret)
 	}
 }
 
