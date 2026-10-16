@@ -38,7 +38,7 @@ sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.100.2:5201 --tcp-vlan-id 100 
 | `--tcp-flows` | 1 | 同時コネクション数 (1..65536) |
 | `--tcp-port-base` | 10000 | 送信元ポートの先頭。`port-base + flows <= 65536`。カーネルのエフェメラル範囲 (`net.ipv4.ip_local_port_range`) と重なると警告する (同じ宛先へのホスト自身の TCP 応答を `xdp_rx_tcp` が奪うため) |
 | `--tcp-window` | 32 | フローごとの飛行中セグメント数の上限 (固定ウィンドウ)。相手の受信ウィンドウとの小さい方が効く |
-| `--tcp-mss` | 1448 (IPv4) / 1428 (IPv6)、VLAN 時は -4 | セグメントのペイロード長 |
+| `--tcp-mss` | 1448 (IPv4) / 1428 (IPv6)、VLAN 時は -4 | セグメントのペイロード長 (64 以上) |
 | `--tcp-bytes` | 0 | フローごとの送信バイト数 (k/m/g 接尾辞可)。0 なら `--duration` まで |
 | `--tcp-rto` | 200ms | 再送タイムアウト。SYN / FIN / データの再送はいずれも指数バックオフ (`rto << n`)。SYN と FIN は 6 回、データは連続 8 回で RST を送って諦める |
 | `--tcp-vlan-id` / `--tcp-vlan-pcp` | 0 / 0 | 802.1Q タグ。0 でタグ無し |

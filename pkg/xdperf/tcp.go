@@ -31,8 +31,11 @@ import (
 // workers and reports the statistics.
 
 const (
-	tcpHeaderLen     = 20
-	tcpSynOptLen     = 8 // MSS + NOP + window scale on SYN (TCP_SYN_OPT_LEN)
+	tcpHeaderLen = 20
+	tcpSynOptLen = 8 // MSS + NOP + window scale on SYN (TCP_SYN_OPT_LEN)
+	// tcpMinMSS keeps every data frame at or above the 60-byte Ethernet
+	// minimum (no padding to account for) and above the SYN option length.
+	tcpMinMSS        = 64
 	tcpDefaultMSSv4  = 1448
 	tcpDefaultMSSv6  = 1428
 	tcpTxRepeatBurst = 1 << 16 // bpf_prog_run repeat count when not rate limited
@@ -511,15 +514,15 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	repeat := uint32(tcpTxRepeatBurst)
 	var interval time.Duration
 	if x.cfg.PPS > 0 {
-		ppsPerCPU := x.cfg.PPS / uint64(len(x.cpus))
-		if ppsPerCPU == 0 {
-			ppsPerCPU = 1
-		}
+		// Fractional per-worker rate: with --pps below the worker count each
+		// worker runs less than once per second instead of being rounded
+		// up to 1 pps (which would exceed the total).
+		ppsPerCPU := float64(x.cfg.PPS) / float64(len(x.cpus))
 		repeat = uint32(ppsPerCPU / 100) // 10ms batches
 		if repeat < 1 {
 			repeat = 1
 		}
-		interval = time.Duration(float64(repeat) * float64(time.Second) / float64(ppsPerCPU))
+		interval = time.Duration(float64(repeat) * float64(time.Second) / ppsPerCPU)
 		if interval < time.Millisecond {
 			interval = time.Millisecond
 		}

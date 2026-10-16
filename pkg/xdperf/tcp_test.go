@@ -44,6 +44,8 @@ func TestValidateTCP(t *testing.T) {
 		{"zero flows", func(c *Config) { c.TCPFlows = 0 }, true},
 		{"zero window", func(c *Config) { c.TCPWindow = 0 }, true},
 		{"zero rto", func(c *Config) { c.TCPRTO = 0 }, true},
+		{"mss below minimum", func(c *Config) { c.TCPMSS = 5 }, true},
+		{"mss at minimum", func(c *Config) { c.TCPMSS = tcpMinMSS }, false},
 		{"vlan id too large", func(c *Config) { c.TCPVlanID = 4095 }, true},
 		{"vlan pcp too large", func(c *Config) { c.TCPVlanPCP = 8 }, true},
 	}
@@ -190,6 +192,8 @@ func TestValidateTCPServer(t *testing.T) {
 		{"zero max conns", func(c *Config) { c.TCPMaxConns = 0 }, true},
 		{"ack every too large", func(c *Config) { c.TCPAckEvery = 256 }, true},
 		{"zero rto", func(c *Config) { c.TCPRTO = 0 }, true},
+		{"mss below minimum", func(c *Config) { c.TCPMSS = 5 }, true},
+		{"mss at minimum", func(c *Config) { c.TCPMSS = tcpMinMSS }, false},
 		{"vlan id too large", func(c *Config) { c.TCPVlanID = 4095 }, true},
 	}
 	for _, tc := range cases {

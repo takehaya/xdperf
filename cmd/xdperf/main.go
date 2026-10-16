@@ -178,7 +178,7 @@ func newApp(version string) *cli.App {
 		},
 		cli.IntFlag{
 			Name:  "tcp-mss",
-			Usage: "TCP stream payload bytes per segment (default: MTU-sized, 1448 for IPv4 / 1428 for IPv6)",
+			Usage: "TCP stream payload bytes per segment, 64..65535 (default: MTU-sized, 1448 for IPv4 / 1428 for IPv6)",
 		},
 		cli.StringFlag{
 			Name:  "tcp-bytes",

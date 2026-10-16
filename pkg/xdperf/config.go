@@ -248,8 +248,8 @@ func (c *Config) validateTCP() error {
 	if c.TCPWindow <= 0 || c.TCPWindow > 65535 {
 		return fmt.Errorf("--tcp-window must be in 1..65535")
 	}
-	if c.TCPMSS < 0 || c.TCPMSS > 65535 {
-		return fmt.Errorf("--tcp-mss out of range")
+	if c.TCPMSS != 0 && (c.TCPMSS < tcpMinMSS || c.TCPMSS > 65535) {
+		return fmt.Errorf("--tcp-mss must be 0 (default) or %d..65535", tcpMinMSS)
 	}
 	if c.TCPRTO <= 0 {
 		return fmt.Errorf("--tcp-rto must be positive")
@@ -298,8 +298,8 @@ func (c *Config) validateTCPServer() error {
 	if c.TCPSweepAfter < 0 {
 		return fmt.Errorf("--tcp-sweep-after must be non-negative")
 	}
-	if c.TCPMSS < 0 || c.TCPMSS > 65535 {
-		return fmt.Errorf("--tcp-mss out of range")
+	if c.TCPMSS != 0 && (c.TCPMSS < tcpMinMSS || c.TCPMSS > 65535) {
+		return fmt.Errorf("--tcp-mss must be 0 (default) or %d..65535", tcpMinMSS)
 	}
 	if c.TCPVlanID < 0 || c.TCPVlanID > 4094 {
 		return fmt.Errorf("--tcp-vlan-id must be in 0..4094")

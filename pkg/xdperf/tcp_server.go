@@ -380,10 +380,18 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
+	// Detached explicitly before the final sweep and statistics (below);
+	// the deferred call only covers early returns. Close is idempotent.
+	detach := func() {
 		x.Logger.Info("detaching XDP program")
 		if err := link.Close(); err != nil {
 			x.Logger.Warn("failed to detach XDP program", zap.Error(err))
+		}
+	}
+	detached := false
+	defer func() {
+		if !detached {
+			detach()
 		}
 	}()
 
@@ -411,6 +419,12 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 	}
 	cancel()
 	<-sweeperDone // never run two sweeps at once (double counting)
+
+	// Stop answering first: otherwise the final sweep below could delete a
+	// flow that is still in use (its next retransmission would get a stray
+	// RST) and the statistics would miss what arrives after they are read.
+	detach()
+	detached = true
 
 	// One last sweep, regardless of age: nothing more will be answered, so a
 	// LAST_ACK flow (final ACK lost) is closed and a SYN_RCVD one timed out.
