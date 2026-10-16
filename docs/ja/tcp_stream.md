@@ -42,6 +42,7 @@ sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.100.2:5201 --tcp-vlan-id 100 
 | `--tcp-bytes` | 0 | フローごとの送信バイト数 (k/m/g 接尾辞可)。0 なら `--duration` まで |
 | `--tcp-rto` | 200ms | 再送タイムアウト。SYN / FIN / データの再送はいずれも指数バックオフ (`rto << n`)。SYN と FIN は 6 回、データは連続 8 回で RST を送って諦める |
 | `--tcp-vlan-id` / `--tcp-vlan-pcp` | 0 / 0 | 802.1Q タグ。0 でタグ無し |
+| `--tcp-ip-id` | `flow` | IPv4 の ID の振り方。`flow` はコネクションごとに 1 ずつ増やす (Linux と同じ)。受信側の GRO は同じフローの連続したセグメントを 1 つの skb にまとめられる。`shared` は送信 CPU ごとに 1 つのカウンタを全フローで共有し、2 フロー以上だと各フローの ID が連続しないので GRO はまとめない。受信側の設定を変えずに、パケット単位の負荷を作りたいときに使う |
 | `--parallelism` | | worker CPU 数。フローは CPU 間でインターリーブして分配される |
 | `--pps` | | TX イテレーション数 (= セグメント送出レート) の上限 |
 | `--duration` | | 終了時刻。到達すると新規データを止め、全フローを FIN で閉じる (drain) |
@@ -126,6 +127,7 @@ tcp-server: active 64 accepted 64 closed 0 | 9.401 Gbps rcvd, 811,922 segs/s, 81
 
 - 送信元 IP は `--device` (または VLAN サブインターフェース) に付いている必要があります。ARP/NDP への応答はカーネルに任せます。
 - VLAN 指定時、受信側 NIC の rx-vlan-offload (や veth の hwaccel) でタグが剥がされた応答フレームも受け付け、返す ACK にはタグを押し戻します。
+- veth の対向では、live frames から作られた skb にフローハッシュが付かないため、全フローが GRO の同じバケットに入る。1 バケットに保持できるのは 8 フロー (`MAX_GRO_SKBS`) までなので、`--tcp-ip-id flow` でも 9 フロー以上はまとめられない (kind で 8 フローは 8 セグメント/skb、9 フローは 1)。RSS でハッシュが付く実 NIC ではこの制限は無い。
 - `--rx-device` の分離、IPv6 拡張ヘッダ、QinQ、双方向データには未対応です。`--tcp-server` もサーバからのデータ送信 (固定レスポンス) には未対応です。
 - veth 上で試す場合は [examples/tcpstream](../../examples/tcpstream/README.md) の注意 (対向側に XDP プログラムが必要、ring が小さいので再送が出る) を参照してください。
 

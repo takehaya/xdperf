@@ -285,6 +285,7 @@ type clientOpts struct {
 	abort    bool
 	maxData  uint8
 	bytesPer uint64
+	sharedID bool // one IPv4 ID counter per CPU instead of per flow
 }
 
 // clientTemplate is the L2+L3 header the TX program copies into every frame
@@ -351,6 +352,9 @@ func setupClient(t *testing.T, objs *BpfObjects, o clientOpts, flows ...BpfTcpFl
 		o.maxData = 8
 	}
 	cfg, frame := clientTemplate(t, o)
+	if o.sharedID {
+		cfg.IpIdShared = 1
+	}
 	zero := uint32(0)
 	if err := objs.TcpCfgMap.Put(&zero, &cfg); err != nil {
 		t.Fatal(err)
@@ -633,6 +637,37 @@ func TestTcpRxOldAckDoesNotShrinkWindow(t *testing.T) {
 	runProg(t, objs.XdpRxTcp, buildSeg(t, beyond))
 	if got := getFlow(t, objs, 0); got.SndUna != 2001 || got.SndWnd != 40000 {
 		t.Fatalf("snd_una %d snd_wnd %d, want 2001 / 40000", got.SndUna, got.SndWnd)
+	}
+}
+
+func TestTcpTxIPID(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		objs := loadTCPObjs(t)
+		a, b := established(1000), established(2000)
+		a.IpId, b.IpId = 100, 500
+		frame := setupClient(t, objs, clientOpts{sharedID: shared}, a, b)
+		// The TX cursor alternates the two flows: a, b, a, b.
+		var ids, ports [4]uint16
+		for i := range ids {
+			ret, out := txOnce(t, objs, frame)
+			if ret != xdpTx {
+				t.Fatalf("shared=%v frame %d: ret %d", shared, i, ret)
+			}
+			d := decode(t, out)
+			ids[i], ports[i] = d.ip4.Id, uint16(d.tcp.SrcPort)
+		}
+		if ports[0] != ports[2] || ports[1] != ports[3] || ports[0] == ports[1] {
+			t.Fatalf("shared=%v: flows not alternating: ports %v", shared, ports)
+		}
+		if !shared {
+			// Per connection, like Linux: each flow's IDs are consecutive.
+			if ids[2] != ids[0]+1 || ids[3] != ids[1]+1 || (ids[0] != 100 && ids[0] != 500) {
+				t.Fatalf("per-flow IDs: %v", ids)
+			}
+		} else if ids[1] != ids[0]+1 || ids[2] != ids[1]+1 || ids[3] != ids[2]+1 {
+			// One counter per CPU across all flows.
+			t.Fatalf("shared IDs: %v", ids)
+		}
 	}
 }
 
