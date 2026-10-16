@@ -105,14 +105,21 @@ teardown_tcp_topology() {
     print_success "Topology removed"
 }
 
+# pid_is <pid> <comm>: true if pid is alive and runs the expected command.
+# A stale pid file may name a pid the kernel has since reused for an
+# unrelated process; we signal as root, so check before every kill.
+pid_is() {
+    [ -n "$1" ] && [ "$(cat "/proc/$1/comm" 2>/dev/null)" = "$2" ]
+}
+
 kill_stale_sink() {
     local pid
     pid="$(cat "${SINK_PID_FILE}" 2>/dev/null)" || return 0
-    if [ -n "$pid" ] && [ "$(cat "/proc/${pid}/comm" 2>/dev/null)" = "xdperf-sink" ]; then
+    if pid_is "$pid" xdperf-sink; then
         kill "$pid" 2>/dev/null || true
         local i
         for i in $(seq 1 20); do
-            kill -0 "$pid" 2>/dev/null || break
+            pid_is "$pid" xdperf-sink || break
             sleep 0.1
         done
     fi
@@ -157,11 +164,11 @@ stop_sink() {
     if [ -z "$pid" ]; then
         pid="$(cat "${SINK_PID_FILE}" 2>/dev/null)" || true
     fi
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if pid_is "$pid" xdperf-sink; then
         kill -INT "$pid" 2>/dev/null || true
         local i
         for i in $(seq 1 50); do
-            kill -0 "$pid" 2>/dev/null || break
+            pid_is "$pid" xdperf-sink || break
             sleep 0.1
         done
     fi
@@ -184,19 +191,20 @@ srv_field() {
     grep "tcp server final statistics" "${SRV_LOG}" | tail -n 1 | grep -o "\"$1\": [0-9]*" | awk '{print $2}'
 }
 
-# Send SIGINT to the process in a pid file (if alive) and wait for it to exit.
+# Send SIGINT to the process in a pid file (if it is still <comm>) and wait
+# for it to exit. Usage: stop_pidfile <file> <comm> <label>
 stop_pidfile() {
-    local file="$1" comm="$2" pid
+    local file="$1" comm="$2" label="$3" pid
     pid="$(cat "$file" 2>/dev/null)" || return 0
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if pid_is "$pid" "$comm"; then
         kill -INT "$pid" 2>/dev/null || true
         local i
         for i in $(seq 1 100); do
-            kill -0 "$pid" 2>/dev/null || break
+            pid_is "$pid" "$comm" || break
             sleep 0.1
         done
-        if kill -0 "$pid" 2>/dev/null; then
-            print_error "${comm} (pid ${pid}) did not exit after SIGINT; killing it"
+        if pid_is "$pid" "$comm"; then
+            print_error "${label} (pid ${pid}) did not exit after SIGINT; killing it"
             kill -KILL "$pid" 2>/dev/null || true
         fi
     fi
@@ -234,7 +242,7 @@ start_xdp_server() {
 
 # Stop the responder with SIGINT so it logs its final statistics.
 stop_xdp_server() {
-    stop_pidfile "${SRV_PID_FILE}" "xdperf --tcp-server"
+    stop_pidfile "${SRV_PID_FILE}" xdperf "xdperf --tcp-server"
 }
 
 # Attach a pass-through XDP program to the transmit veth (needed when the
@@ -258,7 +266,7 @@ start_pass_prog() {
 }
 
 stop_pass_prog() {
-    stop_pidfile "${PASS_PID_FILE}" "xdperf-sink (xdp pass)"
+    stop_pidfile "${PASS_PID_FILE}" xdperf-sink "xdperf-sink (xdp pass)"
 }
 
 scenario_preflight() {

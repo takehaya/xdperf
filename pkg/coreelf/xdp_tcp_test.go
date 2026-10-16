@@ -1171,6 +1171,42 @@ func TestTcpServerKeysOnLocalAddress(t *testing.T) {
 	}
 }
 
+func TestTcpServerAcksKeepalive(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupServer(t, objs, false, 1, false)
+	iss := handshake(t, objs, false)
+	// Linux keepalive: empty ACK with seq = rcv_nxt - 1.
+	ret, d := srvRun(t, objs, toServer(false, 100, iss+1, tcpACK, 0))
+	if ret != xdpTx || tcpFlags(d.tcp) != tcpACK || d.tcp.Ack != 101 || d.tcp.Seq != iss+1 {
+		t.Fatalf("keepalive: ret %d", ret)
+	}
+	// An in-order pure ACK is still not answered.
+	if ret, _ := srvRun(t, objs, toServer(false, 101, iss+1, tcpACK, 0)); ret != xdpDrop {
+		t.Fatalf("in-order ACK: ret %d, want XDP_DROP", ret)
+	}
+	// FIN ahead of missing data: duplicate ACK, FIN not accepted.
+	ret, d = srvRun(t, objs, toServer(false, 600, iss+1, tcpFIN|tcpACK, 0))
+	if ret != xdpTx || tcpFlags(d.tcp) != tcpACK || d.tcp.Ack != 101 {
+		t.Fatalf("early FIN: ret %d flags %#x ack %d", ret, tcpFlags(d.tcp), d.tcp.Ack)
+	}
+	if f, _ := srvFlow(t, objs, false); f.State != tsEstablished {
+		t.Fatalf("early FIN changed the state to %d", f.State)
+	}
+}
+
+func TestTcpServerPassesFirstFragment(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupServer(t, objs, false, 1, false)
+	frame := buildSeg(t, toServer(false, 100, 0, tcpSYN, 0))
+	frame[14+6] |= 0x20 // MF, offset 0
+	if ret, out := runProg(t, objs.XdpRxTcpServer, frame); ret != xdpPass || !bytes.Equal(out, frame) {
+		t.Fatalf("first fragment: ret %d, want unchanged XDP_PASS", ret)
+	}
+	if _, ok := srvFlow(t, objs, false); ok {
+		t.Fatal("first fragment created a flow")
+	}
+}
+
 func TestTcpServerPassesForeignTraffic(t *testing.T) {
 	objs := loadTCPObjs(t)
 	setupServer(t, objs, false, 1, false)

@@ -85,6 +85,9 @@ func TestSweepTCPServerFlows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if now < uint64(2*time.Minute) {
+		t.Skip("host booted less than 2 minutes ago: cannot fake an old timestamp")
+	}
 	old := now - uint64(time.Minute)
 	entries := map[uint16]coreelf.BpfTcpSrvFlow{
 		1: {State: tcpSrvLastAck, Iss: 1, LastNs: old},     // swept, closed_implicit

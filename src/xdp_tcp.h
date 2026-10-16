@@ -1095,7 +1095,9 @@ int xdp_rx_tcp(struct xdp_md *ctx)
             return XDP_PASS;
         if (iph->saddr != cfg->dst_ip[0] || iph->daddr != cfg->src_ip[0])
             return XDP_PASS;
-        if ((bpf_ntohs(iph->frag_off) & 0x1FFF) != 0)
+        // Any fragment, including the first one (MF set, offset 0): no
+        // reassembly here, so it is not a complete segment.
+        if ((bpf_ntohs(iph->frag_off) & 0x3FFF) != 0)
             return XDP_PASS;
         l4_off = l3_off + sizeof(*iph);
         __u32 tot = bpf_ntohs(iph->tot_len);

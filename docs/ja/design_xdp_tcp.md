@@ -529,3 +529,15 @@ tcp-server: active 64 accepted 64 closed 0 | 9.401 Gbps rcvd, 811,922 segs/s, 81
 その結果、前回そのページを使った側の長さが残る。veth では、対向の XDP プログラムが同じページをその場で 54 バイトの ACK に縮めて返している。
 対策として、live frames に渡すフレームを最大セグメント長 + 1 バイトにし、毎回 `bpf_xdp_adjust_tail` が走るようにした。
 example のレスポンダケースでは `bad_length == 0` も検査する。
+
+2 回目のレビュー:
+
+| 指摘 | 対応 |
+|---|---|
+| example の停止処理が、再利用された PID の無関係なプロセスに root で signal を送り得る | signal を送る前に毎回 `/proc/<pid>/comm` を照合する (`pid_is`) |
+| xdperf-sink の active 計算で、Accepted → Closed の順に読むとアンダーフローし得る | Closed を先に読む |
+| MSS 7 では最大セグメント長 + 1 が SYN の長さと一致し、SYN でフレーム長が更新されない | live frame の長さを max(データ, SYN) + 1 にする |
+| `--pps` が小さいと abort の猶予が worker の実行間隔より短く、RST を送れない | 1 worker が全フローを持つ最悪ケースで、必要な実行回数 + 1 回分の間隔の 2 倍を猶予にする |
+| スイーパのテストが、起動直後 (1 分未満) のホストで unsigned 減算のアンダーフローを起こす | 起動後 2 分未満ならスキップ |
+| 先頭の IPv4 断片 (MF=1, offset 0) を完全なセグメントとして扱う | 断片はすべて XDP_PASS (レスポンダとクライアント RX) |
+| 順序外のペイロード無しセグメント (Linux の keepalive、データを追い越した FIN) に ACK を返さず、keepalive で切断される | 現在の `rcv_nxt` で ACK を返す。順序どおりの純 ACK には引き続き返さない |

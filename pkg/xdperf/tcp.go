@@ -32,6 +32,7 @@ import (
 
 const (
 	tcpHeaderLen     = 20
+	tcpSynOptLen     = 8 // MSS + NOP + window scale on SYN (TCP_SYN_OPT_LEN)
 	tcpDefaultMSSv4  = 1448
 	tcpDefaultMSSv6  = 1428
 	tcpTxRepeatBurst = 1 << 16 // bpf_prog_run repeat count when not rate limited
@@ -530,7 +531,12 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	// whatever length the previous user of the recycled page left (on veth,
 	// the peer's XDP program shrinking it in place into an ACK), i.e. a
 	// header-only frame claiming mss bytes of payload.
-	liveFrame := append(append([]byte(nil), template...), 0)
+	// The SYN (headers + options) must not hit that length either.
+	liveFrame := append([]byte(nil), template...)
+	if synLen := int(t.hdrLen) + tcpSynOptLen; synLen > len(liveFrame) {
+		liveFrame = append(liveFrame, make([]byte, synLen-len(liveFrame))...)
+	}
+	liveFrame = append(liveFrame, 0)
 	runOpts := &ebpf.RunOptions{
 		Data:      liveFrame,
 		Repeat:    repeat,
@@ -608,11 +614,15 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.Drain = 1; c.Abort = 1 }); err != nil {
 			x.Logger.Warn("failed to set abort flag", zap.Error(err))
 		}
-		// One RST per TX iteration: with --pps the workers need about
-		// flows/pps seconds to reach every flow.
+		// One RST per TX iteration: with --pps a worker runs `repeat`
+		// iterations every `interval`, and in the worst case one worker
+		// owns every flow, so it needs ceil(flows/repeat) runs. One more
+		// run covers an abort that lands right after a run, and the whole
+		// is doubled for slack.
 		grace := tcpAbortGrace
-		if x.cfg.PPS > 0 {
-			if need := time.Duration(float64(flows) / float64(x.cfg.PPS) * 2 * float64(time.Second)); need > grace {
+		if interval > 0 {
+			runs := (flows + uint64(repeat) - 1) / uint64(repeat)
+			if need := 2 * time.Duration(runs+1) * interval; need > grace {
 				grace = need
 			}
 		}

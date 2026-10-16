@@ -153,7 +153,9 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
             return XDP_PASS;
         if (!cfg->any_addr && iph->daddr != cfg->listen_ip[0])
             return XDP_PASS;
-        if ((bpf_ntohs(iph->frag_off) & 0x1FFF) != 0)
+        // Any fragment, including the first one (MF set, offset 0): no
+        // reassembly here, so it is not a complete segment.
+        if ((bpf_ntohs(iph->frag_off) & 0x3FFF) != 0)
             return XDP_PASS;
         key.addr[0] = iph->saddr;
         key.local[0] = iph->daddr;
@@ -343,6 +345,11 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
         }
     } else if (seq == rcv_nxt) {
         fin_in_order = 1;
+    } else {
+        // Empty segment out of sequence: a keepalive probe (seq =
+        // rcv_nxt - 1) or a FIN ahead of missing data. Answer with the
+        // current rcv_nxt (RFC 9293 3.10.7.4).
+        need_ack = 1;
     }
 
     if (flags & TCPF_FIN) {

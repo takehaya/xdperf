@@ -160,7 +160,11 @@ func main() {
 			b := c.Bytes.Load()
 			dt := now.Sub(prevT).Seconds()
 			gbps := float64(b-prevBytes) * 8 / dt / 1e9
-			fmt.Printf("sink: accepted %d active %d closed %d | %.3f Gbps, %d bytes total", c.Accepted.Load(), c.Accepted.Load()-c.Closed.Load(), c.Closed.Load(), gbps, b)
+			// Closed first: a connection accepted and closed between the
+			// two loads must not make closed exceed accepted.
+			closed := c.Closed.Load()
+			accepted := c.Accepted.Load()
+			fmt.Printf("sink: accepted %d active %d closed %d | %.3f Gbps, %d bytes total", accepted, accepted-closed, closed, gbps, b)
 			if udpOn {
 				fmt.Printf(" | udp %d pkts %d bytes", c.UDPPackets.Load(), c.UDPBytes.Load())
 			}
@@ -177,11 +181,12 @@ func main() {
 			if uc != nil {
 				uc.Close()
 			}
+			closed := c.Closed.Load() // before Accepted, see above
 			s := summary{
 				Proto:      *proto,
 				Listen:     *listen,
 				Accepted:   c.Accepted.Load(),
-				Closed:     c.Closed.Load(),
+				Closed:     closed,
 				Bytes:      c.Bytes.Load(),
 				UDPPackets: c.UDPPackets.Load(),
 				UDPBytes:   c.UDPBytes.Load(),
