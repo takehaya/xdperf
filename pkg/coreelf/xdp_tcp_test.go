@@ -404,6 +404,8 @@ func clientStats(t *testing.T, objs *BpfObjects) BpfTcpStats {
 		s.RtxGiveups += r.RtxGiveups
 		s.Aborted += r.Aborted
 		s.AckProbes += r.AckProbes
+		s.WindowProbes += r.WindowProbes
+		s.ChallengeAcks += r.ChallengeAcks
 		s.Established += r.Established
 		s.BytesAcked += r.BytesAcked
 	}
@@ -586,6 +588,82 @@ func TestTcpRxFinMustBeInSequence(t *testing.T) {
 	}
 	if got := getFlow(t, objs, 0); got.PeerFin != 0 || got.RcvNxt != 5001 {
 		t.Fatalf("out-of-sequence FIN accepted: %+v", got)
+	}
+}
+
+func TestTcpRxRstSeqCheck(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupClient(t, objs, clientOpts{}, established(1000))
+	// RST off rcv_nxt: challenge ACK, flow stays established.
+	ret, out := runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 9999, 0, tcpRST)))
+	if ret != xdpTx {
+		t.Fatalf("RST off rcv_nxt: ret %d", ret)
+	}
+	if d := decode(t, out); tcpFlags(d.tcp) != tcpACK || d.tcp.Seq != 1001 || d.tcp.Ack != 5001 {
+		t.Fatalf("challenge ACK: flags %#x seq %d ack %d", tcpFlags(d.tcp), d.tcp.Seq, d.tcp.Ack)
+	}
+	if f := getFlow(t, objs, 0); f.State != tfEstablished {
+		t.Fatalf("state %d after an RST off rcv_nxt", f.State)
+	}
+	if st := clientStats(t, objs); st.ChallengeAcks != 1 {
+		t.Fatalf("challenge_acks = %d", st.ChallengeAcks)
+	}
+	// RST at rcv_nxt: flow failed.
+	runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 5001, 0, tcpRST)))
+	if f := getFlow(t, objs, 0); f.State != tfFailed {
+		t.Fatalf("state %d after an RST at rcv_nxt, want failed", f.State)
+	}
+}
+
+func TestTcpRxOldAckDoesNotShrinkWindow(t *testing.T) {
+	objs := loadTCPObjs(t)
+	f := established(1000)
+	f.SndNxt, f.SndMax = 3001, 3001
+	f.SndWnd = 0
+	setupClient(t, objs, clientOpts{}, f)
+	ack := fromPeer(false, 0, 5001, 2001, tcpACK)
+	ack.win = 40000
+	runProg(t, objs.XdpRxTcp, buildSeg(t, ack))
+	// A reordered older ACK with a closed window arrives afterwards.
+	old := fromPeer(false, 0, 5001, 1001, tcpACK)
+	old.win = 0
+	runProg(t, objs.XdpRxTcp, buildSeg(t, old))
+	beyond := fromPeer(false, 0, 5001, 9001, tcpACK)
+	beyond.win = 0
+	runProg(t, objs.XdpRxTcp, buildSeg(t, beyond))
+	if got := getFlow(t, objs, 0); got.SndUna != 2001 || got.SndWnd != 40000 {
+		t.Fatalf("snd_una %d snd_wnd %d, want 2001 / 40000", got.SndUna, got.SndWnd)
+	}
+}
+
+func TestTcpTxSmallAndClosedWindow(t *testing.T) {
+	// Window below one segment, nothing in flight: send what fits.
+	objs := loadTCPObjs(t)
+	f := established(1000)
+	f.SndWnd = 300
+	frame := setupClient(t, objs, clientOpts{}, f)
+	ret, out := txOnce(t, objs, frame)
+	if d := decode(t, out); ret != xdpTx || len(d.tcp.Payload) != 300 || d.tcp.Seq != 1001 {
+		t.Fatalf("small window: ret %d len %d", ret, len(d.tcp.Payload))
+	}
+	// Closed window, nothing in flight: a window probe with an old seq once
+	// the RTO has passed (LastSendNs = 0 with a 1us RTO).
+	objs = loadTCPObjs(t)
+	f = established(1000)
+	f.SndWnd = 0
+	frame = setupClient(t, objs, clientOpts{rtoNs: 1000}, f)
+	ret, out = txOnce(t, objs, frame)
+	if ret != xdpTx {
+		t.Fatalf("closed window: ret %d", ret)
+	}
+	if d := decode(t, out); tcpFlags(d.tcp) != tcpACK || d.tcp.Seq != 1000 || len(d.tcp.Payload) != 0 {
+		t.Fatalf("window probe: flags %#x seq %d len %d", tcpFlags(d.tcp), d.tcp.Seq, len(d.tcp.Payload))
+	}
+	if st := clientStats(t, objs); st.WindowProbes != 1 {
+		t.Fatalf("window_probes = %d", st.WindowProbes)
+	}
+	if got := getFlow(t, objs, 0); got.SndNxt != 1001 || got.State != tfEstablished {
+		t.Fatalf("probe moved the flow: %+v", got)
 	}
 }
 
@@ -918,6 +996,7 @@ func srvStats(t *testing.T, objs *BpfObjects) BpfTcpSrvStats {
 	var s BpfTcpSrvStats
 	for _, r := range recs {
 		s.RecycledEst += r.RecycledEst
+		s.ChallengeAcks += r.ChallengeAcks
 		s.BadLen += r.BadLen
 		s.BytesRcvd += r.BytesRcvd
 	}
@@ -1164,10 +1243,66 @@ func TestTcpServerKeysOnLocalAddress(t *testing.T) {
 	if st := srvStats(t, objs); st.RecycledEst != 0 {
 		t.Fatalf("recycled_est = %d, want 0", st.RecycledEst)
 	}
-	// A new SYN on the first flow's own key replaces it and is counted.
-	srvRun(t, objs, toServer(false, 9000, 0, tcpSYN, 0))
+}
+
+func TestTcpServerSynOnEstablishedGetsChallengeAck(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupServer(t, objs, false, 1, false)
+	iss := handshake(t, objs, false)
+	srvRun(t, objs, toServer(false, 101, iss+1, tcpACK|tcpPSH, 1000))
+	// A delayed duplicate SYN (or a restarted peer) must not replace a live flow.
+	ret, d := srvRun(t, objs, toServer(false, 9000, 0, tcpSYN, 0))
+	if ret != xdpTx || tcpFlags(d.tcp) != tcpACK || d.tcp.Seq != iss+1 || d.tcp.Ack != 1101 {
+		t.Fatalf("SYN on established: ret %d flags %#x seq %d ack %d, want challenge ACK", ret, tcpFlags(d.tcp), d.tcp.Seq, d.tcp.Ack)
+	}
+	if f, _ := srvFlow(t, objs, false); f.State != tsEstablished || f.Iss != iss || f.BytesRcvd != 1000 {
+		t.Fatalf("flow replaced: %+v", f)
+	}
+	if st := srvStats(t, objs); st.ChallengeAcks != 1 || st.RecycledEst != 0 {
+		t.Fatalf("challenge_acks %d recycled_est %d", st.ChallengeAcks, st.RecycledEst)
+	}
+	// A restarted peer answers the challenge ACK with an RST at rcv_nxt:
+	// the flow goes, and its retried SYN opens a new one.
+	if ret, _ := srvRun(t, objs, toServer(false, 1101, 0, tcpRST, 0)); ret != xdpDrop {
+		t.Fatalf("RST at rcv_nxt: ret %d", ret)
+	}
+	if ret, d := srvRun(t, objs, toServer(false, 9000, 0, tcpSYN, 0)); ret != xdpTx || tcpFlags(d.tcp) != tcpSYN|tcpACK || d.tcp.Ack != 9001 {
+		t.Fatalf("retried SYN: ret %d", ret)
+	}
+}
+
+func TestTcpServerRecyclesLastAck(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupServer(t, objs, false, 1, false)
+	iss := handshake(t, objs, false)
+	srvRun(t, objs, toServer(false, 101, iss+1, tcpFIN|tcpACK, 0)) // -> LAST_ACK, final ACK lost
+	ret, d := srvRun(t, objs, toServer(false, 9000, 0, tcpSYN, 0))
+	if ret != xdpTx || tcpFlags(d.tcp) != tcpSYN|tcpACK || d.tcp.Ack != 9001 {
+		t.Fatalf("SYN on LAST_ACK: ret %d flags %#x", ret, tcpFlags(d.tcp))
+	}
 	if st := srvStats(t, objs); st.RecycledEst != 1 {
 		t.Fatalf("recycled_est = %d, want 1", st.RecycledEst)
+	}
+}
+
+func TestTcpServerRstSeqCheck(t *testing.T) {
+	objs := loadTCPObjs(t)
+	setupServer(t, objs, false, 1, false)
+	iss := handshake(t, objs, false)
+	// RST off rcv_nxt (stale or spoofed): challenge ACK, flow kept.
+	ret, d := srvRun(t, objs, toServer(false, 5000, 0, tcpRST, 0))
+	if ret != xdpTx || tcpFlags(d.tcp) != tcpACK || d.tcp.Seq != iss+1 || d.tcp.Ack != 101 {
+		t.Fatalf("RST off rcv_nxt: ret %d", ret)
+	}
+	if _, ok := srvFlow(t, objs, false); !ok {
+		t.Fatal("flow removed by an RST off rcv_nxt")
+	}
+	// RST at rcv_nxt: flow removed.
+	if ret, _ := srvRun(t, objs, toServer(false, 101, 0, tcpRST, 0)); ret != xdpDrop {
+		t.Fatalf("RST at rcv_nxt: ret %d", ret)
+	}
+	if _, ok := srvFlow(t, objs, false); ok {
+		t.Fatal("flow kept after an RST at rcv_nxt")
 	}
 }
 

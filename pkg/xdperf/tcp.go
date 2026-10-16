@@ -550,7 +550,8 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go x.showTCPStats(ctx)
+	statsDone := make(chan struct{})
+	go func() { defer close(statsDone); x.showTCPStats(ctx) }()
 
 	var wg sync.WaitGroup
 	var once sync.Once
@@ -680,19 +681,28 @@ loop:
 	}
 	cancel()
 	wg.Wait()
+	<-statsDone // no periodic line after (or interleaved with) the final one
 
-	x.showTCPFinalStats(recs)
+	s, statsErr := x.showTCPFinalStats(recs)
 	if firstErr != nil {
 		return fmt.Errorf("worker failed: %w", firstErr)
+	}
+	if statsErr != nil {
+		return statsErr
+	}
+	// A run whose flows did not complete is a failed measurement: report it
+	// in the exit status, not only in the log (e.g. every SYN refused).
+	if s.Failed > 0 {
+		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d)",
+			s.Failed, x.cfg.TCPFlows, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts)
 	}
 	return nil
 }
 
-func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) {
+func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpStats, error) {
 	s, err := x.readTCPStats(recs)
 	if err != nil {
-		x.Logger.Error("failed to read tcp stats", zap.Error(err))
-		return
+		return s, fmt.Errorf("failed to read tcp stats: %w", err)
 	}
 	x.Logger.Info("tcp final statistics",
 		zap.Int("flows", x.cfg.TCPFlows),
@@ -720,5 +730,8 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) {
 		zap.Uint64("retransmit_giveups", s.RtxGiveups),
 		zap.Uint64("fin_wait2_timeouts", s.FinWait2Timeouts),
 		zap.Uint64("ack_probes", s.AckProbes),
+		zap.Uint64("window_probes", s.WindowProbes),
+		zap.Uint64("challenge_acks", s.ChallengeAcks),
 	)
+	return s, nil
 }

@@ -75,9 +75,10 @@ struct tcp_srv_stats {
     __u64 unexpected; // bad ACK number in SYN_RCVD
     __u64 build_errors;
     __u64 rst_sent;
-    __u64 reset_est;    // RSTs that removed an established (or closing) flow
-    __u64 recycled_est; // new SYNs that replaced an established (or closing) flow
-    __u64 bad_len;      // IP / TCP lengths inconsistent with the frame: dropped
+    __u64 reset_est;      // RSTs that removed an established (or closing) flow
+    __u64 recycled_est;   // new SYNs that replaced an established (or closing) flow
+    __u64 bad_len;        // IP / TCP lengths inconsistent with the frame: dropped
+    __u64 challenge_acks; // ACKs sent for a SYN on an established flow or an RST off rcv_nxt (RFC 5961)
 };
 
 struct {
@@ -216,17 +217,42 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
     struct tcp_reply r = {0};
 
     if (flags & TCPF_RST) {
-        if (f) {
+        st->rst_rcvd++;
+        if (!f)
+            return XDP_DROP;
+        // RFC 5961 3.2: only an RST at exactly rcv_nxt removes the flow. A
+        // stale RST (an earlier connection on this 4-tuple) or a spoofed one
+        // gets a challenge ACK on a synchronized flow (a genuine peer answers
+        // with an RST at the right seq) and is ignored in SYN_RCVD.
+        if (seq == f->rcv_nxt) {
             if (f->state != TS_SYN_RCVD)
                 st->reset_est++;
             bpf_map_delete_elem(&tcp_srv_flow_map, &key);
+            return XDP_DROP;
         }
-        st->rst_rcvd++;
-        return XDP_DROP;
+        if (f->state == TS_SYN_RCVD)
+            return XDP_DROP;
+        r.seq = f->snd_nxt;
+        r.ack = f->rcv_nxt;
+        r.flags = TCPF_ACK;
+        st->challenge_acks++;
+        goto send;
     }
 
     if ((flags & (TCPF_SYN | TCPF_ACK)) == TCPF_SYN) {
         st->syn_rcvd++;
+        if (f && f->state == TS_ESTABLISHED) {
+            // RFC 5961 4.2: a SYN on an established flow is either a delayed
+            // duplicate (replacing the flow would break a live transfer) or
+            // a peer that restarted on the same port. Answer with a challenge
+            // ACK: a restarted peer resets the old flow with an RST at
+            // rcv_nxt and retries its SYN; a duplicate is harmless.
+            r.seq = f->snd_nxt;
+            r.ack = f->rcv_nxt;
+            r.flags = TCPF_ACK;
+            st->challenge_acks++;
+            goto send;
+        }
         struct tcp_srv_flow nf = {0};
         if (f && f->state == TS_SYN_RCVD && f->rcv_nxt == seq + 1) {
             // Same SYN again: our SYN-ACK was lost, resend the same one. The
@@ -235,7 +261,9 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
             nf = *f;
         } else {
             if (f) {
-                st->recycled++; // fast recycle of a stale entry (no TIME_WAIT)
+                // fast recycle of a stale entry (no TIME_WAIT): a SYN_RCVD
+                // flow with another ISN, or a LAST_ACK flow (the peer is done)
+                st->recycled++;
                 if (f->state != TS_SYN_RCVD)
                     st->recycled_est++;
             }

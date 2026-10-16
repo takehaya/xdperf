@@ -398,7 +398,8 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	sw := &tcpServerSweep{}
-	go x.showTCPServerStats(ctx, sw)
+	statsDone := make(chan struct{})
+	go func() { defer close(statsDone); x.showTCPServerStats(ctx, sw) }()
 	sweeperDone := make(chan struct{})
 	go x.runTCPServerSweeper(ctx, sw, x.tcpServerSweepAfter(), sweeperDone)
 
@@ -419,6 +420,7 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 	}
 	cancel()
 	<-sweeperDone // never run two sweeps at once (double counting)
+	<-statsDone
 
 	// Stop answering first: otherwise the final sweep below could delete a
 	// flow that is still in use (its next retransmission would get a stray
@@ -463,6 +465,7 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 		zap.Uint64("reset_established", s.ResetEst),
 		zap.Uint64("unexpected", s.Unexpected),
 		zap.Uint64("bad_length", s.BadLen),
+		zap.Uint64("challenge_acks", s.ChallengeAcks),
 		zap.Uint64("build_errors", s.BuildErrors),
 	)
 	return nil

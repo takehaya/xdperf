@@ -178,28 +178,29 @@ type BpfTcpSrvKey struct {
 }
 
 type BpfTcpSrvStats struct {
-	_           structs.HostLayout
-	SynRcvd     uint64
-	SynackSent  uint64
-	Accepted    uint64
-	DataSegs    uint64
-	BytesRcvd   uint64
-	AcksSent    uint64
-	DupAcksSent uint64
-	OutOfOrder  uint64
-	FinRcvd     uint64
-	FinSent     uint64
-	Closed      uint64
-	RstRcvd     uint64
-	Recycled    uint64
-	TableFull   uint64
-	Stray       uint64
-	Unexpected  uint64
-	BuildErrors uint64
-	RstSent     uint64
-	ResetEst    uint64
-	RecycledEst uint64
-	BadLen      uint64
+	_             structs.HostLayout
+	SynRcvd       uint64
+	SynackSent    uint64
+	Accepted      uint64
+	DataSegs      uint64
+	BytesRcvd     uint64
+	AcksSent      uint64
+	DupAcksSent   uint64
+	OutOfOrder    uint64
+	FinRcvd       uint64
+	FinSent       uint64
+	Closed        uint64
+	RstRcvd       uint64
+	Recycled      uint64
+	TableFull     uint64
+	Stray         uint64
+	Unexpected    uint64
+	BuildErrors   uint64
+	RstSent       uint64
+	ResetEst      uint64
+	RecycledEst   uint64
+	BadLen        uint64
+	ChallengeAcks uint64
 }
 
 type BpfTcpStats struct {
@@ -230,6 +231,8 @@ type BpfTcpStats struct {
 	RtxGiveups       uint64
 	FinWait2Timeouts uint64
 	AckProbes        uint64
+	WindowProbes     uint64
+	ChallengeAcks    uint64
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.

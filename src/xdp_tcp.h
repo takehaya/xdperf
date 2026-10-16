@@ -147,6 +147,8 @@ struct tcp_stats {
     __u64 rtx_giveups;        // flows reset after max_data_retries RTOs
     __u64 fin_wait2_timeouts; // flows reset waiting for the peer FIN
     __u64 ack_probes;         // pure ACKs sent from FIN_WAIT_2 to elicit a lost FIN
+    __u64 window_probes;      // probes sent while the peer window is closed (persist)
+    __u64 challenge_acks;     // ACKs sent for an RST whose seq is not rcv_nxt (RFC 5961)
 };
 
 struct {
@@ -184,6 +186,12 @@ struct {
 static __always_inline int seq_after(__u32 a, __u32 b)
 {
     return (__s32)(a - b) > 0;
+}
+
+// a <= b in sequence space
+static __always_inline int seq_leq(__u32 a, __u32 b)
+{
+    return !seq_after(a, b);
 }
 
 static __always_inline __u16 tcp_csum_fold(__u64 sum)
@@ -233,6 +241,7 @@ enum tcp_tx_kind {
     TXA_ACK,        // pure ACK probe from FIN_WAIT_2
     TXA_RST,        // abort / give-up
     TXA_CLOSED,     // state changed, nothing to send (keep scanning)
+    TXA_WND_PROBE,  // pure ACK below snd_una while the peer window is closed
 };
 
 struct tcp_tx_action {
@@ -399,6 +408,12 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
             __u32 len = mss;
             if ((__u64)len > avail)
                 len = (__u32)avail;
+            // A peer window smaller than one segment (a slow receiver): with
+            // nothing in flight, send what fits instead of waiting for a
+            // window that may never reach a full segment. Only then, so a
+            // partly filled window does not turn into small segments.
+            if (in_flight == 0 && wnd > 0 && len > wnd)
+                len = wnd;
             if (in_flight + len <= wnd) {
                 // PSH on the last segment and whenever the next one would not
                 // fit the window: a responder that acks every N segments
@@ -415,6 +430,19 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
                 kind = rexmit ? TXA_RTX_GBN : TXA_DATA;
             } else {
                 st->window_stalls++;
+                // Window closed with nothing in flight: no ACK will come by
+                // itself, and a lost window update would stall the flow
+                // forever. Persist: every RTO send a pure ACK with an old seq,
+                // which the peer must answer with its current window
+                // (RFC 9293 3.8.6.1). Never gives up, like a persist timer.
+                if (outstanding == 0 && now - f->last_send_ns > rto) {
+                    a->seq = f->snd_una - 1;
+                    a->ack = f->rcv_nxt;
+                    a->flags = TCPF_ACK;
+                    a->len = 0;
+                    f->last_send_ns = now;
+                    kind = TXA_WND_PROBE;
+                }
             }
         } else if (outstanding == 0) {
             a->seq = f->snd_nxt;
@@ -657,6 +685,9 @@ int xdp_tx_tcp(struct xdp_md *ctx)
         break;
     case TXA_ACK:
         st->ack_probes++;
+        break;
+    case TXA_WND_PROBE:
+        st->window_probes++;
         break;
     case TXA_RST:
         st->rst_sent++;
@@ -910,9 +941,18 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
                 st->failed++;
             }
         } else if (tcp_flow_open(state)) {
-            f->state = TF_FAILED;
-            st->failed++;
-            st->failed_est++;
+            // RFC 5961 3.2: only an RST at exactly rcv_nxt resets the flow;
+            // any other (a stale RST from an earlier connection on this
+            // 4-tuple, a spoofed one) gets a challenge ACK, and a genuine
+            // peer answers that with an RST at the right seq.
+            if (in->seq == f->rcv_nxt) {
+                f->state = TF_FAILED;
+                st->failed++;
+                st->failed_est++;
+            } else {
+                tcp_rx_reply(r, f->snd_max, f->rcv_nxt, TCPF_ACK);
+                st->challenge_acks++;
+            }
         }
         goto out;
     }
@@ -982,6 +1022,10 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
 
     st->acks_rcvd++;
     __u32 new_wnd = (__u32)in->win << f->wscale;
+    // Only an ACK inside [snd_una, snd_max] may change the window: a
+    // reordered older ACK (or one beyond what we sent) must not shrink it
+    // (RFC 9293 3.10.7.4, SND.WL2 part; the peer sends no data, so WL1 is moot).
+    __u8 ack_ok = seq_leq(f->snd_una, in->ack) && seq_leq(in->ack, f->snd_max);
     if (seq_after(in->ack, f->snd_una) && !seq_after(in->ack, f->snd_max)) {
         __u32 acked = in->ack - f->snd_una;
         // the FIN occupies one sequence number: do not count it as data
@@ -1004,7 +1048,8 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
         if (f->dup_acks == 3)
             f->rtx_pending = 1;
     }
-    f->snd_wnd = new_wnd;
+    if (ack_ok)
+        f->snd_wnd = new_wnd;
 
     if (in->payload_len > 0) {
         // the peer sent data: swallow it, acknowledge it

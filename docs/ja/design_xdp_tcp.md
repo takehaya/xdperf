@@ -399,10 +399,12 @@ LRU による自動掃除を優先した。RSS が同一フローを複数キュ
 
    | 受信 | エントリ | 処理 | 応答 |
    |---|---|---|---|
-   | RST | あり | 削除、`rst_rcvd++` | なし |
+   | RST, `seq == rcv_nxt` | あり | 削除、`rst_rcvd++` | なし |
+   | RST, `seq != rcv_nxt` | あり | RFC 5961 3.2。SYN_RCVD なら捨てる | challenge ACK (確立済み・LAST_ACK) |
    | SYN (ACK なし) | なし | 作成: SYN_RCVD、`iss = prandom`、`rcv_nxt = seq+1`、WS の有無を記録。作成失敗は `table_full++` | SYN-ACK (MSS、WS) |
    | SYN (ACK なし) | あり、SYN_RCVD、`rcv_nxt == seq+1` | 同じ SYN の再送 (SYN-ACK ロス) | 同じ SYN-ACK を再送 |
-   | SYN (ACK なし) | あり、それ以外 | dperf の fast recycle。作り直して `recycled++` (確立済みだったら `recycled_est++` も) | SYN-ACK |
+   | SYN (ACK なし) | あり、ESTABLISHED | RFC 5961 4.2。遅れて届いた重複 SYN で生きた転送を壊さない。再起動した相手は challenge ACK に `rcv_nxt` の RST を返し、SYN を再送してくる | challenge ACK |
+   | SYN (ACK なし) | あり、それ以外 (別 ISN の SYN_RCVD、LAST_ACK) | dperf の fast recycle。作り直して `recycled++` (LAST_ACK だったら `recycled_est++` も) | SYN-ACK |
    | ACK, `ack == snd_nxt` | SYN_RCVD | ESTABLISHED、`accepted++`。同乗データがあれば続けて処理 (seq が先に進んでいても確立扱いにし、下の「穴」の行で重複 ACK を返す) | (データ次第) |
    | データ, `seq == rcv_nxt` | ESTABLISHED | `rcv_nxt += len`、`bytes_rcvd += len`、`unacked_segs++` | `unacked_segs >= ack_every` か PSH か FIN なら ACK |
    | データ, `seq < rcv_nxt < seq+len` (一部重複) | ESTABLISHED | 再送で区切りが変わった。`rcv_nxt` より先の部分だけを受理 (RFC 9293 3.10.7.4) | ACK |
@@ -474,6 +476,10 @@ tcp-server: active 64 accepted 64 closed 0 | 9.401 Gbps rcvd, 811,922 segs/s, 81
   100G でのレスポンダのコストが数倍になるため。壊れたセグメントを ACK すると相手は再送しないので、バイト数は
   「届いたと主張された量」になる。NIC の RX チェックサムオフロード結果を XDP から読めるようになれば
   (`bpf_xdp_metadata_rx_*` に checksum が入れば) そこで落とす。
+- 同じフローのパケットが複数の CPU で同時に処理されると、lock が無いので `rcv_nxt` の更新が競合し、受信バイト数を
+  二重に数え得る。実 NIC では RSS が 4-tuple で同じキューに振るので起きない。veth では送信 CPU ごとに受信キューが
+  決まるので、送信側 (`--tcp` の worker) が複数 CPU から同じフローを送ると崩れ得る。veth で厳密に測るときは
+  送信側を 1 worker にする。
 - LRU による追い出し (テーブル満杯) は検出できないので、表示上の active には残る。`table_full` が 0 でなければ
   `--tcp-max-conns` を増やす。
 
@@ -556,3 +562,29 @@ example のレスポンダケースでは `bad_length == 0` も検査する。
 |---|---|
 | `--duration` と `--pps` から計算するリプレイ用の Count が TCP モードにも適用され、`--pps` < `--parallelism` で起動を拒否される | TCP モード (`--tcp` / `--tcp-server`) では Count の計算と検査をしない |
 | example でログの切り詰めが子プロセス側で行われ、準備完了チェックが前のケースのログを読み得る | 起動前に親シェルでレスポンダとシンクのログを空にする |
+
+## 15. codex レビューへの対応、CI での verifier 拒否
+
+PR の CI (`test` と `examples`) は最初のコミットから落ちていた。GitHub の ubuntu-24.04 ランナーのカーネルが、
+`xdp_tx_tcp` を「invalid read from stack R1 var_off (0x0; 0x1f)+16 size 1」で拒否していた。
+`hdr + l3_off` (可変オフセットのスタックポインタ) 経由で IP ヘッダを編集していたのが原因。
+同じオブジェクトに入っている UDP 側のプログラムも巻き添えで読み込めず、全シナリオが失敗していた。
+手元のカーネル 7.0 と、vimto の 6.1〜7.2 では受理されていた。
+
+IP ヘッダを専用のバッファに定数オフセット (l3_off は 14 か 18) でコピーして編集するようにした。
+`bpftool -d prog loadall` の verifier ログで可変オフセットのフレームポインタ (`fp(off=...,var_off...)`) を数えると、
+修正前 282 命令、修正後 0。CI の examples に socat を入れ、カーネル TCP クライアントのケース (linux4, linux6, linux4loss) も
+SKIP せずに走らせる。BPF load test の vimto 実行に TCP データプレーンのテスト (`-run TestTcp`) を加えた。
+
+codex (差分を標準入力で渡す形。この環境ではサンドボックスが起動しないため) のレビュー:
+
+| 指摘 | 対応 |
+|---|---|
+| 相手のウィンドウが MSS 未満だと最初のセグメントを送れず、何も飛んでいないので RTO も働かず停止する。ゼロウィンドウでウィンドウ更新を落とすと永久に停止する | 何も飛んでいないときはウィンドウに収まる長さに縮めて送る。ウィンドウが閉じて何も飛んでいなければ、RTO ごとに古い seq (`snd_una - 1`) の純 ACK を送って相手に現在のウィンドウを返させる (persist。諦めない)。`window_probes` で数える |
+| レスポンダで、確立済みフローに遅れて届いた重複 SYN がフローを作り直し、転送を壊す | ESTABLISHED への SYN には challenge ACK (RFC 5961 4.2)。LAST_ACK と別 ISN の SYN_RCVD は従来どおり作り直す |
+| 確立後の RST を seq に関係なく受理する (クライアント、レスポンダとも) | `seq == rcv_nxt` だけ受理し、それ以外は challenge ACK (RFC 5961 3.2)。SYN_RCVD のレスポンダは捨てる。`challenge_acks` で数える |
+| 古い ACK や `snd_max` を超える ACK が送信ウィンドウを上書きする | `snd_una <= ack <= snd_max` の ACK でだけウィンドウを更新する |
+| 同じフローを複数 CPU が同時に処理するとレスポンダの状態更新が競合する | 対応せず制約として明記 (12.8)。実 NIC は RSS で同じフローを同じキューに振る。veth で送信側の worker が複数だと、送信 CPU ごとに受信キューが分かれて崩れ得る |
+| 全フローが失敗しても終了コードが 0 | `failed > 0` ならエラーを返す (中断・再送断念・FIN_WAIT_2 タイムアウトの内訳つき) |
+| 統計表示の goroutine の終了を待っていない | 終了を待ってから最終統計を出す (クライアント、レスポンダとも) |
+| 最低対応カーネルで TCP データプレーンのテストを回していない | vimto の全カーネルで `-run TestTcp` を実行 |

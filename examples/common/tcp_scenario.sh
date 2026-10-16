@@ -427,7 +427,15 @@ run_linux_client_case() {
     fi
     local rc=0
     ip netns exec "${NS_TX}" bash -c "head -c ${expected_bytes} /dev/zero | socat -u - ${target}" > "${TX_LOG}" 2>&1 || rc=$?
-    sleep 0.5
+    # socat exits once its data is in the socket buffer; the kernel keeps
+    # sending (and, with loss, retransmitting) the tail and the FIN after
+    # that. Wait until no connection to the port is left short of TIME_WAIT.
+    local i
+    for i in $(seq 1 300); do
+        [ -z "$(ip netns exec "${NS_TX}" ss -Htn state all exclude time-wait "dport = :${DST_PORT}")" ] && break
+        sleep 0.1
+    done
+    sleep 0.2
     stop_xdp_server
     stop_pass_prog
     if [ "$rc" -ne 0 ]; then
