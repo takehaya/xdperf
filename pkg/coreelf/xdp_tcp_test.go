@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"runtime"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -640,7 +641,30 @@ func TestTcpRxOldAckDoesNotShrinkWindow(t *testing.T) {
 	}
 }
 
+// pinCPU keeps the calling goroutine on one CPU so that consecutive test runs
+// share the per-CPU TX cursor and ID counter.
+func pinCPU(t *testing.T) {
+	t.Helper()
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
+	var old, set unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &old); err != nil {
+		t.Fatalf("sched_getaffinity: %v", err)
+	}
+	for cpu := 0; cpu < len(old)*64; cpu++ {
+		if old.IsSet(cpu) {
+			set.Set(cpu)
+			break
+		}
+	}
+	if err := unix.SchedSetaffinity(0, &set); err != nil {
+		t.Fatalf("sched_setaffinity: %v", err)
+	}
+	t.Cleanup(func() { _ = unix.SchedSetaffinity(0, &old) })
+}
+
 func TestTcpTxIPID(t *testing.T) {
+	pinCPU(t)
 	for _, shared := range []bool{false, true} {
 		objs := loadTCPObjs(t)
 		a, b := established(1000), established(2000)
