@@ -48,6 +48,7 @@ func TestValidateTCP(t *testing.T) {
 		{"mss at minimum", func(c *Config) { c.TCPMSS = tcpMinMSS }, false},
 		{"vlan id too large", func(c *Config) { c.TCPVlanID = 4095 }, true},
 		{"vlan pcp too large", func(c *Config) { c.TCPVlanPCP = 8 }, true},
+		{"flow report", func(c *Config) { c.TCPFlowReport = "flows.csv" }, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -183,6 +184,7 @@ func TestValidateTCPServer(t *testing.T) {
 		{"with duration", func(c *Config) { c.Duration = time.Second }, false},
 		{"combined with --tcp", func(c *Config) { c.TCP = true }, true},
 		{"swap-resp", func(c *Config) { c.SwapResp = true }, true},
+		{"flow report needs --tcp", func(c *Config) { c.TCPFlowReport = "flows.csv" }, true},
 		{"rx-device", func(c *Config) { c.RxDevice = "eth1" }, true},
 		{"count", func(c *Config) { c.Count = 10 }, true},
 		{"infinite", func(c *Config) { c.Infinite = true }, true},

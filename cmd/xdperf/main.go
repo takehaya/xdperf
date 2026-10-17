@@ -202,6 +202,10 @@ func newApp(version string) *cli.App {
 			Value: "flow",
 			Usage: "TCP stream IPv4 ID: flow (per connection, like Linux: GRO can merge a flow's segments) or shared (one counter per TX CPU: interleaved flows reach the peer unmerged)",
 		},
+		cli.StringFlag{
+			Name:  "tcp-flow-report",
+			Usage: "TCP stream: write each flow's ledger (frames sent/received, data segments, retransmissions) to this CSV file at the end",
+		},
 		cli.BoolFlag{
 			Name:  "tcp-server",
 			Usage: "TCP responder mode: answer SYN/data/FIN on --tcp-listen from XDP (no kernel socket, data discarded). Implies --recv",
@@ -303,6 +307,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.TCPVlanID = ctx.Int("tcp-vlan-id")
 	c.TCPVlanPCP = ctx.Int("tcp-vlan-pcp")
 	c.TCPIPID = ctx.String("tcp-ip-id")
+	c.TCPFlowReport = ctx.String("tcp-flow-report")
 	c.TCPServer = ctx.Bool("tcp-server")
 	c.TCPListen = ctx.String("tcp-listen")
 	c.TCPMaxConns = ctx.Int("tcp-max-conns")

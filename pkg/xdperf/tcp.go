@@ -694,6 +694,14 @@ loop:
 	<-statsDone // no periodic line after (or interleaved with) the final one
 
 	s, statsErr := x.showTCPFinalStats(recs)
+	// The report is written even when flows failed: that is when the
+	// per-flow view matters most.
+	if err := x.writeTCPFlowReport(); err != nil {
+		x.Logger.Error("tcp flow report failed", zap.Error(err))
+		if statsErr == nil {
+			statsErr = err
+		}
+	}
 	if firstErr != nil {
 		return fmt.Errorf("worker failed: %w", firstErr)
 	}
