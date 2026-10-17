@@ -1458,3 +1458,42 @@ var _ = tfClosed
 var _ = tfDone
 var _ = tsEstablished
 var _ = tsLastAck
+
+func TestTcpFlowLedger(t *testing.T) {
+	t.Run("tx data", func(t *testing.T) {
+		objs := loadTCPObjs(t)
+		frame := setupClient(t, objs, clientOpts{}, established(1000))
+		for i := 0; i < 3; i++ {
+			if ret, _ := txOnce(t, objs, frame); ret != xdpTx {
+				t.Fatalf("frame %d: ret %d", i, ret)
+			}
+		}
+		if f := getFlow(t, objs, 0); f.TxPkts != 3 || f.TxData != 3 || f.TxRtx != 0 {
+			t.Fatalf("ledger tx=%d data=%d rtx=%d, want 3/3/0", f.TxPkts, f.TxData, f.TxRtx)
+		}
+	})
+	t.Run("tx retransmission", func(t *testing.T) {
+		objs := loadTCPObjs(t)
+		f := established(0)
+		f.SndUna, f.SndNxt, f.SndMax = 1, 1001, 1001
+		frame := setupClient(t, objs, clientOpts{rtoNs: 1000}, f) // LastSendNs = 0: RTO expired
+		if ret, _ := txOnce(t, objs, frame); ret != xdpTx {
+			t.Fatalf("ret %d", ret)
+		}
+		if g := getFlow(t, objs, 0); g.TxPkts != 1 || g.TxData != 0 || g.TxRtx != 1 {
+			t.Fatalf("ledger tx=%d data=%d rtx=%d, want 1/0/1", g.TxPkts, g.TxData, g.TxRtx)
+		}
+	})
+	t.Run("rx reply", func(t *testing.T) {
+		objs := loadTCPObjs(t)
+		setupClient(t, objs, clientOpts{}, synSent(1000))
+		s := fromPeer(false, 0, 5000, 1001, tcpSYN|tcpACK)
+		s.win = 1000
+		if ret, _ := runProg(t, objs.XdpRxTcp, buildSeg(t, s)); ret != xdpTx {
+			t.Fatalf("ret %d", ret)
+		}
+		if f := getFlow(t, objs, 0); f.RxPkts != 1 || f.RxReplies != 1 || f.TxPkts != 0 {
+			t.Fatalf("ledger rx=%d replies=%d tx=%d, want 1/1/0", f.RxPkts, f.RxReplies, f.TxPkts)
+		}
+	})
+}

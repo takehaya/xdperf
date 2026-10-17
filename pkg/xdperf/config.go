@@ -59,6 +59,10 @@ type Config struct {
 	TCPVlanID   int           // 802.1Q VLAN id; 0 = untagged
 	TCPVlanPCP  int           // 802.1Q priority
 	TCPIPID     string        // IPv4 ID: "flow" (per connection, like Linux) or "shared" (per TX CPU)
+	// TCPFlowReport is a CSV path; at the end of the run every flow's ledger
+	// (frames sent, data, retransmissions, frames received, replies) is
+	// written there. Empty = no report.
+	TCPFlowReport string
 
 	// TCP responder (--tcp-server): the TCP counterpart of --recv --swap-resp.
 	// Answers SYN / data / FIN from XDP on one listen port; no kernel socket.
@@ -129,6 +133,10 @@ func (c *Config) Validate() error {
 		if _, err := telemetry.ParseAttributes(c.OTLPAttributes); err != nil {
 			return fmt.Errorf("invalid --otlp-attributes: %w", err)
 		}
+	}
+
+	if c.TCPFlowReport != "" && !c.TCP {
+		return fmt.Errorf("--tcp-flow-report requires --tcp")
 	}
 
 	if c.TCPServer {

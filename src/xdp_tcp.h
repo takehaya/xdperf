@@ -78,6 +78,14 @@ struct tcp_flow {
     __u64 bytes_acked;  // payload bytes acked (64-bit: never derived from 32-bit seq numbers)
     __u64 last_send_ns; // last (re)transmission, for RTO
     __u64 last_ack_ns;
+    // Per-flow ledger, read by Go for --tcp-flow-report. Counted with atomic
+    // adds after the frame is built, so a frame that failed to build is not
+    // counted (it shows up in tcp_stats.build_errors instead).
+    __u64 tx_pkts;    // frames xdp_tx_tcp sent: SYN, data, FIN, retransmissions, probes, RST
+    __u64 tx_data;    // new data segments (first transmission)
+    __u64 tx_rtx;     // retransmitted data segments (RTO, dup ACK, go-back-N)
+    __u64 rx_replies; // ACK / RST frames xdp_rx_tcp bounced back for this flow
+    __u64 rx_pkts;    // frames received from the peer for this flow
 };
 
 struct tcp_cfg {
@@ -641,6 +649,7 @@ int xdp_tx_tcp(struct xdp_md *ctx)
 
     __u64 now = bpf_ktime_get_ns();
     struct tcp_tx_action act = {0};
+    struct tcp_flow *sel = NULL;
     int kind = TXA_NONE;
 
     for (int i = 0; i < TCP_TX_SCAN; i++) {
@@ -655,11 +664,13 @@ int xdp_tx_tcp(struct xdp_md *ctx)
         if (!f)
             continue;
         kind = tcp_tx_decide(f, cfg, st, now, &act);
-        if (kind != TXA_NONE && kind != TXA_CLOSED)
+        if (kind != TXA_NONE && kind != TXA_CLOSED) {
+            sel = f;
             break;
+        }
         kind = TXA_NONE;
     }
-    if (kind == TXA_NONE) {
+    if (kind == TXA_NONE || !sel) {
         st->idle_iters++;
         return XDP_DROP;
     }
@@ -668,6 +679,12 @@ int xdp_tx_tcp(struct xdp_md *ctx)
         st->build_errors++;
         return XDP_DROP;
     }
+
+    __sync_fetch_and_add(&sel->tx_pkts, 1);
+    if (kind == TXA_DATA)
+        __sync_fetch_and_add(&sel->tx_data, 1);
+    else if (kind == TXA_RTX_TO || kind == TXA_RTX_DUPACK || kind == TXA_RTX_GBN)
+        __sync_fetch_and_add(&sel->tx_rtx, 1);
 
     switch (kind) {
     case TXA_SYN:
@@ -1209,6 +1226,7 @@ int xdp_rx_tcp(struct xdp_md *ctx)
     struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
     if (!f)
         return XDP_DROP;
+    __sync_fetch_and_add(&f->rx_pkts, 1);
 
     __u64 now = bpf_ktime_get_ns();
     struct tcp_rx_resp resp = {0};
@@ -1224,6 +1242,7 @@ int xdp_rx_tcp(struct xdp_md *ctx)
     }
     if (resp.flags == TCPF_ACK)
         st->acks_sent++;
+    __sync_fetch_and_add(&f->rx_replies, 1);
     return XDP_TX;
 }
 
