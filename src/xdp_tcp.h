@@ -81,12 +81,11 @@ struct tcp_flow {
     // Per-flow ledger, read by Go for --tcp-flow-report. Counted with atomic
     // adds after the frame is built, so a frame that failed to build is not
     // counted (it shows up in tcp_stats.build_errors instead).
-    __u32 tx_pkts;    // frames xdp_tx_tcp sent: SYN, data, FIN, retransmissions, probes, RST
-    __u32 tx_data;    // new data segments (first transmission)
-    __u32 tx_rtx;     // retransmitted data segments (RTO, dup ACK, go-back-N)
-    __u32 rx_replies; // ACK / RST frames xdp_rx_tcp bounced back for this flow
-    __u32 rx_pkts;    // frames received from the peer for this flow
-    __u32 _pad2;
+    __u64 tx_pkts;    // frames xdp_tx_tcp sent: SYN, data, FIN, retransmissions, probes, RST
+    __u64 tx_data;    // new data segments (first transmission)
+    __u64 tx_rtx;     // retransmitted data segments (RTO, dup ACK, go-back-N)
+    __u64 rx_replies; // ACK / RST frames xdp_rx_tcp bounced back for this flow
+    __u64 rx_pkts;    // frames received from the peer for this flow
 };
 
 struct tcp_cfg {

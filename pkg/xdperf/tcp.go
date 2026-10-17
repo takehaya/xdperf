@@ -692,6 +692,11 @@ loop:
 	cancel()
 	wg.Wait()
 	<-statsDone // no periodic line after (or interleaved with) the final one
+	// Detach RX before the final read: it keeps answering (e.g. a
+	// retransmitted FIN) and would bump the counters while they are read.
+	if err := lrx.Close(); err != nil {
+		x.Logger.Warn("failed to detach TCP RX program", zap.Error(err))
+	}
 
 	s, statsErr := x.showTCPFinalStats(recs)
 	// The report is written even when flows failed: that is when the

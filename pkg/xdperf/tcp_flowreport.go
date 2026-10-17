@@ -41,12 +41,11 @@ func writeTCPFlowLedger(w io.Writer, flows []coreelf.BpfTcpFlow) error {
 	if err := cw.Write(tcpFlowReportHeader); err != nil {
 		return err
 	}
-	u := func(v uint32) string { return strconv.FormatUint(uint64(v), 10) }
+	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	for i, f := range flows {
 		row := []string{
 			strconv.Itoa(i), strconv.Itoa(int(f.SrcPort)), tcpFlowStateName(f.State),
-			u(f.TxPkts), u(f.TxData), u(f.TxRtx), u(f.RxPkts), u(f.RxReplies),
-			strconv.FormatUint(f.BytesAcked, 10),
+			u(f.TxPkts), u(f.TxData), u(f.TxRtx), u(f.RxPkts), u(f.RxReplies), u(f.BytesAcked),
 		}
 		if err := cw.Write(row); err != nil {
 			return err
@@ -90,11 +89,11 @@ func (x *Xdperf) writeTCPFlowReport() error {
 	}
 	var tx, data, rtx, rx, replies uint64
 	for _, fl := range flows {
-		tx += uint64(fl.TxPkts)
-		data += uint64(fl.TxData)
-		rtx += uint64(fl.TxRtx)
-		rx += uint64(fl.RxPkts)
-		replies += uint64(fl.RxReplies)
+		tx += fl.TxPkts
+		data += fl.TxData
+		rtx += fl.TxRtx
+		rx += fl.RxPkts
+		replies += fl.RxReplies
 	}
 	x.Logger.Info("tcp flow report written",
 		zap.String("path", x.cfg.TCPFlowReport),

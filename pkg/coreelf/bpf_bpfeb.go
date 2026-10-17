@@ -144,12 +144,11 @@ type BpfTcpFlow struct {
 	BytesAcked  uint64
 	LastSendNs  uint64
 	LastAckNs   uint64
-	TxPkts      uint32
-	TxData      uint32
-	TxRtx       uint32
-	RxReplies   uint32
-	RxPkts      uint32
-	Pad2        uint32
+	TxPkts      uint64
+	TxData      uint64
+	TxRtx       uint64
+	RxReplies   uint64
+	RxPkts      uint64
 }
 
 type BpfTcpSrvCfg struct {
