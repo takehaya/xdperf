@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.0](https://github.com/takehaya/xdperf/compare/v0.18.0...v0.19.0) (2026-10-17)
+
+
+### 🎉 Features
+
+* add XDP TCP stream client (--tcp) and TCP responder (--tcp-server) ([#114](https://github.com/takehaya/xdperf/issues/114)) ([5b5fc55](https://github.com/takehaya/xdperf/commit/5b5fc5571140e2e3480e1c34242e00e96aae39b2))
+* **tcp:** add a per-flow ledger and --tcp-flow-report ([#117](https://github.com/takehaya/xdperf/issues/117)) ([34c5d9f](https://github.com/takehaya/xdperf/commit/34c5d9fc7e7c12b52e3532b2c17120e7662dac3b))
+
+
+### 🐛 Bug Fixes
+
+* **tcp:** give every connection its own IPv4 ID counter ([#116](https://github.com/takehaya/xdperf/issues/116)) ([9d0bb03](https://github.com/takehaya/xdperf/commit/9d0bb039ec69ffc2dc914cab10b97616323dcf74))
+
 ## [0.18.0](https://github.com/takehaya/xdperf/compare/v0.17.0...v0.18.0) (2026-07-26)
 
 
