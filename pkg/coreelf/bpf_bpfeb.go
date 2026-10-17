@@ -94,7 +94,8 @@ type BpfTcpCfg struct {
 	VlanPcp        uint8
 	Abort          uint8
 	MaxDataRetries uint8
-	Pad            [3]uint8
+	IpIdShared     uint8
+	Pad            [2]uint8
 	PseudoSum      uint32
 	SrcIp          [4]uint32
 	DstIp          [4]uint32
@@ -130,7 +131,8 @@ type BpfTcpFlow struct {
 	SrcPort     uint16
 	Mss         uint16
 	SynRst      uint8
-	Pad         [3]uint8
+	Pad         uint8
+	IpId        uint16
 	Iss         uint32
 	SndUna      uint32
 	SndNxt      uint32

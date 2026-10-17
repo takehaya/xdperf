@@ -294,6 +294,9 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 		BytesPerFlow:   x.cfg.TCPBytes,
 		RtoNs:          uint64(x.cfg.TCPRTO.Nanoseconds()),
 	}
+	if x.cfg.TCPIPID == "shared" {
+		cfg.IpIdShared = 1
+	}
 	if int(t.l4Off) > len(cfg.HdrTmpl) || len(template) < int(t.l4Off) {
 		return fmt.Errorf("header length %d does not fit the data-plane template (%d)", t.l4Off, len(cfg.HdrTmpl))
 	}

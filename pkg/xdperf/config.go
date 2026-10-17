@@ -58,6 +58,7 @@ type Config struct {
 	TCPRTO      time.Duration // retransmission timeout
 	TCPVlanID   int           // 802.1Q VLAN id; 0 = untagged
 	TCPVlanPCP  int           // 802.1Q priority
+	TCPIPID     string        // IPv4 ID: "flow" (per connection, like Linux) or "shared" (per TX CPU)
 
 	// TCP responder (--tcp-server): the TCP counterpart of --recv --swap-resp.
 	// Answers SYN / data / FIN from XDP on one listen port; no kernel socket.
@@ -259,6 +260,9 @@ func (c *Config) validateTCP() error {
 	}
 	if c.TCPVlanPCP < 0 || c.TCPVlanPCP > 7 {
 		return fmt.Errorf("--tcp-vlan-pcp must be in 0..7")
+	}
+	if c.TCPIPID != "" && c.TCPIPID != "flow" && c.TCPIPID != "shared" {
+		return fmt.Errorf("--tcp-ip-id must be flow or shared")
 	}
 	if c.Duration < 0 {
 		return fmt.Errorf("duration must be non-negative")

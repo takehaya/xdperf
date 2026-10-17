@@ -66,7 +66,8 @@ struct tcp_flow {
     __u16 src_port;   // host byte order
     __u16 mss;        // effective MSS: min(cfg mss, peer MSS); set on SYN-ACK
     __u8 syn_rst;     // SYN_SENT: bit0 = RST sent to a stale peer, resend SYN now; bit1 = used
-    __u8 _pad[3];
+    __u8 _pad;
+    __u16 ip_id;        // IPv4 ID of the next frame (per connection, like Linux)
     __u32 iss;          // our initial sequence number
     __u32 snd_una;      // oldest unacknowledged seq
     __u32 snd_nxt;      // next seq to send (rewound to snd_una + 1 segment on RTO)
@@ -96,7 +97,8 @@ struct tcp_cfg {
     __u8 vlan_pcp;         // 802.1Q priority for tags pushed by xdp_rx_tcp
     __u8 abort;            // 1 = reset every open flow with RST and stop (Go: drain timeout / 2nd signal)
     __u8 max_data_retries; // consecutive RTOs before a flow gives up with RST
-    __u8 _pad[3];
+    __u8 ip_id_shared;     // 1 = one IPv4 ID counter per TX CPU (interleaved flows defeat GRO)
+    __u8 _pad[2];
     // Go rewrites the whole struct to flip drain/abort while TX/RX run; every
     // other field keeps its value, so a torn read is harmless.
     __u32 pseudo_sum; // 16-bit word sum of src+dst address (pseudo header), unfolded
@@ -251,6 +253,7 @@ struct tcp_tx_action {
     __u16 src_port;
     __u8 flags;
     __u8 kind;
+    __u16 ip_id;
 };
 
 static __always_inline int tcp_flow_open(__u8 state)
@@ -499,6 +502,8 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
         break;
     }
 out:
+    if (kind != TXA_NONE && kind != TXA_CLOSED)
+        a->ip_id = f->ip_id++;
     bpf_spin_unlock(&f->lock);
     a->kind = kind;
     return kind;
@@ -601,7 +606,10 @@ static __always_inline int tcp_tx_build(struct xdp_md *ctx, const struct tcp_cfg
         return -1;
     if (cfg->ip_version == 4) {
         put_be16(ih + 2, (__u16)(20 + tcp_len));
-        put_be16(ih + 4, (__u16)cs->ip_id++);
+        // Per-connection IDs keep each flow's IDs consecutive, so GRO on
+        // the receiving side can merge its segments as it does for Linux
+        // TCP; one counter per CPU (ip_id_shared) breaks that on purpose.
+        put_be16(ih + 4, cfg->ip_id_shared ? (__u16)cs->ip_id++ : a->ip_id);
         ih[10] = 0;
         ih[11] = 0;
         __u64 isum = 0;
