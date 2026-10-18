@@ -14,6 +14,8 @@ ENTRY_POINT_DIR_PLUGINS=plugins
 TARGETS=$(notdir $(wildcard $(ENTRY_POINT_DIR)/*))
 PLUGIN_TARGETS := $(notdir $(shell find $(ENTRY_POINT_DIR_PLUGINS) -mindepth 1 -maxdepth 1 -type d))
 
+C_PLUGIN_TARGETS := $(filter %.c,$(PLUGIN_TARGETS))
+
 GREEN  := $(shell tput -Txterm setaf 2)
 YELLOW := $(shell tput -Txterm setaf 3)
 WHITE  := $(shell tput -Txterm setaf 7)
@@ -36,13 +38,22 @@ $(TARGETS):
 	$(GOCMD) build -o out/bin/$@ ./cmd/$@/
 
 .PHONY: build-plugins
-build-plugins: $(PLUGIN_TARGETS) ## Build TinyGo plugins
+build-plugins: $(PLUGIN_TARGETS) ## Build Go, TinyGo, and available C plugins
 %.tinygo:
 	@echo "Building TinyGo plugin: $@"
 	cd plugins/$@ && $(TINYGOCMD) build -scheduler=none -target=wasip1 -buildmode=c-shared -o ../../out/bin/$@.wasm .
 %.go:
 	@echo "Building Go plugin: $@"
 	cd plugins/$@ && GOOS=wasip1 GOARCH=wasm $(GOCMD) build -buildmode=c-shared -o ../../out/bin/$@.wasm .
+
+.PHONY: $(C_PLUGIN_TARGETS)
+$(C_PLUGIN_TARGETS):
+	@if command -v "$(CLANG)" >/dev/null 2>&1 && command -v wasm-ld >/dev/null 2>&1; then \
+		echo "Building C plugin: $@"; \
+		$(MAKE) -C plugins/$@ CLANG="$(CLANG)"; \
+	else \
+		echo "Warning: skipping C plugin $@: $(CLANG) and wasm-ld (lld) are required" >&2; \
+	fi
 
 .PHONY: goreleaser
 goreleaser: ## build with goreleaser

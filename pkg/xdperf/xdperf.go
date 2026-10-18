@@ -163,6 +163,9 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 		zap.Ints("selected_cpus", cpus),
 		zap.Int("parallelism", cfg.Parallelism),
 	)
+	if cfg.Sender {
+		warnVethQueues(logger, cfg.Device, len(cpus))
+	}
 
 	xd = &Xdperf{
 		Logger:        logger,
