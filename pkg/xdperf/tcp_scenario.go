@@ -23,6 +23,9 @@ func tcpScenarioRequest(c Config) (guest.TCPScenarioRequest, error) {
 		if err := json.Unmarshal([]byte(c.PluginConfig), &fields); err != nil {
 			return guest.TCPScenarioRequest{}, fmt.Errorf("invalid plugin config: %w", err)
 		}
+		if fields == nil {
+			return guest.TCPScenarioRequest{}, fmt.Errorf("invalid plugin config: expected a JSON object, got null")
+		}
 		config = json.RawMessage(c.PluginConfig)
 	}
 	return guest.TCPScenarioRequest{

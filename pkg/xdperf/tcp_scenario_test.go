@@ -209,10 +209,17 @@ func TestTCPScenarioConfigPreservesJSON(t *testing.T) {
 	if string(received.Config) != c.PluginConfig {
 		t.Fatalf("config changed: %s", received.Config)
 	}
-	for _, invalid := range []string{`[]`, `42`, `{"x":1} {}`} {
+	for _, invalid := range []string{`null`, ` null `, `[]`, `42`, `{"x":1} {}`} {
 		c.PluginConfig = invalid
 		if _, err := tcpScenarioRequest(c); err == nil {
 			t.Fatalf("accepted config %s", invalid)
+		}
+	}
+	for _, valid := range []string{"", `{}`} {
+		c.PluginConfig = valid
+		req, err := tcpScenarioRequest(c)
+		if err != nil || string(req.Config) != `{}` {
+			t.Fatalf("empty object config %q: request=%+v, err=%v", valid, req, err)
 		}
 	}
 }
