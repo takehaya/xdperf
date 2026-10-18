@@ -471,3 +471,56 @@ par スイープ (8キュー・64B): par2=14.9 / par4=29.8 / par8=59.5 / par16=6
 - Kubernetes 的な含意: 実際の Pod の veth はほぼ全 CNI がデフォルト 1 キューで作るため、
   Pod 間通信の XDP 性能はカーネルの限界ではなく CNI が作る veth の設定で頭打ちになっている。
   「61Mpps は現実の Pod でも出るのか?」への答えは「CNI が multi-queue veth を作れば」。
+
+### TCP モード (--tcp) での症状とチューニング 20261019
+
+live frames で送ったフレームは、送信に使った CPU に応じて、対向 veth の受信キューにある xdp_ring に入る。
+xdp_ring の容量は 256 フレームである。
+複数の worker が 1 キューの veth に高いレートで送信すると、worker が同じリングを取り合い、リングが溢れる。
+溢れたフレームは落ち、TCP モードでは再送が発生する。
+worker 数は --parallelism で指定する。
+
+この症状は、次の点で見分けられる。
+
+- 対向の `ethtool -S` で `tx_queue_N_xdp_xmit_errors` が増える
+- xdperf の 1 秒ごとの表示で `rtx` が増え、worker 数を増やしても速度が上がらない
+- worker 数が veth の使用中の受信キュー数を超えると、xdperf が起動時に警告を出す。使用中のキュー数は `/sys/class/net/<dev>/queues/rx-*` の数で確認できる。送信レートが低ければリングは溢れないので、警告が出てもフレームが落ちていない場合はある
+
+対策として、veth は worker 数以上のキューを持つように作成する。
+examples の veth のキュー数は、`VETH_QUEUES` で指定できる。
+
+```shell
+sudo VETH_QUEUES=8 examples/tcpstream/setup.sh
+```
+
+実測には、Cilium なしの veth と native XDP を使い、64 フロー、MSS 1448 で測定した。
+送信速度は、1 キューの 1 worker で 8.7 Gbps、8 キューの 8 worker で 81.8 Gbps となり、どちらも再送はなかった。
+worker 数をキュー数より多い 16 worker / 8 キューにすると、リングが再び溢れ、大量の再送が発生した。
+
+### Pod (CNI が作る veth) の場合 20261019
+
+Cilium 1.20.3 の veth モードが作る Pod の veth は、作成時のキュー数の上限が 32 で、実際に使っていたのは 1 キューだった。
+Pod の eth0 で `ip -d link` を実行すると `numtxqueues 32 numrxqueues 32` と表示されたが、`/sys/class/net/eth0/queues` には `rx-0 tx-0` だけがあった。
+
+使用中のキュー数は、上限の範囲内なら veth を作り直さずに `ethtool -L` で増やせる。
+変更は、Pod 内の eth0 とホスト側の lxc の両方に対して行う。
+Pod 内での変更には NET_ADMIN が要る。
+
+```shell
+# Pod の中
+ethtool -L eth0 rx 4 tx 4
+# ホスト (ノード) 側
+ethtool -L <lxc の名前> rx 4 tx 4
+```
+
+次の表は、kind 上で Cilium 1.20.3、generic XDP、64 フローの条件で各 1 回測った結果である。
+kind では Cilium のデータパスが速度を制限しているため、キューを増やした効果は小さい。
+1 キューのままでも、このレートでは再送は発生しなかった。
+
+| キュー数 | 1 worker | 4 worker |
+|---|---:|---:|
+| 1 (Cilium が作ったまま) | 83,488 segs/s | 306,372 segs/s |
+| 4 (ethtool -L) | 84,528 segs/s | 339,691 segs/s |
+
+CNI が 1 キューだけを使う設定のままだと、Pod 内から高いレートで送信したときに、受信側の処理が 1 キューに集中する。
+実機の NIC と組み合わせた環境でキュー数の増加がどこまで効くかは、まだ確かめていない。

@@ -70,6 +70,14 @@ sudo ./teardown.sh
   trick (the responder is itself an XDP program); the `linux*` cases need
   it on the *transmit* veth instead, which the script does by running
   `xdperf-sink -proto udp -xdp-pass-dev tcp-tx` as a mere attacher.
+- **One queue per sender CPU.** The setup creates a single-queue veth pair
+  by default. With `--parallelism N > 1`, workers on different CPUs push
+  live frames into the same 256-entry `xdp_ring` of the peer and overflow it
+  (`tx_queue_0_xdp_xmit_errors` in `ethtool -S`), which TCP turns into
+  retransmissions; xdperf warns about it at startup. Run the setup with
+  `VETH_QUEUES=N` (or more) to give each worker its own queue: on one box
+  this took a 64-flow run from 8.7 Gbps with one worker to 81.8 Gbps with
+  eight, with no retransmissions.
 - **Lost final ACKs.** With many flows the veth ring also drops some of the
   sender's final ACKs. The responder has no timer to retransmit its FIN+ACK;
   its control-plane sweeper retires such `LAST-ACK` entries after
