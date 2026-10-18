@@ -128,7 +128,7 @@ var pluginInitRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
 var pluginInitResponseFn = makeReadHandler(func(s *GeneratorStack, b []byte) {
 	s.GeneratorInitResponse = b
 	if s.InitResponseChan != nil {
-		s.InitResponseChan <- b
+		sendResponse(s.InitResponseChan, b)
 	}
 })
 
@@ -139,7 +139,7 @@ var pluginProcessRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
 var pluginProcessResponseFn = makeReadHandler(func(s *GeneratorStack, b []byte) {
 	s.GeneratorProcessResponse = b
 	if s.ProcessResponseChan != nil {
-		s.ProcessResponseChan <- b
+		sendResponse(s.ProcessResponseChan, b)
 	}
 })
 
@@ -150,9 +150,19 @@ var pluginCleanupRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
 var pluginCleanupResponseFn = makeReadHandler(func(s *GeneratorStack, b []byte) {
 	s.GeneratorCleanupResponse = b
 	if s.CleanupResponseChan != nil {
-		s.CleanupResponseChan <- b
+		sendResponse(s.CleanupResponseChan, b)
 	}
 })
+
+// The export runs synchronously; its caller consumes the response after return.
+// A second response must trap, since blocking here also blocks cancellation.
+func sendResponse(ch chan []byte, b []byte) {
+	select {
+	case ch <- b:
+	default:
+		panic("plugin sent more than one response")
+	}
+}
 
 func getShutdownRequestedFn(ctx context.Context, mod api.Module, stack []uint64) {
 	// Read the shutdown requested flag from the stack

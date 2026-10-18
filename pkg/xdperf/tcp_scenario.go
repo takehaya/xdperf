@@ -16,11 +16,14 @@ import (
 )
 
 func tcpScenarioRequest(c Config) (guest.TCPScenarioRequest, error) {
-	config := make(map[string]interface{})
+	config := json.RawMessage(`{}`)
 	if c.PluginConfig != "" {
-		if err := json.Unmarshal([]byte(c.PluginConfig), &config); err != nil {
+		// Validate the object without converting plugin-owned numbers to float64.
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(c.PluginConfig), &fields); err != nil {
 			return guest.TCPScenarioRequest{}, fmt.Errorf("invalid plugin config: %w", err)
 		}
+		config = json.RawMessage(c.PluginConfig)
 	}
 	return guest.TCPScenarioRequest{
 		Mode: "tcp_scenario", SupportedVersions: []int{1},

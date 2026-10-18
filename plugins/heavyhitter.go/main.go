@@ -33,11 +33,7 @@ func plugin_process(_, _, _, _ uint32) int32 {
 		SmallBytes string `json:"small_bytes"`
 		LargeBytes string `json:"large_bytes"`
 	}{"192.168.110.2", 5201, "42", "65536", "67108864"}
-	b, err := json.Marshal(req.Config)
-	if err != nil {
-		panic(err)
-	}
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	if err := json.Unmarshal(req.Config, &cfg); err != nil {
 		panic(err)
 	}
 	s := &guest.TCPScenario{

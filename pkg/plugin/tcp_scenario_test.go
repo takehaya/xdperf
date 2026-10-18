@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -28,6 +29,9 @@ func TestTCPScenarioResponseContract(t *testing.T) {
 		{"no body", `{"template_type":"tcp_scenario"}`, true, true},
 		{"null body", `{"template_type":"tcp_scenario","tcp_scenario":null}`, true, true},
 		{"wrong type", strings.Replace(valid, `"65536"`, `65536`, 1), true, true},
+		{"empty duration", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":""`, 1), true, true},
+		{"null duration", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":null`, 1), true, true},
+		{"positive duration", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":"1"`, 1), true, false},
 		{"unknown field", strings.Replace(valid, `"version":1`, `"version":1,"arrivals":[]`, 1), true, true},
 		{"unknown flow field", strings.Replace(valid, `"bytes":`, `"typo":0,"bytes":`, 1), true, true},
 		{"unknown envelope", strings.Replace(valid, `"template_type":`, `"typo":0,"template_type":`, 1), true, true},
@@ -135,7 +139,7 @@ func TestHeavyHitterPluginIntegration(t *testing.T) {
 	req := guest.TCPScenarioRequest{
 		Mode: "tcp_scenario", SupportedVersions: []int{1}, Capabilities: []string{"static_flows", "zero_payload"}, DeviceName: "lo",
 		Limits: guest.TCPScenarioLimits{MaxSlots: 4, MaxEndpoints: 1, MaxResponseBytes: maxPluginOutputBytes},
-		Config: map[string]interface{}{"address": "2001:db8::2", "port": 5202, "seed": "18446744073709551615", "padding": strings.Repeat("x", 4096)},
+		Config: json.RawMessage(fmt.Sprintf(`{"address":"2001:db8::2","port":5202,"seed":"18446744073709551615","padding":%q}`, strings.Repeat("x", 4096))),
 	}
 	s, err := gen.GenerateTCPScenario(ctx, req)
 	if err != nil {
@@ -153,8 +157,20 @@ func TestHeavyHitterPluginIntegration(t *testing.T) {
 			t.Fatalf("flow %d = %+v", i, f)
 		}
 	}
+	// The guest must decode plugin-owned integers without a float64 round trip.
+	req.Config = json.RawMessage(`{"port":9007199254740993}`)
+	precise, err := gen.GenerateTCPScenario(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(precise.Endpoints[0].Port) != 9007199254740993 {
+		t.Fatalf("rounded plugin config: %+v", precise.Endpoints[0])
+	}
 	// Manager owns cleanup. Unload followed by Close must call it exactly once.
 	if err := m.UnloadPlugin(ctx, "heavyhitter.go"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
 	count := 0

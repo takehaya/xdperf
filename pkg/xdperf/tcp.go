@@ -142,9 +142,12 @@ func (x *Xdperf) resolveTCPTarget() (*tcpTarget, error) {
 	egressName := egress.Attrs().Name
 	if route.LinkIndex != x.Device.Index {
 		// A VLAN sub-interface of --device is the expected case when tagging;
-		// anything else is probably a misconfiguration but still allowed.
+		// Preserve the legacy CLI warning, but reject mismatched scenario routes.
 		parent := egress.Attrs().ParentIndex
-		if _, isVlan := egress.(*netlink.Vlan); !(isVlan && parent == x.Device.Index) {
+		if _, isVlan := egress.(*netlink.Vlan); !isVlan || parent != x.Device.Index {
+			if x.cfg.PluginName != "" {
+				return nil, fmt.Errorf("TCP scenario route via %s does not use device %s or its VLAN child", egressName, x.Device.Name)
+			}
 			x.Logger.Warn("route to --tcp-dst leaves through a different interface than --device; frames are still sent on --device",
 				zap.String("route_dev", egressName), zap.String("device", x.Device.Name))
 		}

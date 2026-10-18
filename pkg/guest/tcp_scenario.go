@@ -1,14 +1,16 @@
 package guest
 
+import "encoding/json"
+
 // TCPScenarioRequest describes the host's static TCP scenario capabilities.
 // Config is kept separate from host-reserved fields and is plugin-specific JSON.
 type TCPScenarioRequest struct {
-	Mode              string                 `json:"mode"`
-	SupportedVersions []int                  `json:"supported_versions"`
-	Capabilities      []string               `json:"capabilities"`
-	DeviceName        string                 `json:"device_name"`
-	Limits            TCPScenarioLimits      `json:"limits"`
-	Config            map[string]interface{} `json:"config"`
+	Mode              string            `json:"mode"`
+	SupportedVersions []int             `json:"supported_versions"`
+	Capabilities      []string          `json:"capabilities"`
+	DeviceName        string            `json:"device_name"`
+	Limits            TCPScenarioLimits `json:"limits"`
+	Config            json.RawMessage   `json:"config"`
 }
 
 type TCPScenarioLimits struct {

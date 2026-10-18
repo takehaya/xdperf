@@ -92,6 +92,19 @@ func decodeGeneratorResponse(b []byte, tcp bool) (*guest.GeneratorProcessRespons
 		if resp.TemplateType != guest.GeneratorTemplateTypeTCPScenario || resp.TCPScenario == nil {
 			return nil, fmt.Errorf("--tcp plugin must return template_type tcp_scenario and its body")
 		}
+		// A string's zero value cannot distinguish omission from null or "".
+		// Inspect presence at the wire boundary before semantic validation.
+		var wire struct {
+			TCPScenario struct {
+				DurationNS json.RawMessage `json:"duration_ns"`
+			} `json:"tcp_scenario"`
+		}
+		if err := json.Unmarshal(b, &wire); err != nil {
+			return nil, fmt.Errorf("invalid plugin response: %w", err)
+		}
+		if wire.TCPScenario.DurationNS != nil && resp.TCPScenario.DurationNS == "" {
+			return nil, fmt.Errorf("duration_ns must be a nonempty decimal string when specified")
+		}
 		if len(resp.RawPacketTemplate) != 0 || len(resp.VariablePacketTemplate.Variants) != 0 || resp.VariablePacketTemplate.Pattern != "" {
 			return nil, fmt.Errorf("tcp_scenario cannot include raw or variable templates")
 		}

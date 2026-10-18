@@ -10,3 +10,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/tcp_scenario.sh"
 
 run_tcp_test
+
+# Include the Wasm scenario and per-flow CSV checks in the standard E2E suite.
+"${SCRIPT_DIR}/heavyhitter.sh"

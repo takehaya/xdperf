@@ -1,6 +1,7 @@
 package xdperf
 
 import (
+	"encoding/json"
 	"math"
 	"net"
 	"reflect"
@@ -187,5 +188,42 @@ func TestTCPScenarioMaps(t *testing.T) {
 		if cfg.FlowCount != 4 || cfg.DstPort != 5201 {
 			t.Fatalf("cfg = %+v", cfg)
 		}
+	}
+}
+
+func TestTCPScenarioConfigPreservesJSON(t *testing.T) {
+	c := tcpTestConfig()
+	c.PluginConfig = `{"custom_id":9007199254740993,"nested":{"n":18446744073709551615}}`
+	req, err := tcpScenarioRequest(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received guest.TCPScenarioRequest
+	if err := json.Unmarshal(wire, &received); err != nil {
+		t.Fatal(err)
+	}
+	if string(received.Config) != c.PluginConfig {
+		t.Fatalf("config changed: %s", received.Config)
+	}
+	for _, invalid := range []string{`[]`, `42`, `{"x":1} {}`} {
+		c.PluginConfig = invalid
+		if _, err := tcpScenarioRequest(c); err == nil {
+			t.Fatalf("accepted config %s", invalid)
+		}
+	}
+}
+
+func TestTCPScenarioRejectsOtherRouteDevice(t *testing.T) {
+	// Loopback has a deterministic local route and requires no test topology.
+	x := &Xdperf{cfg: tcpTestConfig(), Device: &net.Interface{Index: -1, Name: "scenario-test"}, Logger: zap.NewNop()}
+	x.cfg.PluginName = "heavyhitter.go"
+	x.cfg.TCPDst = "127.0.0.1:5201"
+	_, err := x.resolveTCPTarget()
+	if err == nil || !strings.Contains(err.Error(), "does not use device scenario-test") {
+		t.Fatalf("route mismatch: %v", err)
 	}
 }
