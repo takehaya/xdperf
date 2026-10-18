@@ -25,43 +25,43 @@ typedef __UINT32_TYPE__ vx_u32;
 #define VX_INNER_L4_OFF (VX_ETH_LEN + VX_IP4_LEN)
 
 struct vxlan_hdr {
-	vx_u8 flags;
-	vx_u8 rsvd0[3];
-	vx_u8 vni[3];
-	vx_u8 rsvd1;
+    vx_u8 flags;
+    vx_u8 rsvd0[3];
+    vx_u8 vni[3];
+    vx_u8 rsvd1;
 };
 
 /* The inner 5-tuple a per-flow plugin keys on (network byte order). */
 struct vx_inner_key {
-	vx_u32 saddr;
-	vx_u32 daddr;
-	vx_u16 sport;
-	vx_u16 dport;
-	vx_u32 vni;
+    vx_u32 saddr;
+    vx_u32 daddr;
+    vx_u16 sport;
+    vx_u16 dport;
+    vx_u32 vni;
 };
 
 static inline vx_u32 vxlan_vni(const struct vxlan_hdr *h)
 {
-	return ((vx_u32)h->vni[0] << 16) | ((vx_u32)h->vni[1] << 8) | h->vni[2];
+    return ((vx_u32)h->vni[0] << 16) | ((vx_u32)h->vni[1] << 8) | h->vni[2];
 }
 
 static inline void vxlan_set_vni(struct vxlan_hdr *h, vx_u32 vni)
 {
-	h->flags = VXLAN_FLAG_VNI;
-	h->rsvd0[0] = h->rsvd0[1] = h->rsvd0[2] = 0;
-	h->vni[0] = (vx_u8)(vni >> 16);
-	h->vni[1] = (vx_u8)(vni >> 8);
-	h->vni[2] = (vx_u8)vni;
-	h->rsvd1 = 0;
+    h->flags = VXLAN_FLAG_VNI;
+    h->rsvd0[0] = h->rsvd0[1] = h->rsvd0[2] = 0;
+    h->vni[0] = (vx_u8)(vni >> 16);
+    h->vni[1] = (vx_u8)(vni >> 8);
+    h->vni[2] = (vx_u8)vni;
+    h->rsvd1 = 0;
 }
 
 /* Big-endian loads from byte buffers that may be unaligned (packet data). */
 static inline vx_u16 vx_load16(const vx_u8 *p)
 {
-	return (vx_u16)(p[0] << 8 | p[1]);
+    return (vx_u16)(p[0] << 8 | p[1]);
 }
 
 static inline vx_u32 vx_load32(const vx_u8 *p)
 {
-	return (vx_u32)p[0] << 24 | (vx_u32)p[1] << 16 | (vx_u32)p[2] << 8 | p[3];
+    return (vx_u32)p[0] << 24 | (vx_u32)p[1] << 16 | (vx_u32)p[2] << 8 | p[3];
 }

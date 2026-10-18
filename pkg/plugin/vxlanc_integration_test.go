@@ -2,7 +2,9 @@ package plugin
 
 import (
 	"context"
+	"maps"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/gopacket"
@@ -91,6 +93,32 @@ func TestVXLANCPluginIntegration(t *testing.T) {
 			v.Params[0].ByteRange.Start != 10000 || v.Params[0].ByteRange.End != 10000+16383 {
 			t.Fatalf("params %+v", v.Params)
 		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		key   string
+		value any
+	}{
+		{"short MAC", "src_mac", "02"},
+		{"long MAC", "src_mac", "02:00:00:00:00:01:ff"},
+		{"truncated MAC", "src_mac", "02:00:00:00:00:01" + strings.Repeat("a", 40)},
+		{"IPv4 overflow", "src_ip", "4294967297.0.0.1"},
+		{"negative port", "src_port", -1},
+		{"fractional port", "src_port", 1.5},
+		{"string port", "src_port", "49152"},
+		{"integer overflow", "vni", 1e20},
+		{"flow range overflow", "inner_flows", ^uint64(0)},
+		{"base range overflow", "inner_sport_base", ^uint64(0)},
+		{"empty flow range", "inner_flows", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := maps.Clone(input)
+			invalid[tc.key] = tc.value
+			if _, err := gen.GenerateTemplate(ctx, invalid); err == nil {
+				t.Fatalf("invalid %s accepted: %v", tc.key, tc.value)
+			}
+		})
 	}
 
 	// Missing required keys are reported, not turned into a bogus packet.
