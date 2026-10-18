@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"os"
 	"strings"
@@ -53,8 +54,10 @@ func TestVXLANCPluginIntegration(t *testing.T) {
 		"count":        1000,
 		"device_name":  "lo",
 	}
-	// Several calls: the bump allocator must rewind between them.
-	for i := 0; i < 3; i++ {
+	// Repeated calls must rewind the bump allocator. String values matching
+	// config keys (or containing escaped quotes) must not shadow actual keys.
+	for i, device := range []string{"lo", "vni", "src_ip", "inner_src_ip", `ignored "vni":0`} {
+		input["device_name"] = device
 		r, err := gen.GenerateTemplate(ctx, input)
 		if err != nil {
 			t.Fatalf("GenerateTemplate #%d: %v", i, err)
@@ -107,7 +110,7 @@ func TestVXLANCPluginIntegration(t *testing.T) {
 		{"negative port", "src_port", -1},
 		{"fractional port", "src_port", 1.5},
 		{"string port", "src_port", "49152"},
-		{"integer overflow", "vni", 1e20},
+		{"integer overflow", "vni", json.Number("18446744073709551616")},
 		{"flow range overflow", "inner_flows", ^uint64(0)},
 		{"base range overflow", "inner_sport_base", ^uint64(0)},
 		{"empty flow range", "inner_flows", 0},

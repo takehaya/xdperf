@@ -74,19 +74,39 @@ static void logs(vx_u32 level, const char *s)
 }
 
 /* ---- minimal JSON reading: flat objects of numbers and strings ---- */
+static int json_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
 static const char *json_find(const char *j, size_t n, const char *key)
 {
     size_t k = slen(key);
-    for (size_t i = 0; i + k + 2 < n; i++) {
-        if (j[i] != '"' || j[i + k + 1] != '"')
+    for (size_t i = 0; i < n; i++) {
+        if (j[i] != '"')
+            continue;
+        size_t start = ++i;
+        /* Skip the whole string, including escaped quotes in values. */
+        while (i < n && j[i] != '"') {
+            if (j[i] == '\\' && i + 1 < n)
+                i++;
+            i++;
+        }
+        if (i == n || i - start != k)
             continue;
         size_t m = 0;
-        while (m < k && j[i + 1 + m] == key[m])
+        while (m < k && j[start + m] == key[m])
             m++;
         if (m != k)
             continue;
-        size_t p = i + k + 2;
-        while (p < n && (j[p] == ' ' || j[p] == ':'))
+        size_t p = i + 1;
+        while (p < n && json_space(j[p]))
+            p++;
+        /* A matching string value is not a key. Keep looking. */
+        if (p == n || j[p] != ':')
+            continue;
+        p++;
+        while (p < n && json_space(j[p]))
             p++;
         return p < n ? j + p : 0;
     }
