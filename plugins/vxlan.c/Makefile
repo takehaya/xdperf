@@ -4,5 +4,6 @@ CLANG ?= clang
 OUT ?= ../../out/bin/vxlan.c.wasm
 
 $(OUT): main.c vxlan_shared.h
+	mkdir -p $(dir $@)
 	$(CLANG) --target=wasm32 -O2 -nostdlib -ffreestanding -Wall -Wextra \
 		-Wl,--no-entry -Wl,--export-dynamic -Wl,--allow-undefined -o $@ main.c

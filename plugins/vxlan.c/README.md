@@ -18,12 +18,32 @@ turn unaligned copies into a compile-time trap; use `vx_load16`/`vx_load32`.
 
 ## Build
 
-Needs clang with the WebAssembly target and `wasm-ld` (lld):
+Needs clang with the WebAssembly target, `wasm-ld` (lld), and make.
+On Debian or Ubuntu, install them with `sudo apt-get install clang lld make`.
+No libc or WASI SDK is needed.
 
 ```sh
 make -C plugins/vxlan.c            # -> out/bin/vxlan.c.wasm
-go test ./pkg/plugin -run TestVXLANCPluginIntegration
+go test -v -exec sudo -race ./pkg/plugin -run TestVXLANCPluginIntegration
 ```
+
+The build creates `out/bin` if needed.
+Set `CLANG` to select another compiler, for example `make -C plugins/vxlan.c CLANG=clang-19`.
+The top-level `make build-plugins` also builds this plugin alongside the Go and TinyGo plugins.
+If clang or `wasm-ld` is missing, it prints a warning and skips only the C plugin.
+A compiler or linker error still fails the build.
+The direct `make -C plugins/vxlan.c` command requires both tools and fails if either is missing.
+
+To build in Docker without installing the tools on the host:
+
+```sh
+docker run --rm -v "$PWD:/w" -w /w debian:trixie-slim sh -c \
+  'apt-get update -qq && apt-get install -y -qq clang lld make >/dev/null && make -C plugins/vxlan.c'
+```
+
+Run these commands from the repository root.
+The integration test skips when `out/bin/vxlan.c.wasm` is absent.
+CI installs clang and lld and builds the plugin before running the test suite, so this test runs in CI.
 
 ## Config
 
