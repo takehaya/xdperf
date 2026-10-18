@@ -88,3 +88,23 @@ sudo ./teardown.sh
   path drains more slowly than the untagged one. Expect retransmissions in
   the VLAN cases; `WINDOW` keeps them bounded. They do not affect the
   byte-count comparison because every lost segment is retransmitted.
+
+## Wasm heavy hitter
+
+Build `plugins/heavyhitter.go` with `make build-plugins` (or use the Go command
+in [tcp_stream.md](../../docs/ja/tcp_stream.md)), then run:
+
+```bash
+sudo ./setup.sh
+sudo ./heavyhitter.sh
+sudo env HH_CASES='linux6 linux4vlan linux6vlan xdp6 xdp4vlan xdp6vlan loss4' ./heavyhitter.sh
+sudo ./teardown.sh
+```
+
+The default cases are `linux4` and `xdp4`. Each case sends four flows with
+byte targets `[65536, 65536, 65536, 67108864]` from the Wasm plugin, using MSS
+1024 and one worker. The test checks the existing CSV's `bytes_acked`,
+`tx_data` (`[64, 64, 64, 65536]`), and terminal state, plus the receiver's
+four accepted/closed connections and 67,305,472 bytes. `loss4` also requires
+nonzero `tx_rtx`. Reports and sender logs remain under
+`/run/xdperf-examples/heavyhitter-<case>.{csv,log}`.

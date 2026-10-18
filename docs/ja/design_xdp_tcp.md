@@ -33,7 +33,8 @@ iperf3 のように、**実在する Linux の TCP スタック (任意の TCP �
 ### 非目標 (今回やらない)
 
 QinQ、SACK、動的ウィンドウ/輻輳制御、双方向データ、keep-alive 上の複数リクエスト、
-iperf3 制御プロトコル互換、プラグイン (WASM) からの TCP テンプレート定義、`--rx-device` 分離。
+iperf3 制御プロトコル互換、プラグイン (WASM) からの TCP パケットの直接定義、`--rx-device` 分離。
+Wasm による起動時の送信量指定は第16節に記載する。
 これらは後続で検討する。特に「クローズ後に新しいポートで再接続し続ける」モード (接続レート測定) は、
 本設計の状態機械にそのまま足せるので第 2 段階とする。
 
@@ -240,7 +241,8 @@ TIME_WAIT は持たない。DONE になったフローのポートに遅延パ�
 
 既存フラグの扱い: `--parallelism` は worker CPU 数 (フローを分配)。`--duration` は終了時刻 (0 なら全フロー DONE まで)。
 `--pps` はイテレーション数の上限 (= セグメント送出レートの上限) として既存の ticker ループを使う。
-`--count`、`--plugin*`、`--infinite` は `--tcp` と併用不可 (Validate で弾く)。
+`--count`、`--infinite` は `--tcp` と併用不可 (Validate で弾く)。
+`--plugin` を指定する場合は、第16節の静的シナリオとして扱う。
 
 ### 処理の流れ
 
@@ -588,3 +590,101 @@ codex (差分を標準入力で渡す形。この環境ではサンドボック�
 | 全フローが失敗しても終了コードが 0 | `failed > 0` ならエラーを返す (中断・再送断念・FIN_WAIT_2 タイムアウトの内訳つき) |
 | 統計表示の goroutine の終了を待っていない | 終了を待ってから最終統計を出す (クライアント、レスポンダとも) |
 | 最低対応カーネルで TCP データプレーンのテストを回していない | vimto の全カーネルで `-run TestTcp` を実行 |
+
+## 16. Wasm による静的 TCP シナリオ
+
+### 16.1 責務と既存実装との関係
+
+`--tcp --plugin <name>.<lang>` は、起動時の `plugin_process` でシナリオを一度取得し、Go が全体を検証してから TCP マップを初期化する。
+BPF の構造体、状態遷移、カウンタと CSV の列は変更しない。
+PR #117 の `tcp_flow.bytes_target` とフロー別カウンタ、`--tcp-flow-report` をそのまま利用する。
+記録機能がないという旧設計草案の記述は、この実装には当てはまらない。
+
+Go は宛先を既存の経路探索で解決し、シナリオの配列順にフローを配置する。
+`flows[i].bytes` を `tcp_flow_map[i].bytes_target` に設定し、送信元ポートは `port_base + i` とする。
+worker への割り当ては既存のインターリーブ方式を維持する。
+シナリオの ID と CSV の対応は配列順で確定し、新しい CSV スキーマや別の記録機能は追加しない。
+
+### 16.2 要求と応答
+
+ABI は既存の `plugin_init`、`plugin_process`、`plugin_cleanup` とメモリ受け渡しを使う。
+init の `plugin_config` は従来どおり JSON の `[]byte` 表現であり、process の設定は予約フィールドから分離した `config` オブジェクトに渡す。
+`Count` を接続数に転用しない。
+
+process 要求の例（ポート開始値 10,000）:
+
+```json
+{
+  "mode": "tcp_scenario",
+  "supported_versions": [1],
+  "capabilities": ["static_flows", "zero_payload"],
+  "device_name": "eth0",
+  "limits": {
+    "max_slots": 55536,
+    "max_endpoints": 1,
+    "max_response_bytes": 33554432
+  },
+  "config": {"address": "192.168.110.2", "port": 5201}
+}
+```
+
+`max_slots` は BPF の物理上限ではなく、`65536 - port_base` の使用可能な接続数を広告する。
+新プラグインは `mode`、バージョンと能力を確認し、未対応ホストには処理を拒否する。
+
+応答の例:
+
+```json
+{
+  "template_type": "tcp_scenario",
+  "tcp_scenario": {
+    "version": 1,
+    "requires": ["static_flows", "zero_payload"],
+    "scenario_id": "heavy-hitter-4",
+    "seed": "42",
+    "max_active": 4,
+    "endpoints": [{"id": "sink", "address": "192.168.110.2", "port": 5201}],
+    "payloads": [{"id": "zero", "kind": "zero"}],
+    "flows": [
+      {"id": "f0", "endpoint": "sink", "bytes": "65536", "payload": "zero", "start_ns": "0"},
+      {"id": "f1", "endpoint": "sink", "bytes": "65536", "payload": "zero", "start_ns": "0"},
+      {"id": "f2", "endpoint": "sink", "bytes": "65536", "payload": "zero", "start_ns": "0"},
+      {"id": "f3", "endpoint": "sink", "bytes": "67108864", "payload": "zero", "start_ns": "0"}
+    ]
+  }
+}
+```
+
+Go SDK の応答には空の `raw_packet_template` と `variable_packet_template` が含まれる場合がある。
+空の本体は許容するが、有効な Raw/Variable テンプレートとの併記は拒否する。
+TCP モードで別の種別を返す場合、および通常のパケット生成モードで `tcp_scenario` を返す場合もエラーにする。
+
+### 16.3 検証と実行上限
+
+シナリオは送信前に次の規則で検証する。
+
+| 項目 | 第1段階の契約 |
+|---|---|
+| version | 整数の `1` |
+| requires | `static_flows` と `zero_payload` のみ。未知の能力は拒否 |
+| scenario_id、定義 ID | 空白と制御文字を含まない 1〜128 バイトの文字列。フロー ID の重複を拒否 |
+| endpoints | ちょうど 1 件。IP リテラルと整数ポート 1〜65,535 |
+| payloads | ちょうど 1 件。`kind="zero"` のみ |
+| flows | 1 件以上、使用可能な送信元ポート数以下。endpoint と payload の参照先を検証 |
+| bytes、seed、start_ns | uint64 の十進文字列。符号、指数表記、空文字、桁あふれを拒否 |
+| bytes="0" | 無制限送信。`--duration` または `duration_ns` が必要 |
+| start_ns | `"0"` のみ。開始時刻のスケジューリングは未実装 |
+| max_active | フロー数以上、使用可能スロット数以下。全フローを起動時に配置する |
+| duration_ns | 省略可。指定時は 1〜INT64_MAX の十進文字列。CLI の duration と短い方を採用 |
+| 未知フィールド | シナリオ応答の外側と本体で拒否。既存 Raw/Variable の検査方法は維持 |
+| 応答サイズ | Go goshim と TinyGo/C の双方で 32 MiB 以下 |
+
+検証は一時領域で完了させ、成功した場合だけ Go の設定を更新する。
+init と process には合わせて 30 秒の期限を設け、期限を超えた Wasm 実行はモジュールを閉じて失敗させる。
+ロードにも 30 秒の期限を設ける。
+プラグインの cleanup は既存の manager が終了時に実行し、シナリオ使用時は 5 秒で打ち切る。
+Go goshim の要求バッファが足りない場合は必要長を返し、ゲストが再確保して読み直す。
+応答はゲストメモリからコピーして保持する。
+
+シナリオの `seed` は TCP の ISN を固定しない。
+すべてのフローは起動時に準備するが、SYN は既存 worker の走査に従って順次送出するため、同時刻の開始や帯域の均等配分は保証しない。
+開始時刻、複数宛先、接続の入れ替わり、独自ペイロードは後続段階の対象とし、今回の能力には含めない。

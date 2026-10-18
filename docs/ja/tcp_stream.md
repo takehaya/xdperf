@@ -25,7 +25,9 @@ sudo xdperf run --tcp --device eth0 --tcp-dst '[fd00::2]:5201' --tcp-flows 16 --
 sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.100.2:5201 --tcp-vlan-id 100 --tcp-flows 8 --tcp-bytes 100m
 ```
 
-プラグイン (`--plugin`) は使いません。`--count` と `--infinite` は併用できません。
+上の例はプラグインを使わずに実行します。
+`--plugin` を指定するシナリオ方式は後述します。
+`--count` と `--infinite` は併用できません。
 
 ### フラグ
 
@@ -158,3 +160,60 @@ sudo examples/tcpstream/setup.sh
 sudo examples/tcpstream/test.sh      # IPv4 / IPv6 / VLAN、受信側は xdperf-sink と --tcp-server の両方、socat → --tcp-server も
 sudo examples/tcpstream/teardown.sh
 ```
+
+## Wasm でフローごとの送信量を指定する
+
+`--tcp --plugin` を指定すると、プラグインが返す単一宛先の **TCP シナリオ**を起動時に読み込みます。
+フローごとの送信バイト数を変えられるため、少数のフローに通信量が集中する heavy hitter を生成できます。
+TCP のハンドシェイク、ACK、再送、FIN は従来の BPF エンジンが処理します。
+プラグインを指定しない `--tcp` は従来どおり動作します。
+
+サンプル `heavyhitter.go` は、4 本のうち 3 本が 65,536 バイト、最後の 1 本が 67,108,864 バイトを送るシナリオを返します。
+リポジトリのルートでビルドして実行します。
+
+```bash
+mkdir -p out/bin
+(cd plugins/heavyhitter.go && GOOS=wasip1 GOARCH=wasm go build \
+  -buildmode=c-shared -o ../../out/bin/heavyhitter.go.wasm .)
+sudo out/bin/xdperf run --tcp --device eth0 \
+  --plugin heavyhitter.go --plugin-path ./out/bin \
+  --plugin-config '{"address":"192.168.110.2","port":5201,"small_bytes":"65536","large_bytes":"67108864","seed":"42"}' \
+  --tcp-mss 1024 --parallelism 1 --tcp-flow-report flows.csv
+```
+
+宛先の `address` は IPv4 または IPv6 のリテラルです。
+`small_bytes`、`large_bytes`、`seed` は十進文字列で指定します。
+`seed` はシナリオの再現用メタデータで、このサンプルの 4 本の並びは固定です。
+TCP の ISN は既存の方法で生成し、seed によって固定しません。
+設定は `--plugin-config-path` の JSON ファイルからも渡せます。
+
+シナリオ使用時に `--tcp-dst`、`--tcp-flows`、`--tcp-bytes` を併記するとエラーになります。
+送信元 IP、次ホップ MAC、ポートの開始値、MSS、ウィンドウ、RTO、VLAN、worker CPU、`--pps` は既存のフラグで指定します。
+`--duration` は実行時間の上限として利用でき、シナリオの `duration_ns` もある場合は短い方を採用します。
+バイト数 `"0"` は無制限送信を表すため、いずれかの時間上限が必要です。
+
+フローは応答の `flows` 配列の順に `tcp_flow_map` に配置されます。
+既存 CSV の `flow=0` は `flows[0]`、`src_port` は `--tcp-port-base + flow` に対応します。
+CSV の列は変更していません。
+`bytes_acked` で指定バイト数を照合し、`tx_data` で新規データセグメント数、`tx_rtx` でデータ再送数を確認します。
+MSS が 1,024 バイトで全セグメントをその長さで送れる場合、サンプルの `tx_data` は `[64, 64, 64, 65536]`、`bytes_acked` は `[65536, 65536, 65536, 67108864]` になります。
+一般には MSS の交渉と受信ウィンドウによりセグメント数が変わるため、送信バイト数の照合には `bytes_acked` を使います。
+
+veth で Linux TCP シンクと XDP レスポンダを試す例です。
+最後のコマンドで作成したネットワーク名前空間を削除します。
+
+```bash
+sudo examples/tcpstream/setup.sh
+sudo examples/tcpstream/heavyhitter.sh
+# IPv6、VLAN、損失注入を含む追加ケース
+sudo env HH_CASES='linux6 linux4vlan linux6vlan xdp6 xdp4vlan xdp6vlan loss4' \
+  examples/tcpstream/heavyhitter.sh
+sudo examples/tcpstream/teardown.sh
+```
+
+E2E は各フローの完了状態、CSV の送信量と新規データセグメント数、受信側の 4 接続と合計 67,305,472 バイトを検査します。
+`loss4` は Linux シンク側で送受信方向に損失を注入し、データ再送の発生も検査します。
+CSV と送信ログは `/run/xdperf-examples/heavyhitter-<case>.csv` と `.log` に残します。
+
+現在は単一宛先、全フローの `start_ns="0"`、ゼロペイロード、スロット再利用なしに限定します。
+JSON の契約と検証規則は [設計書の第16節](design_xdp_tcp.md#16-wasm-による静的-tcp-シナリオ) を参照してください。
