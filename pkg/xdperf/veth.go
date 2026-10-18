@@ -1,7 +1,9 @@
 package xdperf
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
@@ -33,6 +35,15 @@ func vethRxQueues(dev string) (int, bool) {
 	if err != nil || link.Type() != "veth" {
 		return 0, false
 	}
-	rx, _ := filepath.Glob(filepath.Join("/sys/class/net", dev, "queues", "rx-*"))
-	return len(rx), true
+	entries, err := os.ReadDir(filepath.Join("/sys/class/net", dev, "queues"))
+	if err != nil {
+		return 0, true
+	}
+	queues := 0
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "rx-") {
+			queues++
+		}
+	}
+	return queues, true
 }

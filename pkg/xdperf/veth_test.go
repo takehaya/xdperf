@@ -14,7 +14,15 @@ func TestWarnVethQueues(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to create a veth pair")
 	}
-	name := fmt.Sprintf("xdpmq%d", os.Getpid()%100000)
+	for _, suffix := range []string{"", "[0]"} {
+		t.Run("name"+suffix, func(t *testing.T) {
+			testWarnVethQueues(t, fmt.Sprintf("xdpmq%d%s", os.Getpid()%100000, suffix))
+		})
+	}
+}
+
+func testWarnVethQueues(t *testing.T, name string) {
+	t.Helper()
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{Name: name, NumTxQueues: 2, NumRxQueues: 2},
 		PeerName:  name + "p",
