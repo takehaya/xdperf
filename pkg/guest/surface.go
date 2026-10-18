@@ -37,6 +37,9 @@ const (
 	// Pre-built packets are sent as they are.
 	GeneratorTemplateTypeRaw GeneratorTemplateType = "raw"
 
+	// TCP scenario: the host initializes the existing TCP engine.
+	GeneratorTemplateTypeTCPScenario GeneratorTemplateType = "tcp_scenario"
+
 	// Variable template.
 	// Packets are generated on the host/XDP data-plane side using a template
 	// and variable parameter sets.
@@ -45,11 +48,13 @@ const (
 
 // GeneratorResponse represents the response returned from the packet
 // generation plugin to simpleudp.
-// Depending on TemplateType, either RawPacketTemplate or
-// VariablePacketTemplate is used.
+// Depending on TemplateType, RawPacketTemplate, VariablePacketTemplate,
+// or TCPScenario is used.
 type GeneratorProcessResponse struct {
 	// Template type.
 	TemplateType GeneratorTemplateType `json:"template_type"`
+
+	TCPScenario *TCPScenario `json:"tcp_scenario,omitempty"`
 
 	// Packet list for raw templates.
 	// Used when TemplateType is raw.

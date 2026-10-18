@@ -63,13 +63,13 @@ func TestValidateTCP(t *testing.T) {
 }
 
 func TestNormalizeTCPImpliesSender(t *testing.T) {
-	c := Config{TCP: true, PluginName: "ignored"}
+	c := Config{TCP: true}
 	c.Normalize()
 	if !c.Sender {
 		t.Fatal("--tcp should imply --send")
 	}
 	if c.PluginLanguage != "" {
-		t.Fatalf("plugin language must not be derived in TCP mode, got %q", c.PluginLanguage)
+		t.Fatalf("plugin language must stay empty without a plugin, got %q", c.PluginLanguage)
 	}
 }
 

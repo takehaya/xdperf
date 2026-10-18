@@ -25,10 +25,11 @@ const (
 	getShutdownRequested = "getShutdownRequested"
 )
 
-// writeBytesIfUnderLimit writes bytes to memory if they fit within the limit
+// writeBytesIfUnderLimit writes bytes when they fit, or returns the needed
+// length so the guest can resize its buffer and retry.
 func writeBytesIfUnderLimit(memory api.Memory, bytes []byte, buf, bufLimit uint32) uint32 {
 	if uint32(len(bytes)) > bufLimit {
-		return 0
+		return uint32(len(bytes))
 	}
 	if !memory.Write(buf, bytes) {
 		return 0
@@ -108,12 +109,15 @@ func makeReadHandler[T byteSlice](setter func(*GeneratorStack, T)) api.GoModuleF
 		buf := uint32(stack[0])
 		size := uint32(stack[1])
 
+		if size > maxPluginOutputBytes {
+			panic("plugin response exceeds 32 MiB")
+		}
 		resp, ok := mod.Memory().Read(buf, size)
 		if !ok {
 			panic("out of memory reading result metrics") // Bug: caller passed a length outside memory
 		}
 
-		setter(paramsFromContext(ctx), T(resp))
+		setter(paramsFromContext(ctx), T(append([]byte(nil), resp...)))
 	}
 }
 

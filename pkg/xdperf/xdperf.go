@@ -25,15 +25,16 @@ import (
 
 type CancelFunc func(ctx context.Context) error
 type Xdperf struct {
-	Logger        *zap.Logger
-	PluginManager *plugin.Manager
-	cleanupFnList []CancelFunc
-	bpfobjs       *coreelf.BpfObjects
-	Device        *net.Interface
-	RxDevice      *net.Interface // RX attach target; == Device unless --rx-device splits it off
-	cfg           Config
-	bpfSpec       *ebpf.CollectionSpec
-	cpus          []int // resolved CPU list for workers
+	Logger           *zap.Logger
+	PluginManager    *plugin.Manager
+	cleanupFnList    []CancelFunc
+	bpfobjs          *coreelf.BpfObjects
+	Device           *net.Interface
+	RxDevice         *net.Interface // RX attach target; == Device unless --rx-device splits it off
+	cfg              Config
+	bpfSpec          *ebpf.CollectionSpec
+	tcpScenarioBytes []uint64 // validated per-flow targets, nil for the legacy CLI mode
+	cpus             []int    // resolved CPU list for workers
 }
 
 func NewXdperf(cfg Config) (_ *Xdperf, err error) {
@@ -60,7 +61,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	}
 	cleanupFnList = append(cleanupFnList, cleanup)
 	var pm *plugin.Manager
-	if cfg.Sender && !cfg.TCP {
+	if cfg.Sender && (!cfg.TCP || cfg.PluginName != "") {
 		managerOpts := []plugin.ManagerOption{plugin.WithLogger(logger)}
 		if cfg.WasmCacheDir != "" {
 			managerOpts = append(managerOpts, plugin.WithCacheDir(cfg.WasmCacheDir))
@@ -70,10 +71,23 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 			return nil, fmt.Errorf("failed init plugin manager: %w", err)
 		}
 
-		if err = pm.LoadPlugin(context.Background(), cfg.PluginName); err != nil {
+		closePlugin := pm.Close
+		loadCtx := context.Background()
+		cancelLoad := func() {}
+		if cfg.TCP {
+			loadCtx, cancelLoad = context.WithTimeout(loadCtx, 30*time.Second)
+			closePlugin = func(ctx context.Context) error {
+				ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				return pm.Close(ctx)
+			}
+		}
+		cleanupFnList = append(cleanupFnList, closePlugin)
+		err = pm.LoadPlugin(loadCtx, cfg.PluginName)
+		cancelLoad()
+		if err != nil {
 			return nil, fmt.Errorf("failed load plugin: %w", err)
 		}
-		cleanupFnList = append(cleanupFnList, pm.Close)
 		logger.Info("xdperf wasm plugin loader initialized")
 	}
 

@@ -311,11 +311,15 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 	vals := make([]coreelf.BpfTcpFlow, flows)
 	for i := 0; i < flows; i++ {
 		keys[i] = uint32(i)
+		bytesTarget := x.cfg.TCPBytes
+		if x.tcpScenarioBytes != nil {
+			bytesTarget = x.tcpScenarioBytes[i]
+		}
 		vals[i] = coreelf.BpfTcpFlow{
 			State:       tcpFlowClosed,
 			SrcPort:     uint16(x.cfg.TCPPortBase + i),
 			Iss:         rand.Uint32(),
-			BytesTarget: x.cfg.TCPBytes,
+			BytesTarget: bytesTarget,
 		}
 	}
 	if _, err := x.bpfobjs.TcpFlowMap.BatchUpdate(keys, vals, nil); err != nil {
@@ -483,6 +487,11 @@ func (x *Xdperf) tcpWorker(ctx context.Context, cpu int, prog *ebpf.Program, run
 
 // runTCP is the client entry point of --tcp mode.
 func (x *Xdperf) runTCP(ctx context.Context) error {
+	if x.cfg.PluginName != "" {
+		if err := x.loadTCPScenario(ctx); err != nil {
+			return err
+		}
+	}
 	t, err := x.resolveTCPTarget()
 	if err != nil {
 		return err

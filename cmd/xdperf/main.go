@@ -147,7 +147,7 @@ func newApp(version string) *cli.App {
 		},
 		cli.BoolFlag{
 			Name:  "tcp",
-			Usage: "TCP stream mode: open --tcp-flows connections to --tcp-dst from XDP and stream data (no plugin). See docs/ja/design_xdp_tcp.md",
+			Usage: "TCP stream mode: open --tcp-flows connections to --tcp-dst from XDP and stream data; --plugin supplies a static TCP scenario. See docs/ja/design_xdp_tcp.md",
 		},
 		cli.StringFlag{
 			Name:  "tcp-dst",
@@ -296,6 +296,11 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.OTLPAttributes = ctx.String("otlp-attributes")
 	c.Version = version
 	c.TCP = ctx.Bool("tcp")
+	// The packet generator has a default plugin. TCP uses a scenario only
+	// when the user explicitly selects a plugin.
+	if c.TCP && !ctx.IsSet("plugin") && !ctx.IsSet("p") {
+		c.PluginName = ""
+	}
 	c.TCPDst = ctx.String("tcp-dst")
 	c.TCPSrcIP = ctx.String("tcp-src-ip")
 	c.TCPDstMAC = ctx.String("tcp-dst-mac")
@@ -338,6 +343,14 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	if c.DebugMode > 0 {
 		// set verbose logging
 		c.LoggerConfig.Verbose = 1
+	}
+
+	if c.TCP && c.PluginName != "" {
+		for _, flag := range []string{"tcp-dst", "tcp-flows", "tcp-bytes"} {
+			if ctx.IsSet(flag) {
+				return xdperf.Config{}, fmt.Errorf("--%s cannot be combined with --tcp --plugin", flag)
+			}
+		}
 	}
 
 	// Derive computed fields (e.g. PluginLanguage) before validating.
