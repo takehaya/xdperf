@@ -8,6 +8,8 @@ on:
       - '**.go'
       - '**.h'
       - '**.c'
+      - 'Makefile'
+      - 'plugins/vxlan.c/**'
       - '.github/workflows/test.yaml'
 
 jobs:
@@ -24,12 +26,14 @@ jobs:
         with:
           go-version-file: ./go.mod
           cache: false
-      - name: install make
-        run: sudo apt-get update && sudo apt-get install -y make
+      - name: install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y make clang lld
       - name: install build tools
         run: make install-build-tools
       - name: test buildable
-        run: make build
+        run: |
+          make build
+          test -s out/bin/vxlan.c.wasm
       - name: test pass init() phase of all packages
         run: make test-runnable
   test:
@@ -44,6 +48,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: ./go.mod
+      - name: install C plugin build dependencies
+        run: sudo apt-get update && sudo apt-get install -y make clang lld
+      - name: build C plugin for integration tests
+        run: |
+          make -C plugins/vxlan.c
+          test -s out/bin/vxlan.c.wasm
       - name: go test
         run: go test -exec "sudo -E" -race -covermode=atomic -coverprofile=coverage.out -v ./...
       - name: Upload coverage reports to Codecov
