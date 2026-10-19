@@ -290,7 +290,8 @@ static __noinline int tcp_find_inner_extended(struct xdp_md *ctx, struct tcp_inn
     return 0;
 }
 // Keep the established bare/VXLAN/GENEVE path in one subprogram. Only new
-// tunnel formats take the general layer walker; TX cannot predict RX formats.
+// tunnel formats return 2 so the caller can run the general layer walker
+// after this stack frame is released. TX cannot predict RX formats.
 __noinline int tcp_find_inner(struct xdp_md *ctx, struct tcp_inner_packet *out)
 {
     if (!out)
@@ -359,7 +360,7 @@ __noinline int tcp_find_inner(struct xdp_md *ctx, struct tcp_inner_packet *out)
             off += 40;
         } else {
             if (proto == ETH_P_MPLS_UC || proto == ETH_P_MPLS_MC)
-                return tcp_find_inner_extended(ctx, out);
+                return 2;
             return 0;
         }
         if (next == IPPROTO_TCP) {
@@ -374,7 +375,7 @@ __noinline int tcp_find_inner(struct xdp_md *ctx, struct tcp_inner_packet *out)
             return 0;
         }
         if (next == IPPROTO_GRE || next == IPPROTO_IPIP || next == IPPROTO_IPV6 || next == IPPROTO_ROUTING || next == 143)
-            return tcp_find_inner_extended(ctx, out);
+            return 2;
         if (next != IPPROTO_UDP || ip_end > limit || off + 8 > ip_end || off > 228 || bpf_xdp_load_bytes(ctx, off, h, 8) < 0)
             return 0;
         __u32 udp_end = off + (((__u16)h[4] << 8) | h[5]);
@@ -402,7 +403,7 @@ __noinline int tcp_find_inner(struct xdp_md *ctx, struct tcp_inner_packet *out)
                 return 0;
             off = opt_end;
         } else if (port == 2152) {
-            return tcp_find_inner_extended(ctx, out);
+            return 2;
         } else {
             return 0;
         }

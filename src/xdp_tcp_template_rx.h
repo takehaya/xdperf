@@ -15,7 +15,10 @@ int xdp_rx_tcp_mixed(struct xdp_md *ctx)
     void *data = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     struct tcp_inner_packet inner = {0};
-    if (!tcp_find_inner(ctx, &inner))
+    int parsed = tcp_find_inner(ctx, &inner);
+    if (parsed == 2)
+        parsed = tcp_find_inner_extended(ctx, &inner);
+    if (!parsed)
         goto unmatched;
     __u32 l4 = inner.l4, ip_end = inner.ip_end;
     if (l4 > 236)
