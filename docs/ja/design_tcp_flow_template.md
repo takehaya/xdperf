@@ -10,7 +10,7 @@
 |---|---|---|
 | 1 | グループ別 base_packet、Ethernet、VLAN 最大 2 段、IPv4/IPv6、固定 TCP オプション | feat/tcp-flow-template |
 | 2 | 256 バイトのひな型、汎用 TX 修正表、VXLAN/GENEVE RX、VXLAN E2E | feat/tcp-flow-encap |
-| 3 | SRv6、GTP-U、GRE、IPIP、MPLS の RX | 設計のみ |
+| 3 | SRv6、GTP-U、GRE、IPIP、MPLS の RX | feat/tcp-flow-rx-tunnels |
 | 4 | Timestamps、ペイロードパターン、フロー別 variable_params | 設計のみ |
 
 `--tcp-server` のトンネル対応は対象外とする。
@@ -482,3 +482,40 @@ TX は packet、TCP、送信を行わない機会の混合平均なので、TCP 
 全 108 試行の整合検証と、比較バイナリのハッシュ検証を通過した。
 測定専用 netns は削除し、`kernel.bpf_stats_enabled` は元の 0 に戻した。
 比較元の detached worktree は `/tmp/claude-1000/xdperf-bench-base` に残している。
+
+## 段階 3 の実装前計画
+
+比較元は `perf/mixed-startup` の `ad72a7f` とする。
+受信フレームの各層の申告長を検査し、SRv6、GTP-U、GRE、IPIP、MPLS を順に外して内側 TCP の 5 タプルを照合する。
+外側アドレス、GRE key、MPLS label、GTP-U TEID、SRH の segment list は照合に使わない。
+送信時と異なるカプセル化、異なる SRH 長、途中でカプセル化が外れた IPv4/IPv6 の応答も受理する。
+解析上限は既存の TCP オフセット 236 バイト、外側 IP 4 層を維持し、MPLS は最大 8 label、GTP-U の拡張ヘッダは最大 8 個とする。
+未対応の形式、境界違反、断片、上限超過ではフロー状態を変更しない。
+
+SRH は Routing Type 4、Hdr Ext Len、Last Entry、Segments Left の整合性を検査し、内側 IP または Ethernet を解析する。
+TCP 自身の IPv6 ヘッダに SRH が付く形式は従来どおり対象外とする。
+GRE は version 0 の key あり／なしを受理し、checksum、routing、sequence は対象外とする。
+MPLS は bottom-of-stack まで進み、その直後の IP version から IPv4/IPv6 を選ぶ。
+GTP-U は GTPv1-U の G-PDU と申告長を検査し、E/S/PN に伴う共通 optional fields と拡張ヘッダ列を読み飛ばす。
+受信の S/PN は内側 TCP の照合に使わず、送信とは別に受理する。
+構造の根拠は [RFC 8754](https://www.rfc-editor.org/rfc/rfc8754.html)、[RFC 2890](https://www.rfc-editor.org/info/rfc2890/)、[3GPP TS 29.281](https://www.etsi.org/deliver/etsi_TS/129200_129299/129281/16.02.00_60/ts_129281v160200p.pdf) とする。
+
+送信 GRE sequence と GTP-U S/PN の採番はこの変更に含めない。
+同じトンネルを共有する複数フローと CPU の TX、再送、RX 応答を通した採番が必要であり、現在のフロー別カウンタではトンネル全体の順序を表現できない。
+共有状態と同期を TX ホットパスへ追加する変更は受信解析の拡張から分離し、従来の設定拒否を維持する。
+
+ジョブ A の TX と RX 応答 builder の機能選択を維持する。
+送信テンプレートから受信トンネルを限定する案は、非対称経路の受理要件を破るため採用しない。
+代わりにプロトコル固有の処理を BPF サブプログラムへ分離し、該当する受信ヘッダを検出した場合にだけ呼ぶ。
+通常 packet と `--tcp` は混合 RX 自体をロードせず、従来の命令とロード順を保つ。
+混合 RX の verifier 負荷は実測し、展開による状態数増加があれば解析層の関数境界を見直す。
+
+検証では BPF_PROG_RUN で各形式の SYN/ACK、データ ACK、FIN を入力し、状態遷移、再カプセル化した応答、チェックサムを検査する。
+異なる SRH 長、GRE key の有無、MPLS の複数 label と IPv6、GTP-U の拡張ヘッダと S/PN、異種トンネルの入れ子、不正長と切り詰めも対象にする。
+Linux 対向の ip6tnl/seg6、gre/gretap/ip6gre、MPLS router/lwtunnel、利用可能なら gtp モジュールを使い、完了フロー数と sink の受信バイト数を照合する。
+利用できない機能は実行結果を記録し、BPF_PROG_RUN による代替範囲を PR に明記する。
+全 sudo race テスト、examples E2E、lint、OCR を完了してから PR を作成し、Copilot と CI を最後まで確認する。
+
+性能は既存 mixbench と同じ対応比較の方式を使う。
+起動時間と既存の非カプセル化／VXLAN／GENEVE の性能を 6 対以上で測定し、対応差の平均と t 分布による両側 95% CI を記録する。
+生データと再集計手順を残し、差が不明確な場合は同等性を断定しない。
