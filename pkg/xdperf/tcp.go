@@ -684,6 +684,9 @@ loop:
 		select {
 		case <-poll.C:
 			if lingerCh == nil && allClosed() {
+				if x.mixed != nil {
+					startDrain("all flows closed")
+				}
 				lingerCh = time.After(linger)
 			}
 		case <-lingerCh:

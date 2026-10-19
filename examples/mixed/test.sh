@@ -55,7 +55,7 @@ PY
     mac="$(ip netns exec "$NS_RX" cat "/sys/class/net/${VETH_RX}/address")"
     report="${XDPERF_EXAMPLE_RUNDIR}/mixed-${mode}-${workers}.csv"
     TX_LOG="${XDPERF_EXAMPLE_RUNDIR}/mixed-${mode}-${workers}.log"
-    config="$(python3 -c 'import json,sys; print(json.dumps(dict(src_ip=sys.argv[1],dst_ip=sys.argv[2],dst_mac=sys.argv[3],small_bytes=sys.argv[4],large_bytes=sys.argv[5])))' "$TX_IP4" "$RX_IP4" "$mac" "$small_bytes" "$large_bytes")"
+    config="$(python3 -c 'import json,sys; print(json.dumps(dict(src_ip=sys.argv[1],dst_ip=sys.argv[2],dst_mac=sys.argv[3],small_bytes=sys.argv[4],large_bytes=sys.argv[5],tcp_port=int(sys.argv[6]))))' "$TX_IP4" "$RX_IP4" "$mac" "$small_bytes" "$large_bytes" "$DST_PORT")"
     if ! ip netns exec "$NS_TX" "$XDPERF_BIN" run --send --recv --device "$VETH_TX" \
         --plugin mixed.go --plugin-path "$PLUGIN_PATH" --plugin-config "$config" \
         "${run_args[@]}" --pps 2000 --parallelism "$workers" --tcp-mss 1024 --tcp-window 8 \
@@ -85,6 +85,7 @@ assert stats['packet_tx'] == udp > 0, (stats, udp)
 assert stats['packet_rx'] == udp, stats
 assert stats['tcp_tx'] == sum(int(r['tx_pkts']) for r in rows), stats
 assert stats['packet_errors'] == stats['dispatch_errors'] == 0, stats
+assert stats['drain_opportunities'] > 0, stats
 opportunities = stats['tcp_opportunities'] + stats['packet_opportunities']
 assert abs(stats['tcp_opportunities'] / opportunities - .25) < .03, stats
 assert math.isclose(stats['tcp_tx_ratio'], stats['tcp_tx'] / (stats['tcp_tx'] + udp), abs_tol=1e-6), stats
