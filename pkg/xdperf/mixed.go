@@ -5,12 +5,27 @@ import (
 	"math"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
 )
+
+// mixedDrainSchedulingGrace allows every flow to be revisited even when
+// completed entries consume most rate-limited iterations. Budget a full sweep
+// for the initial action and each FIN/probe retry, for both closing phases.
+func mixedDrainSchedulingGrace(flows, workers, repeat uint64, interval time.Duration) time.Duration {
+	if interval == 0 {
+		return 0
+	}
+	perWorker := (flows + workers - 1) / workers
+	batches := (perWorker + repeat - 1) / repeat
+	// One extra batch covers drain starting just after a worker's run.
+	sweep := time.Duration(batches+1) * interval
+	return 2 * (tcpMaxFinRetries + 2) * sweep
+}
 
 // decimalUint64 deliberately rejects signs, exponents and whitespace.
 func decimalUint64(s string) (uint64, error) {

@@ -638,6 +638,9 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	// Covers the longest retry sequence after drain starts (FIN backoff, or
 	// the FIN_WAIT_2 ACK probes), plus slack.
 	drainTimeout := tcpBackoffSpan*x.cfg.TCPRTO + time.Second
+	if x.mixed != nil {
+		drainTimeout += mixedDrainSchedulingGrace(flows, uint64(len(x.cpus)), uint64(repeat), interval)
+	}
 	// Abort: reset every open flow with RST (so the peer does not keep the
 	// connection into the next run), give the workers a moment to send them.
 	aborting := false

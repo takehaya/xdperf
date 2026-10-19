@@ -59,6 +59,11 @@ func decodeGeneratorResponse(b []byte) (*guest.GeneratorProcessResponse, error) 
 	if len(b) > maxPluginOutputBytes {
 		return nil, fmt.Errorf("plugin response exceeds %d bytes", maxPluginOutputBytes)
 	}
+	// Bound recursion in the union probe by encoding/json's syntax/depth
+	// limit before walking arbitrary legacy metadata.
+	if !json.Valid(b) {
+		return nil, fmt.Errorf("invalid plugin response JSON")
+	}
 	// Inspect only the variant union, without allocating flow or variant slices.
 	strict, err := usesTCPVariants(json.NewDecoder(bytes.NewReader(b)), "root")
 	if err != nil {

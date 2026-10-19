@@ -62,3 +62,14 @@ func TestLegacyGeneratorResponseCompatibility(t *testing.T) {
 		}
 	}
 }
+
+func TestGeneratorResponseNesting(t *testing.T) {
+	for _, depth := range []int{9999, 10000, 100000} {
+		b := []byte(`{"template_type":"raw","metadata":` + strings.Repeat(`[`, depth) + `0` + strings.Repeat(`]`, depth) + `}`)
+		_, err := decodeGeneratorResponse(b)
+		// The root object adds one level to encoding/json's 10,000 limit.
+		if (err != nil) != (depth >= 10000) {
+			t.Fatalf("depth %d: %v", depth, err)
+		}
+	}
+}

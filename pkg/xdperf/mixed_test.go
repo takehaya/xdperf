@@ -6,10 +6,48 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
 )
+
+func TestMixedDrainSchedulingGrace(t *testing.T) {
+	// At 2,000 iterations/s, a last active flow among 55,536 entries takes
+	// longer to revisit than the old 26.4s deadline. Simulate the worst cursor
+	// position, then retry a FIN only when that flow is visited again.
+	for _, workers := range []uint64{1, 2, 8} {
+		const flows = uint64(55536)
+		repeat := uint64(20) / workers
+		interval := time.Duration(repeat*workers) * time.Second / 2000
+		grace := mixedDrainSchedulingGrace(flows, workers, repeat, interval)
+		perWorker := (flows + workers - 1) / workers
+		const rto = 200 * time.Millisecond
+		deadline := tcpBackoffSpan*rto + time.Second + grace
+		var now, lastSend time.Duration
+		retries, cursor := -1, uint64(0)
+		for retries <= tcpMaxFinRetries && now < deadline {
+			now += interval
+			for i := uint64(0); i < repeat; i++ {
+				if cursor == perWorker-1 && (retries < 0 || now-lastSend > rto<<retries) {
+					lastSend = now
+					retries++
+				}
+				cursor = (cursor + 1) % perWorker
+			}
+		}
+		if retries <= tcpMaxFinRetries {
+			t.Fatalf("%d workers: deadline %s interrupted FIN retries (%d)", workers, deadline, retries)
+		}
+	}
+	if grace := mixedDrainSchedulingGrace(55536, 1, tcpTxRepeatBurst, 0); grace != 0 {
+		t.Fatalf("unlimited sender has scheduling delay: %s", grace)
+	}
+	// --pps below the worker count produces intervals above one second.
+	if grace := mixedDrainSchedulingGrace(1, 8, 1, 8*time.Second); grace < 16*time.Second {
+		t.Fatalf("fractional worker rate: %s", grace)
+	}
+}
 
 func TestMixedRejectsOtherRouteDevice(t *testing.T) {
 	// Loopback has a deterministic local route and requires no test topology.
