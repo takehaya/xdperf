@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,16 +27,17 @@ import (
 
 type CancelFunc func(ctx context.Context) error
 type Xdperf struct {
-	Logger           *zap.Logger
-	PluginManager    *plugin.Manager
-	cleanupFnList    []CancelFunc
-	bpfobjs          *coreelf.BpfObjects
-	Device           *net.Interface
-	RxDevice         *net.Interface // RX attach target; == Device unless --rx-device splits it off
-	cfg              Config
-	bpfSpec          *ebpf.CollectionSpec
-	tcpScenarioBytes []uint64 // validated per-flow targets, nil for the legacy CLI mode
-	cpus             []int    // resolved CPU list for workers
+	Logger          *zap.Logger
+	PluginManager   *plugin.Manager
+	cleanupFnList   []CancelFunc
+	bpfobjs         *coreelf.BpfObjects
+	Device          *net.Interface
+	RxDevice        *net.Interface // RX attach target; == Device unless --rx-device splits it off
+	cfg             Config
+	bpfSpec         *ebpf.CollectionSpec
+	tcpVariantBytes []uint64 // validated per-flow targets, nil for the legacy CLI mode
+	mixed           *mixedPlan
+	cpus            []int // resolved CPU list for workers
 }
 
 func NewXdperf(cfg Config) (_ *Xdperf, err error) {
@@ -61,7 +64,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	}
 	cleanupFnList = append(cleanupFnList, cleanup)
 	var pm *plugin.Manager
-	if cfg.Sender && (!cfg.TCP || cfg.PluginName != "") {
+	if cfg.Sender && !cfg.TCP {
 		managerOpts := []plugin.ManagerOption{plugin.WithLogger(logger)}
 		if cfg.WasmCacheDir != "" {
 			managerOpts = append(managerOpts, plugin.WithCacheDir(cfg.WasmCacheDir))
@@ -71,16 +74,11 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 			return nil, fmt.Errorf("failed init plugin manager: %w", err)
 		}
 
-		closePlugin := pm.Close
-		loadCtx := context.Background()
-		cancelLoad := func() {}
-		if cfg.TCP {
-			loadCtx, cancelLoad = context.WithTimeout(loadCtx, 30*time.Second)
-			closePlugin = func(ctx context.Context) error {
-				ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				defer cancel()
-				return pm.Close(ctx)
-			}
+		loadCtx, cancelLoad := context.WithTimeout(context.Background(), 30*time.Second)
+		closePlugin := func(ctx context.Context) error {
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			return pm.Close(ctx)
 		}
 		cleanupFnList = append(cleanupFnList, closePlugin)
 		err = pm.LoadPlugin(loadCtx, cfg.PluginName)
@@ -125,7 +123,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	if cfg.TCPServer {
 		tcpSrvFlows = uint32(cfg.TCPMaxConns)
 	}
-	obj, bpfSpec, err := coreelf.ReadCollectionWithSizes(consts,
+	obj, bpfSpec, err := coreelf.ReadBaseCollectionWithSizes(consts,
 		map[string]uint32{"diff_map": diffMapSize, "tcp_srv_flow_map": tcpSrvFlows}, cfg.DebugMode > 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load eBPF objects: %w", err)
@@ -263,6 +261,19 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 
 	x.Logger.Debug("plugin call successful for verbose logging", zap.Any("response", resp))
 
+	if err := x.prepareMixed(resp); err != nil {
+		return err
+	}
+	if x.mixed != nil {
+		if err := coreelf.LoadMixedPrograms(x.bpfobjs, x.bpfSpec); err != nil {
+			return err
+		}
+		return x.runTCP(ctx)
+	}
+	if x.cfg.TCPFlowReport != "" {
+		return fmt.Errorf("--tcp-flow-report requires TCP flow variants")
+	}
+
 	// Initialize packet generation
 	if err := x.initPacketGeneration(resp); err != nil {
 		x.Logger.Error("failed to init packet generation", zap.Error(err))
@@ -339,6 +350,8 @@ func (x *Xdperf) initPacketGeneration(resp *guest.GeneratorProcessResponse) erro
 }
 
 func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	wasmPlugin, err := x.PluginManager.GetPlugin(x.cfg.PluginName)
 	if err != nil {
 		return nil, fmt.Errorf("failed get plugin: %w", err)
@@ -355,22 +368,37 @@ func (x *Xdperf) callPlugin(ctx context.Context) (*guest.GeneratorProcessRespons
 		return nil, fmt.Errorf("failed to marshal init request: %w", err)
 	}
 
-	if _, err := generator.Initialize(ctx, initReqJSON); err != nil {
-		x.Logger.Error("plugin initialization failed", zap.Error(err))
+	out, err := generator.Initialize(ctx, initReqJSON)
+	if err != nil {
 		return nil, fmt.Errorf("failed to initialize plugin: %w", err)
+	}
+	var initialized guest.GeneratorInitResponse
+	if err := json.Unmarshal(out, &initialized); err != nil {
+		return nil, fmt.Errorf("plugin init response: %w", err)
+	}
+	if !initialized.Success {
+		return nil, fmt.Errorf("plugin initialization failed")
 	}
 	x.Logger.Info("plugin initialized successfully")
 
 	var pluginConfig map[string]interface{}
 	if x.cfg.PluginConfig != "" {
-		if err := json.Unmarshal([]byte(x.cfg.PluginConfig), &pluginConfig); err != nil {
+		dec := json.NewDecoder(strings.NewReader(x.cfg.PluginConfig))
+		dec.UseNumber()
+		if err := dec.Decode(&pluginConfig); err != nil {
 			x.Logger.Error("failed to unmarshal plugin config", zap.Error(err))
 			return nil, fmt.Errorf("failed to unmarshal plugin config: %w", err)
+		}
+		if err := dec.Decode(new(interface{})); err != io.EOF {
+			return nil, fmt.Errorf("trailing data in plugin config")
 		}
 	} else {
 		pluginConfig = make(map[string]interface{})
 	}
 
+	if pluginConfig == nil {
+		return nil, fmt.Errorf("plugin config must be an object")
+	}
 	// require base config for plugin
 	pluginConfig["count"] = x.cfg.Count
 	pluginConfig["device_mac_addr"] = x.Device.HardwareAddr

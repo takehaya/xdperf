@@ -142,11 +142,11 @@ func (x *Xdperf) resolveTCPTarget() (*tcpTarget, error) {
 	egressName := egress.Attrs().Name
 	if route.LinkIndex != x.Device.Index {
 		// A VLAN sub-interface of --device is the expected case when tagging;
-		// Preserve the legacy CLI warning, but reject mismatched scenario routes.
+		// Preserve the legacy CLI warning, but reject mismatched plugin routes.
 		parent := egress.Attrs().ParentIndex
 		if _, isVlan := egress.(*netlink.Vlan); !isVlan || parent != x.Device.Index {
 			if x.cfg.PluginName != "" {
-				return nil, fmt.Errorf("TCP scenario route via %s does not use device %s or its VLAN child", egressName, x.Device.Name)
+				return nil, fmt.Errorf("TCP variant route via %s does not use device %s or its VLAN child", egressName, x.Device.Name)
 			}
 			x.Logger.Warn("route to --tcp-dst leaves through a different interface than --device; frames are still sent on --device",
 				zap.String("route_dev", egressName), zap.String("device", x.Device.Name))
@@ -300,29 +300,52 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 	if x.cfg.TCPIPID == "shared" {
 		cfg.IpIdShared = 1
 	}
-	if int(t.l4Off) > len(cfg.HdrTmpl) || len(template) < int(t.l4Off) {
+	if x.mixed == nil && (int(t.l4Off) > len(cfg.HdrTmpl) || len(template) < int(t.l4Off)) {
 		return fmt.Errorf("header length %d does not fit the data-plane template (%d)", t.l4Off, len(cfg.HdrTmpl))
 	}
-	copy(cfg.HdrTmpl[:], template[:t.l4Off])
+	copy(cfg.HdrTmpl[:], template[:min(int(t.l4Off), len(cfg.HdrTmpl))])
 	zero := uint32(0)
 	if err := x.bpfobjs.TcpCfgMap.Put(&zero, &cfg); err != nil {
 		return fmt.Errorf("tcp_cfg_map: %w", err)
 	}
 
+	if x.mixed != nil {
+		if err := x.initTCPTemplates(t, template, cfg); err != nil {
+			return err
+		}
+	}
 	flows := x.cfg.TCPFlows
 	keys := make([]uint32, flows)
 	vals := make([]coreelf.BpfTcpFlow, flows)
 	for i := 0; i < flows; i++ {
 		keys[i] = uint32(i)
 		bytesTarget := x.cfg.TCPBytes
-		if x.tcpScenarioBytes != nil {
-			bytesTarget = x.tcpScenarioBytes[i]
+		if x.tcpVariantBytes != nil {
+			bytesTarget = x.tcpVariantBytes[i]
 		}
 		vals[i] = coreelf.BpfTcpFlow{
 			State:       tcpFlowClosed,
 			SrcPort:     uint16(x.cfg.TCPPortBase + i),
 			Iss:         rand.Uint32(),
 			BytesTarget: bytesTarget,
+		}
+	}
+	if x.mixed != nil {
+		for j, g := range x.mixed.groups {
+			var id uint16
+			if len(g.variant.Base.Data) != 0 {
+				target, err := parseTCPVariant(g.variant)
+				if err != nil {
+					return err
+				}
+				if target.ipVersion == 4 {
+					id = binary.BigEndian.Uint16(g.variant.Base.Data[int(target.l3Off)+4:])
+				}
+			}
+			for i := g.first; i < g.first+g.count; i++ {
+				vals[i].TemplateId = uint32(j)
+				vals[i].IpId = id
+			}
 		}
 	}
 	if _, err := x.bpfobjs.TcpFlowMap.BatchUpdate(keys, vals, nil); err != nil {
@@ -387,6 +410,18 @@ func (x *Xdperf) updateTCPCfg(fn func(*coreelf.BpfTcpCfg)) error {
 		return err
 	}
 	fn(&cfg)
+	if x.mixed != nil {
+		for i := range x.mixed.groups {
+			var v coreelf.BpfTcpTemplate
+			if err := x.bpfobjs.TcpTemplateMap.Lookup(uint32(i), &v); err != nil {
+				return err
+			}
+			fn(&v.Cfg)
+			if err := x.bpfobjs.TcpTemplateMap.Put(uint32(i), v); err != nil {
+				return err
+			}
+		}
+	}
 	return x.bpfobjs.TcpCfgMap.Put(&zero, &cfg)
 }
 
@@ -490,16 +525,21 @@ func (x *Xdperf) tcpWorker(ctx context.Context, cpu int, prog *ebpf.Program, run
 
 // runTCP is the client entry point of --tcp mode.
 func (x *Xdperf) runTCP(ctx context.Context) error {
-	if x.cfg.PluginName != "" {
-		if err := x.loadTCPScenario(ctx); err != nil {
-			return err
+	var t *tcpTarget
+	var template []byte
+	var err error
+	if x.mixed != nil && len(x.mixed.groups[0].variant.Base.Data) != 0 {
+		t, err = parseTCPVariant(x.mixed.groups[0].variant)
+		if err == nil {
+			err = x.templateMSS(t, 0)
+		}
+		template = append([]byte(nil), x.mixed.groups[0].variant.Base.Data...)
+	} else {
+		t, err = x.resolveTCPTarget()
+		if err == nil {
+			template, err = buildTCPTemplate(t, uint16(x.cfg.TCPPortBase))
 		}
 	}
-	t, err := x.resolveTCPTarget()
-	if err != nil {
-		return err
-	}
-	template, err := buildTCPTemplate(t, uint16(x.cfg.TCPPortBase))
 	if err != nil {
 		return err
 	}
@@ -507,6 +547,18 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		return fmt.Errorf("failed to init TCP maps: %w", err)
 	}
 
+	if x.mixed != nil {
+		for i := range x.mixed.groups {
+			var v coreelf.BpfTcpTemplate
+			if err := x.bpfobjs.TcpTemplateMap.Lookup(uint32(i), &v); err != nil {
+				return err
+			}
+			n := int(v.Cfg.HdrLen) + max(int(v.DataLen)+int(v.Cfg.Mss), int(v.SynLen))
+			if n > len(template) {
+				template = append(template, make([]byte, n-len(template))...)
+			}
+		}
+	}
 	x.Logger.Info("TCP stream target resolved",
 		zap.Uint8("ip_version", t.ipVersion),
 		zap.String("src", t.srcIP.String()),
@@ -523,10 +575,19 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		zap.Duration("rto", x.cfg.TCPRTO),
 	)
 
+	if x.mixed != nil {
+		if err := x.initMixedMaps(); err != nil {
+			return err
+		}
+	}
 	x.warnEphemeralPortOverlap()
 
 	// The RX program must be in place before the first SYN leaves.
-	lrx, err := x.attachXDP(x.bpfobjs.XdpRxTcp, x.Device)
+	rxProg := x.bpfobjs.XdpRxTcp
+	if x.mixed != nil {
+		rxProg = x.bpfobjs.XdpRxMixed
+	}
+	lrx, err := x.attachXDP(rxProg, x.Device)
 	if err != nil {
 		return err
 	}
@@ -561,6 +622,9 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	if synLen := int(t.hdrLen) + tcpSynOptLen; synLen > len(liveFrame) {
 		liveFrame = append(liveFrame, make([]byte, synLen-len(liveFrame))...)
 	}
+	if x.mixed != nil && len(liveFrame) < 2048 {
+		liveFrame = append(liveFrame, make([]byte, 2048-len(liveFrame))...)
+	}
 	liveFrame = append(liveFrame, 0)
 	runOpts := &ebpf.RunOptions{
 		Data:      liveFrame,
@@ -579,7 +643,11 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	var once sync.Once
 	var firstErr error
 	for k, cpu := range x.cpus {
-		p, err := x.bpfobjs.XdpTxTcp.Clone()
+		txProg := x.bpfobjs.XdpTxTcp
+		if x.mixed != nil {
+			txProg = x.bpfobjs.XdpTxMixed
+		}
+		p, err := txProg.Clone()
 		if err != nil {
 			cancel()
 			wg.Wait()
@@ -627,6 +695,9 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	// Covers the longest retry sequence after drain starts (FIN backoff, or
 	// the FIN_WAIT_2 ACK probes), plus slack.
 	drainTimeout := tcpBackoffSpan*x.cfg.TCPRTO + time.Second
+	if x.mixed != nil {
+		drainTimeout += mixedDrainSchedulingGrace(flows, uint64(len(x.cpus)), uint64(repeat), interval)
+	}
 	// Abort: reset every open flow with RST (so the peer does not keep the
 	// connection into the next run), give the workers a moment to send them.
 	aborting := false
@@ -673,6 +744,9 @@ loop:
 		select {
 		case <-poll.C:
 			if lingerCh == nil && allClosed() {
+				if x.mixed != nil {
+					startDrain("all flows closed")
+				}
 				lingerCh = time.After(linger)
 			}
 		case <-lingerCh:
@@ -711,6 +785,11 @@ loop:
 	}
 
 	s, statsErr := x.showTCPFinalStats(recs)
+	if x.mixed != nil {
+		if err := x.showMixedStats(); err != nil && statsErr == nil {
+			statsErr = err
+		}
+	}
 	// The report is written even when flows failed: that is when the
 	// per-flow view matters most.
 	if err := x.writeTCPFlowReport(); err != nil {

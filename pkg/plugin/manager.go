@@ -19,7 +19,7 @@ import (
 )
 
 // MaxPluginOutputBytes is the ceiling for a single plugin response on both
-// Go goshim and TinyGo/C ABIs. It is also advertised to scenario plugins.
+// Go goshim and TinyGo/C ABIs.
 const MaxPluginOutputBytes = 32 * 1024 * 1024 // 32 MiB
 
 const maxPluginOutputBytes = MaxPluginOutputBytes

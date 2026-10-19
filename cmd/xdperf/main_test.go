@@ -16,11 +16,11 @@ func TestTCPPluginSelection(t *testing.T) {
 		wantErr bool
 	}{
 		{"legacy TCP", []string{"--tcp", "--tcp-dst", "192.0.2.1:5201", "--tcp-bytes", "1k"}, "", false},
-		{"scenario", []string{"--tcp", "--plugin", "heavyhitter.go"}, "heavyhitter.go", false},
-		{"short plugin flag", []string{"--tcp", "-p", "heavyhitter.go"}, "heavyhitter.go", false},
-		{"explicit default flows", []string{"--tcp", "--plugin", "heavyhitter.go", "--tcp-flows", "1"}, "", true},
-		{"explicit zero bytes", []string{"--tcp", "--plugin", "heavyhitter.go", "--tcp-bytes", "0"}, "", true},
-		{"conflicting dst", []string{"--tcp", "--plugin", "heavyhitter.go", "--tcp-dst", "192.0.2.1:5201"}, "", true},
+		{"removed scenario", []string{"--tcp", "--plugin", "mixed.go"}, "", true},
+		{"short plugin flag", []string{"--tcp", "-p", "mixed.go"}, "", true},
+		{"explicit default flows", []string{"--tcp", "--plugin", "mixed.go", "--tcp-flows", "1"}, "", true},
+		{"explicit zero bytes", []string{"--tcp", "--plugin", "mixed.go", "--tcp-bytes", "0"}, "", true},
+		{"conflicting dst", []string{"--tcp", "--plugin", "mixed.go", "--tcp-dst", "192.0.2.1:5201"}, "", true},
 		{"packet mode default", []string{"--count", "1k"}, "simpleudp.tinygo", false},
 	}
 	for _, tc := range cases {
@@ -40,7 +40,7 @@ func TestTCPPluginSelection(t *testing.T) {
 			if err == nil && cfg.PluginName != tc.plugin {
 				t.Fatalf("plugin = %q, want %q", cfg.PluginName, tc.plugin)
 			}
-			if err == nil && tc.plugin == "heavyhitter.go" && cfg.PluginLanguage != "go" {
+			if err == nil && tc.plugin == "mixed.go" && cfg.PluginLanguage != "go" {
 				t.Fatalf("language = %q", cfg.PluginLanguage)
 			}
 		})

@@ -37,9 +37,6 @@ const (
 	// Pre-built packets are sent as they are.
 	GeneratorTemplateTypeRaw GeneratorTemplateType = "raw"
 
-	// TCP scenario: the host initializes the existing TCP engine.
-	GeneratorTemplateTypeTCPScenario GeneratorTemplateType = "tcp_scenario"
-
 	// Variable template.
 	// Packets are generated on the host/XDP data-plane side using a template
 	// and variable parameter sets.
@@ -48,13 +45,10 @@ const (
 
 // GeneratorResponse represents the response returned from the packet
 // generation plugin to simpleudp.
-// Depending on TemplateType, RawPacketTemplate, VariablePacketTemplate,
-// or TCPScenario is used.
+// TemplateType selects RawPacketTemplate or VariablePacketTemplate.
 type GeneratorProcessResponse struct {
 	// Template type.
 	TemplateType GeneratorTemplateType `json:"template_type"`
-
-	TCPScenario *TCPScenario `json:"tcp_scenario,omitempty"`
 
 	// Packet list for raw templates.
 	// Used when TemplateType is raw.
@@ -162,6 +156,10 @@ type ChecksumSpec struct {
 // PacketVariant represents a base packet, the variable regions inside it,
 // and a weight used for selection when patterns require it.
 type PacketVariant struct {
+	// Empty kind preserves the packet-only ABI.
+	Kind    string          `json:"kind,omitempty"`
+	TCPFlow *TCPFlowVariant `json:"tcp_flow,omitempty"`
+
 	// Base packet containing raw bytes beginning from the Ethernet header.
 	Base BasePacket `json:"base_packet"`
 
@@ -195,4 +193,45 @@ type GeneratorCleanupRequest struct {
 type GeneratorCleanupResponse struct {
 	// Indicates whether the cleanup was successful.
 	Success bool `json:"success"`
+}
+
+// TCPFlowVariant describes a group of static TCP connections sharing a target.
+// The engine owns TCP sequence numbers, flags, windows and checksums.
+type TCPFlowVariant struct {
+	Encapsulation *TCPEncapsulation `json:"encapsulation,omitempty"`
+	Destination   string            `json:"destination,omitempty"`
+	SynOptions    []byte            `json:"syn_options,omitempty"`
+	DataOptions   []byte            `json:"data_options,omitempty"`
+	Flows         []TCPFlow         `json:"flows"`
+}
+
+// TCPFlow.Bytes is a decimal uint64 string; zero requires --duration.
+type TCPFlow struct {
+	Bytes string `json:"bytes"`
+}
+
+// TCPEncapsulation declares mutable outer-header fields. Offsets are absolute
+// frame offsets; lengths contain Constant + inner TCP segment length.
+type TCPEncapsulation struct {
+	InnerL3Offset uint16            `json:"inner_l3_offset"`
+	InnerL4Offset uint16            `json:"inner_l4_offset"`
+	Lengths       []TCPLengthField  `json:"lengths"`
+	IPv4Checksums []uint16          `json:"ipv4_checksums"`
+	UDPChecksums  []TCPUDPChecksum  `json:"udp_checksums"`
+	UDPSourcePort *TCPUDPSourcePort `json:"udp_source_port,omitempty"`
+}
+type TCPLengthField struct {
+	Offset   uint16 `json:"offset"`
+	Kind     string `json:"kind"`
+	Constant uint16 `json:"constant"`
+}
+type TCPUDPChecksum struct {
+	Offset   uint16 `json:"offset"`
+	IPOffset uint16 `json:"ip_offset"`
+	Mode     string `json:"mode"` // zero (IPv4 only) or lco
+}
+type TCPUDPSourcePort struct {
+	Offset uint16 `json:"offset"`
+	Base   uint16 `json:"base"`
+	Count  uint16 `json:"count"`
 }
