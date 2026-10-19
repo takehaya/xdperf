@@ -19,6 +19,10 @@ schedule = json.loads((data / 'schedule.json').read_text())
 keys = [(int(r['block']), r['mode'], int(r['workers']), r['version']) for r in rows]
 assert len(keys) == len(set(keys)) == 120
 assert keys == [tuple(x) for x in schedule]
+for i in range(0, len(keys), 2):
+    left, right = keys[i:i + 2]
+    assert left[:3] == right[:3] and {left[3], right[3]} == {'base', 'head'}
+
 assert {r['mode'] for r in rows} == {'packet', 'mixed31', 'template', 'vxlan', 'geneve'}
 assert {int(r['workers']) for r in rows} == {1, 4}
 metrics = {'packet_pps', 'tcp_segments_s', 'tcp_goodput_mbps', 'startup_s',
@@ -35,6 +39,20 @@ for row in rows:
     assert int(row['packet_errors']) == int(row['dispatch_errors']) == 0
     if row['mode'] != 'packet':
         assert int(row['bytes_acked']) == int(row['sink_bytes'])
+        trial = data / f"b{int(row['block']):02d}-{row['mode']}-w{row['workers']}-{row['version']}"
+        flows = list(csv.DictReader((trial / 'flows.csv').open()))
+        sink = json.loads((trial / 'sink.log').read_text().splitlines()[-1])
+        assert len(flows) == sink['accepted'] == sink['closed'] == 4
+        assert all(flow['state'] == 'done' for flow in flows)
+        assert sum(int(flow['bytes_acked']) for flow in flows) == int(row['bytes_acked']) == sink['bytes']
+        assert sum(int(flow['tx_rtx']) for flow in flows) == int(row['tx_rtx'])
+        final_lines = [line for line in (trial / 'tx.log').read_text().splitlines() if 'tcp final statistics' in line]
+        assert len(final_lines) == 1
+        counters = json.loads(final_lines[0][final_lines[0].index('{'):])
+        assert counters['done'] == 4 and counters['bytes_acked'] == sink['bytes']
+        assert all(counters[key] == 0 for key in ('build_errors', 'failed', 'aborted', 'retransmit_giveups', 'fin_wait2_timeouts'))
+
+
 
 
 def ci(values):
