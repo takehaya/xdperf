@@ -80,7 +80,7 @@ type BpfMixedState struct {
 	DrainOpportunities  uint64
 	Errors              uint64
 	SelectedFlow        uint32
-	Active              uint32
+	_                   [4]byte
 }
 
 type BpfPktState struct {
@@ -322,6 +322,7 @@ type BpfProgramSpecs struct {
 	XdpTxCsumRecalc *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_recalc"`
 	XdpTxMixed      *ebpf.ProgramSpec `ebpf:"xdp_tx_mixed"`
 	XdpTxTcp        *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp"`
+	XdpTxTcpMixed   *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -453,6 +454,7 @@ type BpfPrograms struct {
 	XdpTxCsumRecalc *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
 	XdpTxMixed      *ebpf.Program `ebpf:"xdp_tx_mixed"`
 	XdpTxTcp        *ebpf.Program `ebpf:"xdp_tx_tcp"`
+	XdpTxTcpMixed   *ebpf.Program `ebpf:"xdp_tx_tcp_mixed"`
 }
 
 func (p *BpfPrograms) Close() error {
@@ -468,6 +470,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpTxCsumRecalc,
 		p.XdpTxMixed,
 		p.XdpTxTcp,
+		p.XdpTxTcpMixed,
 	)
 }
 

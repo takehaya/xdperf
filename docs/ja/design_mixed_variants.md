@@ -35,7 +35,9 @@ TCP バリアントの base_packet、variable_params、checksums は受け付け
 ## BPF の送信構成
 
 送信 worker は xdp_tx_mixed を毎回実行する。
-小さな配分テーブルからパケットまたは TCP バリアントを選び、既存の xdp_tx または xdp_tx_tcp に tail call する。
+小さな配分テーブルからパケットまたは TCP バリアントを選び、既存の xdp_tx または TCP 共通処理を使う xdp_tx_tcp_mixed に tail call する。
+TCP 専用と混合の入口を別々にコンパイルし、TCP 専用の走査ループに混合モードの分岐を増やさない。
+混合の入口は常に選択済みの 1 フローだけを駆動し、drain 時の全フローの走査も振り分けプログラムが行う。
 パケットのチェックサム用 tail call は維持する。
 分岐を独立プログラムに置くことで既存の checksum と TCP の verifier 状態空間を結合しない。
 

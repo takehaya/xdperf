@@ -98,7 +98,7 @@ func TestMixedBPFDispatch(t *testing.T) {
 		t.Fatalf("packet count=%d opportunities=%d", packets[cpu].Packets, s.PacketOpportunities)
 	}
 	// A recycled UDP frame must not contaminate TCP's all-zero payload.
-	states[cpu].Active, states[cpu].SelectedFlow = 1, 0
+	states[cpu].SelectedFlow = 0
 	if err := objs.MixedStateMap.Put(uint32(0), states); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestMixedBPFDispatch(t *testing.T) {
 	if err := objs.TcpFlowMap.Put(uint32(0), f); err != nil {
 		t.Fatal(err)
 	}
-	action, frame, err := objs.XdpTxTcp.Test(bytes.Repeat([]byte{0xa5}, 2049))
+	action, frame, err := objs.XdpTxTcpMixed.Test(bytes.Repeat([]byte{0xa5}, 2049))
 	if err != nil {
 		t.Fatal(err)
 	}

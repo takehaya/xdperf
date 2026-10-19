@@ -1376,11 +1376,17 @@ int xdp_tx_mixed(struct xdp_md *ctx)
     struct tcp_cfg *tcp = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
     if (!cfg || !st || !tcp || !cfg->total_weight)
         return XDP_ABORTED;
-    st->active = 1;
     // Drain/abort uses the legacy all-flow cursor and stops packet traffic.
     if (tcp->drain) {
-        st->active = 2;
         st->drain_opportunities++;
+        struct tcp_cpu_state *cs = bpf_map_lookup_elem(&tcp_cpu_state_map, &zero);
+        if (!cs || !cs->count)
+            return XDP_DROP;
+        __u32 cursor = cs->cursor;
+        if (cursor >= cs->count)
+            cursor = 0;
+        cs->cursor = cursor + 1;
+        st->selected_flow = cs->first + cursor * cs->stride;
         bpf_tail_call(ctx, &mixed_progs, 1);
         st->errors++;
         return XDP_ABORTED;

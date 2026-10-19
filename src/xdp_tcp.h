@@ -634,8 +634,9 @@ static __always_inline int tcp_tx_build(struct xdp_md *ctx, const struct tcp_cfg
     return 0;
 }
 
-SEC("xdp")
-int xdp_tx_tcp(struct xdp_md *ctx)
+// Compile separate entry points so mixed selection adds no verifier paths
+// or map lookup overhead to the standalone TCP scan.
+static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode)
 {
     __u32 zero = 0;
     struct tcp_cfg *cfg = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
@@ -643,8 +644,12 @@ int xdp_tx_tcp(struct xdp_md *ctx)
     struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
     if (!cfg || !cs || !st)
         return XDP_ABORTED;
-    struct mixed_state *mixed = bpf_map_lookup_elem(&mixed_state_map, &zero);
-    if ((!mixed || mixed->active != 1) && cs->count == 0) {
+    struct mixed_state *mixed = NULL;
+    if (mixed_mode) {
+        mixed = bpf_map_lookup_elem(&mixed_state_map, &zero);
+        if (!mixed)
+            return XDP_ABORTED;
+    } else if (cs->count == 0) {
         st->idle_iters++;
         return XDP_DROP;
     }
@@ -654,16 +659,16 @@ int xdp_tx_tcp(struct xdp_md *ctx)
     struct tcp_flow *sel = NULL;
     int kind = TXA_NONE;
 
-    for (int i = 0; i < TCP_TX_SCAN; i++) {
-        __u32 cursor = cs->cursor;
-        if (cursor >= cs->count)
-            cursor = 0;
-        cs->cursor = cursor + 1;
-        __u32 idx = cs->first + cursor * cs->stride;
-        if (mixed && mixed->active == 1) {
-            if (i > 0)
-                break;
+    for (int i = 0; i < (mixed_mode ? 1 : TCP_TX_SCAN); i++) {
+        __u32 idx;
+        if (mixed_mode) {
             idx = mixed->selected_flow;
+        } else {
+            __u32 cursor = cs->cursor;
+            if (cursor >= cs->count)
+                cursor = 0;
+            cs->cursor = cursor + 1;
+            idx = cs->first + cursor * cs->stride;
         }
         if (idx >= MAX_TCP_FLOWS)
             continue;
@@ -684,8 +689,8 @@ int xdp_tx_tcp(struct xdp_md *ctx)
 
     // Packet variants may leave arbitrary bytes throughout the payload.
     // Shrink to the fixed headers so tcp_tx_build grows a zero-filled payload.
-    // This also applies during drain, when active=2 selects the legacy cursor.
-    if (mixed && mixed->active) {
+    // The dispatcher selects one flow even during drain.
+    if (mixed_mode) {
         __u32 len = ctx->data_end - ctx->data;
         if (bpf_xdp_adjust_tail(ctx, (int)cfg->hdr_len - (int)len) < 0) {
             st->build_errors++;
@@ -738,6 +743,18 @@ int xdp_tx_tcp(struct xdp_md *ctx)
         break;
     }
     return XDP_TX;
+}
+
+SEC("xdp")
+int xdp_tx_tcp(struct xdp_md *ctx)
+{
+    return tcp_tx_run(ctx, 0);
+}
+
+SEC("xdp")
+int xdp_tx_tcp_mixed(struct xdp_md *ctx)
+{
+    return tcp_tx_run(ctx, 1);
 }
 
 // ---------------------------------------------------------------------------
