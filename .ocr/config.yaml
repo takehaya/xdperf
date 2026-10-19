@@ -28,7 +28,7 @@ context_discovery:
     # config: "openspec/project.md"     # Use this for legacy OpenSpec projects
     specs: "openspec/specs/**/*.md"     # Merged specs for architectural context
     active_changes: "openspec/changes/**/*.md"  # In-flight change proposals
-  
+
   # AI assistant configuration files (auto-detected)
   references:
     - "AGENTS.md"
@@ -38,7 +38,7 @@ context_discovery:
     - ".github/copilot-instructions.md"
     - "CONTRIBUTING.md"
     - "openspec/AGENTS.md"  # OpenSpec instructions (if present)
-  
+
   # Additional project-specific files to include
   # additional:
   #   - "docs/ARCHITECTURE.md"
