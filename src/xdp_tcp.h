@@ -123,10 +123,38 @@ struct tcp_cfg {
     __u8 hdr_tmpl[64];
 };
 
+struct tcp_length_patch {
+    __u16 offset;
+    __u16 constant;
+};
+struct tcp_outer_ip {
+    __u16 offset;
+    __u8 version;
+    __u8 _pad;
+};
+struct tcp_outer_udp {
+    __u16 offset;
+    __u16 ip_offset;
+    __u32 pseudo_sum;
+    __u8 version;
+    __u8 mode;
+    __u16 _pad;
+};
 struct tcp_template {
     struct tcp_cfg cfg;
-    __u8 prefix[64];
+    __u8 prefix[256];
+    struct tcp_length_patch lengths[8];
+    struct tcp_outer_ip outer_ips[4];
+    struct tcp_outer_udp udps[4];
+    __u16 entropy_offset;
+    __u16 entropy_base;
+    __u16 entropy_count;
+    __u8 length_count;
+    __u8 outer_ip_count;
+    __u8 udp_count;
     __u8 tcp_header[20];
+    __u32 syn_sum;
+    __u32 data_sum;
     __u8 syn_options[40];
     __u8 data_options[40];
     __u8 syn_len;

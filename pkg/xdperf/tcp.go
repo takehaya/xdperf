@@ -300,10 +300,10 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 	if x.cfg.TCPIPID == "shared" {
 		cfg.IpIdShared = 1
 	}
-	if int(t.l4Off) > len(cfg.HdrTmpl) || len(template) < int(t.l4Off) {
+	if x.mixed == nil && (int(t.l4Off) > len(cfg.HdrTmpl) || len(template) < int(t.l4Off)) {
 		return fmt.Errorf("header length %d does not fit the data-plane template (%d)", t.l4Off, len(cfg.HdrTmpl))
 	}
-	copy(cfg.HdrTmpl[:], template[:t.l4Off])
+	copy(cfg.HdrTmpl[:], template[:min(int(t.l4Off), len(cfg.HdrTmpl))])
 	zero := uint32(0)
 	if err := x.bpfobjs.TcpCfgMap.Put(&zero, &cfg); err != nil {
 		return fmt.Errorf("tcp_cfg_map: %w", err)
@@ -329,18 +329,22 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 			Iss:         rand.Uint32(),
 			BytesTarget: bytesTarget,
 		}
-		if x.mixed != nil {
-			for j, g := range x.mixed.groups {
-				if uint32(i) >= g.first && uint32(i) < g.first+g.count {
-					vals[i].TemplateId = uint32(j)
-					if len(g.variant.Base.Data) != 0 {
-						tt, _ := parseTCPBase(g.variant.Base)
-						if tt.ipVersion == 4 {
-							vals[i].IpId = binary.BigEndian.Uint16(g.variant.Base.Data[int(tt.l3Off)+4:])
-						}
-					}
-					break
+	}
+	if x.mixed != nil {
+		for j, g := range x.mixed.groups {
+			var id uint16
+			if len(g.variant.Base.Data) != 0 {
+				target, err := parseTCPVariant(g.variant)
+				if err != nil {
+					return err
 				}
+				if target.ipVersion == 4 {
+					id = binary.BigEndian.Uint16(g.variant.Base.Data[int(target.l3Off)+4:])
+				}
+			}
+			for i := g.first; i < g.first+g.count; i++ {
+				vals[i].TemplateId = uint32(j)
+				vals[i].IpId = id
 			}
 		}
 	}
@@ -525,7 +529,7 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	var template []byte
 	var err error
 	if x.mixed != nil && len(x.mixed.groups[0].variant.Base.Data) != 0 {
-		t, err = parseTCPBase(x.mixed.groups[0].variant.Base)
+		t, err = parseTCPVariant(x.mixed.groups[0].variant)
 		if err == nil {
 			err = x.templateMSS(t, 0)
 		}

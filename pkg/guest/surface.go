@@ -198,13 +198,40 @@ type GeneratorCleanupResponse struct {
 // TCPFlowVariant describes a group of static TCP connections sharing a target.
 // The engine owns TCP sequence numbers, flags, windows and checksums.
 type TCPFlowVariant struct {
-	Destination string    `json:"destination,omitempty"`
-	SynOptions  []byte    `json:"syn_options,omitempty"`
-	DataOptions []byte    `json:"data_options,omitempty"`
-	Flows       []TCPFlow `json:"flows"`
+	Encapsulation *TCPEncapsulation `json:"encapsulation,omitempty"`
+	Destination   string            `json:"destination,omitempty"`
+	SynOptions    []byte            `json:"syn_options,omitempty"`
+	DataOptions   []byte            `json:"data_options,omitempty"`
+	Flows         []TCPFlow         `json:"flows"`
 }
 
 // TCPFlow.Bytes is a decimal uint64 string; zero requires --duration.
 type TCPFlow struct {
 	Bytes string `json:"bytes"`
+}
+
+// TCPEncapsulation declares mutable outer-header fields. Offsets are absolute
+// frame offsets; lengths contain Constant + inner TCP segment length.
+type TCPEncapsulation struct {
+	InnerL3Offset uint16            `json:"inner_l3_offset"`
+	InnerL4Offset uint16            `json:"inner_l4_offset"`
+	Lengths       []TCPLengthField  `json:"lengths"`
+	IPv4Checksums []uint16          `json:"ipv4_checksums"`
+	UDPChecksums  []TCPUDPChecksum  `json:"udp_checksums"`
+	UDPSourcePort *TCPUDPSourcePort `json:"udp_source_port,omitempty"`
+}
+type TCPLengthField struct {
+	Offset   uint16 `json:"offset"`
+	Kind     string `json:"kind"`
+	Constant uint16 `json:"constant"`
+}
+type TCPUDPChecksum struct {
+	Offset   uint16 `json:"offset"`
+	IPOffset uint16 `json:"ip_offset"`
+	Mode     string `json:"mode"` // zero (IPv4 only) or lco
+}
+type TCPUDPSourcePort struct {
+	Offset uint16 `json:"offset"`
+	Base   uint16 `json:"base"`
+	Count  uint16 `json:"count"`
 }

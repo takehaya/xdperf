@@ -1460,15 +1460,8 @@ int xdp_rx_mixed(struct xdp_md *ctx)
     } else {
         return XDP_PASS;
     }
-    if (transport == IPPROTO_TCP) {
+    if (transport == IPPROTO_TCP || transport == IPPROTO_UDP) {
         bpf_tail_call(ctx, &mixed_progs, 2);
-        return XDP_ABORTED;
-    }
-    // Leave ND, ICMP and unknown traffic to the host stack.
-    __u32 zero = 0;
-    struct mixed_cfg *cfg = bpf_map_lookup_elem(&mixed_cfg_map, &zero);
-    if (cfg && cfg->receive && transport == IPPROTO_UDP) {
-        bpf_tail_call(ctx, &mixed_progs, 3);
         return XDP_ABORTED;
     }
     return XDP_PASS;
