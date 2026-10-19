@@ -11,7 +11,7 @@
 | 1 | グループ別 base_packet、Ethernet、VLAN 最大 2 段、IPv4/IPv6、固定 TCP オプション | feat/tcp-flow-template |
 | 2 | 256 バイトのひな型、汎用 TX 修正表、VXLAN/GENEVE RX、VXLAN E2E | feat/tcp-flow-encap |
 | 3 | SRv6、GTP-U、GRE、IPIP、MPLS の RX | feat/tcp-flow-rx-tunnels |
-| 4 | Timestamps、ペイロードパターン、フロー別 variable_params | 設計のみ |
+| 4 | Timestamps、ペイロードパターン、フロー別 variable_params | feat/tcp-flow-payload |
 
 `--tcp-server` のトンネル対応は対象外とする。
 `--tcp` と packet 専用の TX/RX は従来の入口を維持する。
@@ -645,3 +645,66 @@ Git に残すのは [summary.csv](benchmarks/tcp-rx-tunnels/summary.csv) と検�
 リポジトリのルートで `python3 docs/ja/benchmarks/tcp-rx-tunnels/verify.py out/mixbench/main` を実行すると、96 試行の網羅性、エラー数、バイト数、対応差と CI を検算する。
 `report.py` は summary から上の表を生成する。
 実行手順と保存内容は [測定 README](benchmarks/tcp-rx-tunnels/README.md) に記載した。
+
+
+## 段階 4 の実装仕様
+
+### 専用入口とフロー別テンプレート
+
+`timestamps` または非ゼロの `payload_pattern` を含む集合だけが、拡張用の混合 TCP TX/RX 入口をロードする。
+指定しない集合と全ゼロのパターンは従来の入口を使う。
+通常 TCP と packet 専用の入口から、拡張 builder とペイロード生成器を呼ばない。
+variable_params だけを使う場合も従来の混合入口で処理できる。
+
+グループ用のテンプレート番号 0〜15 を残し、variable_params を持つグループのフローには 16 以降を割り当てる。
+展開された値は既存マップに置くため、TX と RX の lookup 数は増えない。
+必要なエントリ数のマップはプラグイン検査後、worker と RX の起動前に作り直す。
+値領域の上限は 64 MiB で、パターンは 16 エントリの別マップに置き、テンプレートの payload_id から共有する。
+終了時の drain/abort も展開された全テンプレートへ伝える。
+
+### プラグインの指定と制限
+
+次は TCP バリアントの追加フィールドの例であり、base_packet の内側 IPv4 ヘッダが Ethernet 直後にある場合を示す。
+variable_params は tcp_flow の内側ではなくバリアント直下に置く。
+
+```json
+{
+  "variable_params": [
+    {
+      "byte_start": 26,
+      "byte_size": 4,
+      "byte_range": {"start": 3221225995, "end": 3221225998},
+      "pattern_type": "sequential"
+    }
+  ],
+  "tcp_flow": {
+    "timestamps": true,
+    "payload_pattern": "ASP+",
+    "flows": [{"bytes": "4097"}, {"bytes": "65539"}]
+  }
+}
+```
+
+内側送信元 IP の部分範囲を、既存 SDK と同じネットワークバイト順で指定する。
+byte_size は 1、2、4、6、8 に対応し、範囲外の値、重なり、未定義の pattern_type を拒否する。
+sequential はフロー順に進めて範囲末尾で戻り、mixed は起動時にフローごとに抽選する。
+実際に生成されたアドレスが unspecified または multicast になった場合も起動を拒否する。
+変更できる範囲が送信元アドレスだけなので、base_packet から指定した destination は変化しない。
+
+Timestamps の 12 バイトは SYN/通常オプションの先頭に追加する。
+MSS/WS の 8 バイトと合わせ、ユーザーの SYN オプションは最大 20 バイト、通常オプションは最大 28 バイトとなる。
+相手が Timestamps を拒否した場合、以後のオプションには追加しないが、ローカル MSS で予約した 12 バイトは戻さない。
+RTT による RTO の動的推定は追加せず、既存の再送タイマーを使う。
+
+ペイロードは stream_offset に対応する繰り返し列であり、TCP シーケンス番号の下位 32 bit をパターン位置に流用しない。
+奇数長のパターンは 2 周分へ拡張して偶数周期とし、部分和を使うときに開始位置のバイト位相を補正する。
+builder が TCP と外側 UDP のチェックサムを確定して戻った後、16 バイト単位の bpf_loop でペイロードを書き込む。
+これにより builder、書き込み、callback のスタックを同時に積まず、512 バイト制限を守る。
+`bpf_loop` は既存の packet チェックサム経路でも使用している helper であり、新しいカーネル最低要件を加えない。
+
+[追加 E2E](../../examples/tcp-payload/README.md) は、Linux TCP 相手に IPv4/IPv6 のそれぞれで合意、非合意、パターン、フロー別 IP、併用、ACK 損失下の併用を実行する。
+受信側は recv の分割位置とは独立に全バイトを検査し、4 フローの完了と 77,830 バイトを照合する。
+トンネル内のパターン、Timestamps、LCO、go-back-N と RTO の再送は BPF_PROG_RUN で検査する。
+
+PAWS の古い timestamp 拒否と timestamp 欠落、peer と送信側の 32 bit ラップ、古い時刻観測の抑制、FIN と最終 ACK、非合意時の data/FIN を BPF_PROG_RUN で検査した。
+24 日経過した TS.Recent の失効境界は、このホストで時刻を制御して直接実行しておらず、未検証の範囲として残す。

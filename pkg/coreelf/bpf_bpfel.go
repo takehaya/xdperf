@@ -158,7 +158,7 @@ type BpfTcpFlow struct {
 	SrcPort     uint16
 	Mss         uint16
 	SynRst      uint8
-	Pad         uint8
+	TsEnabled   uint8
 	IpId        uint16
 	Iss         uint32
 	SndUna      uint32
@@ -167,6 +167,9 @@ type BpfTcpFlow struct {
 	RcvNxt      uint32
 	SndWnd      uint32
 	TemplateId  uint32
+	TsRecent    uint32
+	TsClock     uint32
+	TsRecentNs  uint64
 	BytesTarget uint64
 	BytesAcked  uint64
 	LastSendNs  uint64
@@ -176,6 +179,14 @@ type BpfTcpFlow struct {
 	TxRtx       uint64
 	RxReplies   uint64
 	RxPkts      uint64
+}
+
+type BpfTcpPayload struct {
+	_      structs.HostLayout
+	Sums   [257]uint32
+	Bytes  [512]uint8
+	Period uint16
+	Pad    uint16
 }
 
 type BpfTcpSrvCfg struct {
@@ -307,7 +318,8 @@ type BpfTcpTemplate struct {
 	DataOptions   [40]uint8
 	SynLen        uint8
 	DataLen       uint8
-	Pad           [2]uint8
+	Timestamps    uint8
+	PayloadId     uint8
 	_             [4]byte
 }
 
@@ -353,19 +365,21 @@ type BpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type BpfProgramSpecs struct {
-	XdpPassDummy    *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
-	XdpRx           *ebpf.ProgramSpec `ebpf:"xdp_rx"`
-	XdpRxMixed      *ebpf.ProgramSpec `ebpf:"xdp_rx_mixed"`
-	XdpRxTcp        *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp"`
-	XdpRxTcpMixed   *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_mixed"`
-	XdpRxTcpServer  *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_server"`
-	XdpTx           *ebpf.ProgramSpec `ebpf:"xdp_tx"`
-	XdpTxChecksum   *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
-	XdpTxCsumDiff   *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_diff"`
-	XdpTxCsumRecalc *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_recalc"`
-	XdpTxMixed      *ebpf.ProgramSpec `ebpf:"xdp_tx_mixed"`
-	XdpTxTcp        *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp"`
-	XdpTxTcpMixed   *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed"`
+	XdpPassDummy     *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
+	XdpRx            *ebpf.ProgramSpec `ebpf:"xdp_rx"`
+	XdpRxMixed       *ebpf.ProgramSpec `ebpf:"xdp_rx_mixed"`
+	XdpRxTcp         *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpMixed    *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_mixed"`
+	XdpRxTcpMixedExt *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_mixed_ext"`
+	XdpRxTcpServer   *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_server"`
+	XdpTx            *ebpf.ProgramSpec `ebpf:"xdp_tx"`
+	XdpTxChecksum    *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
+	XdpTxCsumDiff    *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_diff"`
+	XdpTxCsumRecalc  *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_recalc"`
+	XdpTxMixed       *ebpf.ProgramSpec `ebpf:"xdp_tx_mixed"`
+	XdpTxTcp         *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp"`
+	XdpTxTcpMixed    *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed"`
+	XdpTxTcpMixedExt *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed_ext"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -385,6 +399,7 @@ type BpfMapSpecs struct {
 	TcpCfgMap       *ebpf.MapSpec `ebpf:"tcp_cfg_map"`
 	TcpCpuStateMap  *ebpf.MapSpec `ebpf:"tcp_cpu_state_map"`
 	TcpFlowMap      *ebpf.MapSpec `ebpf:"tcp_flow_map"`
+	TcpPayloadMap   *ebpf.MapSpec `ebpf:"tcp_payload_map"`
 	TcpSrvCfgMap    *ebpf.MapSpec `ebpf:"tcp_srv_cfg_map"`
 	TcpSrvFlowMap   *ebpf.MapSpec `ebpf:"tcp_srv_flow_map"`
 	TcpSrvStatsMap  *ebpf.MapSpec `ebpf:"tcp_srv_stats_map"`
@@ -404,6 +419,8 @@ type BpfVariableSpecs struct {
 	MaxPacketSize      *ebpf.VariableSpec `ebpf:"max_packet_size"`
 	MinPacketSize      *ebpf.VariableSpec `ebpf:"min_packet_size"`
 	MixedHasLco        *ebpf.VariableSpec `ebpf:"mixed_has_lco"`
+	MixedHasPayload    *ebpf.VariableSpec `ebpf:"mixed_has_payload"`
+	MixedHasTimestamps *ebpf.VariableSpec `ebpf:"mixed_has_timestamps"`
 	MixedMaxLengths    *ebpf.VariableSpec `ebpf:"mixed_max_lengths"`
 	MixedMaxOuterIps   *ebpf.VariableSpec `ebpf:"mixed_max_outer_ips"`
 	MixedMaxUdps       *ebpf.VariableSpec `ebpf:"mixed_max_udps"`
@@ -443,6 +460,7 @@ type BpfMaps struct {
 	TcpCfgMap       *ebpf.Map `ebpf:"tcp_cfg_map"`
 	TcpCpuStateMap  *ebpf.Map `ebpf:"tcp_cpu_state_map"`
 	TcpFlowMap      *ebpf.Map `ebpf:"tcp_flow_map"`
+	TcpPayloadMap   *ebpf.Map `ebpf:"tcp_payload_map"`
 	TcpSrvCfgMap    *ebpf.Map `ebpf:"tcp_srv_cfg_map"`
 	TcpSrvFlowMap   *ebpf.Map `ebpf:"tcp_srv_flow_map"`
 	TcpSrvStatsMap  *ebpf.Map `ebpf:"tcp_srv_stats_map"`
@@ -467,6 +485,7 @@ func (m *BpfMaps) Close() error {
 		m.TcpCfgMap,
 		m.TcpCpuStateMap,
 		m.TcpFlowMap,
+		m.TcpPayloadMap,
 		m.TcpSrvCfgMap,
 		m.TcpSrvFlowMap,
 		m.TcpSrvStatsMap,
@@ -487,6 +506,8 @@ type BpfVariables struct {
 	MaxPacketSize      *ebpf.Variable `ebpf:"max_packet_size"`
 	MinPacketSize      *ebpf.Variable `ebpf:"min_packet_size"`
 	MixedHasLco        *ebpf.Variable `ebpf:"mixed_has_lco"`
+	MixedHasPayload    *ebpf.Variable `ebpf:"mixed_has_payload"`
+	MixedHasTimestamps *ebpf.Variable `ebpf:"mixed_has_timestamps"`
 	MixedMaxLengths    *ebpf.Variable `ebpf:"mixed_max_lengths"`
 	MixedMaxOuterIps   *ebpf.Variable `ebpf:"mixed_max_outer_ips"`
 	MixedMaxUdps       *ebpf.Variable `ebpf:"mixed_max_udps"`
@@ -497,19 +518,21 @@ type BpfVariables struct {
 //
 // It can be passed to LoadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type BpfPrograms struct {
-	XdpPassDummy    *ebpf.Program `ebpf:"xdp_pass_dummy"`
-	XdpRx           *ebpf.Program `ebpf:"xdp_rx"`
-	XdpRxMixed      *ebpf.Program `ebpf:"xdp_rx_mixed"`
-	XdpRxTcp        *ebpf.Program `ebpf:"xdp_rx_tcp"`
-	XdpRxTcpMixed   *ebpf.Program `ebpf:"xdp_rx_tcp_mixed"`
-	XdpRxTcpServer  *ebpf.Program `ebpf:"xdp_rx_tcp_server"`
-	XdpTx           *ebpf.Program `ebpf:"xdp_tx"`
-	XdpTxChecksum   *ebpf.Program `ebpf:"xdp_tx_checksum"`
-	XdpTxCsumDiff   *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
-	XdpTxCsumRecalc *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
-	XdpTxMixed      *ebpf.Program `ebpf:"xdp_tx_mixed"`
-	XdpTxTcp        *ebpf.Program `ebpf:"xdp_tx_tcp"`
-	XdpTxTcpMixed   *ebpf.Program `ebpf:"xdp_tx_tcp_mixed"`
+	XdpPassDummy     *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpRx            *ebpf.Program `ebpf:"xdp_rx"`
+	XdpRxMixed       *ebpf.Program `ebpf:"xdp_rx_mixed"`
+	XdpRxTcp         *ebpf.Program `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpMixed    *ebpf.Program `ebpf:"xdp_rx_tcp_mixed"`
+	XdpRxTcpMixedExt *ebpf.Program `ebpf:"xdp_rx_tcp_mixed_ext"`
+	XdpRxTcpServer   *ebpf.Program `ebpf:"xdp_rx_tcp_server"`
+	XdpTx            *ebpf.Program `ebpf:"xdp_tx"`
+	XdpTxChecksum    *ebpf.Program `ebpf:"xdp_tx_checksum"`
+	XdpTxCsumDiff    *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
+	XdpTxCsumRecalc  *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
+	XdpTxMixed       *ebpf.Program `ebpf:"xdp_tx_mixed"`
+	XdpTxTcp         *ebpf.Program `ebpf:"xdp_tx_tcp"`
+	XdpTxTcpMixed    *ebpf.Program `ebpf:"xdp_tx_tcp_mixed"`
+	XdpTxTcpMixedExt *ebpf.Program `ebpf:"xdp_tx_tcp_mixed_ext"`
 }
 
 func (p *BpfPrograms) Close() error {
@@ -519,6 +542,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpRxMixed,
 		p.XdpRxTcp,
 		p.XdpRxTcpMixed,
+		p.XdpRxTcpMixedExt,
 		p.XdpRxTcpServer,
 		p.XdpTx,
 		p.XdpTxChecksum,
@@ -527,6 +551,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpTxMixed,
 		p.XdpTxTcp,
 		p.XdpTxTcpMixed,
+		p.XdpTxTcpMixedExt,
 	)
 }
 

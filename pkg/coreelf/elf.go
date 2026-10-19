@@ -251,6 +251,8 @@ func LoadMixedPrograms(objs *BpfObjects, spec *ebpf.CollectionSpec) error {
 type MixedProgramFeatures struct {
 	Lengths, OuterIPs, UDPs uint32
 	LCO                     bool
+	Timestamps, Payload     bool
+	TemplateEntries         uint32
 }
 
 // LoadMixedProgramsWithFeatures specializes builders before verification. The
@@ -266,15 +268,37 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 	// Copy before changing constants: base programs and later callers retain
 	// their original spec, and the mixed rodata is loaded with these values.
 	spec = spec.Copy()
+	if features.TemplateEntries > 16 {
+		m := spec.Maps["tcp_template_map"]
+		if uint64(features.TemplateEntries)*uint64(m.ValueSize) > 64<<20 {
+			return fmt.Errorf("TCP templates exceed 64 MiB")
+		}
+		m.MaxEntries = features.TemplateEntries
+		replacement, err := ebpf.NewMap(m)
+		if err != nil {
+			return fmt.Errorf("expand TCP templates: %w", err)
+		}
+		old := objs.TcpTemplateMap
+		objs.TcpTemplateMap = replacement
+		old.Close()
+	}
 	lco := uint32(0)
 	if features.LCO {
 		lco = 1
 	}
+	flag := func(v bool) uint32 {
+		if v {
+			return 1
+		}
+		return 0
+	}
 	for name, value := range map[string]uint32{
-		"mixed_max_lengths":   features.Lengths,
-		"mixed_max_outer_ips": features.OuterIPs,
-		"mixed_max_udps":      features.UDPs,
-		"mixed_has_lco":       lco,
+		"mixed_has_timestamps": flag(features.Timestamps),
+		"mixed_has_payload":    flag(features.Payload),
+		"mixed_max_lengths":    features.Lengths,
+		"mixed_max_outer_ips":  features.OuterIPs,
+		"mixed_max_udps":       features.UDPs,
+		"mixed_has_lco":        lco,
 	} {
 		v, ok := spec.Variables[name]
 		if !ok {
@@ -291,6 +315,10 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 		if m, ok := maps.Field(i).Interface().(*ebpf.Map); ok && m != nil {
 			replacements[name] = m
 		}
+	}
+	if features.Timestamps || features.Payload {
+		spec.Programs["xdp_tx_tcp_mixed"] = spec.Programs["xdp_tx_tcp_mixed_ext"]
+		spec.Programs["xdp_rx_tcp_mixed"] = spec.Programs["xdp_rx_tcp_mixed_ext"]
 	}
 	var mixed struct {
 		XdpRxMixed    *ebpf.Program `ebpf:"xdp_rx_mixed"`
