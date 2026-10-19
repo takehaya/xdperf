@@ -89,7 +89,8 @@ JIT サイズの完全一致を BPF バイトコード不変の判定には使�
 ## 測定条件と最終版の命令数
 
 比較元は main `7b16bbc`、最終版は `ec28839`。
-測定値と実行ファイルのハッシュは [測定資料](benchmarks/mixed-startup/README.md) に収録する。
+小さな集計 CSV と検算スクリプトは [測定資料](benchmarks/mixed-startup/README.md) に収録する。
+生データと実行ファイルのハッシュ一覧は git 管理外の `out/` に保全し、保存場所と検算コマンドは同 README に記載する。
 全 3 回とも 6 ブロックの対応比較とし、各 8 秒、1／4 worker、混合比率 3:1、TCP 4 flow、MSS 1024、window 32 で実行した。
 VXLAN／GENEVE は外側 IPv4/UDP LCO、内側 Ethernet/IPv4/TCP を使用した。
 起動時間はプロセス起動から送信開始ログまで、混合スループットは送信開始から drain 開始までの時間と最終カウンタから求める。
@@ -124,7 +125,7 @@ packet と通常 TCP の起動経路を保つため、基底ロードの対象�
 
 `ae262c4` の全 96 試行ではエラー・再送 0、全フローの受信バイト数が一致した。
 非カプセル化 1 worker の有意な低下は解消したが、VXLAN 1 worker の packet pps は −1.05%［95% CI: −1.77%, −0.32%］、TCP goodput は −1.09%［−1.88%, −0.31%］で、まだ完了条件を満たさなかった。
-データとバイナリは `out/mixbench2/`、レビュー用の測定値は `benchmarks/mixed-startup/second/` に保存する。
+データとバイナリは `out/mixbench2/`、集計は `benchmarks/mixed-startup/second/summary.csv` に保存する。
 
 展開した各反復で `const volatile` の上限を再読込していたため、verifier が分岐を削除した後にも不要なロードが残る。
 各ループの直前で上限を一度だけ読み、LCO の有無も UDP ループの外で一度だけ読む形に変更する。
@@ -205,6 +206,8 @@ packet 専用と通常 TCP の起動時間に有意な差は検出しなかっ�
 BPF ロード検証は 6.1、6.6、6.12、6.18、7.0、7.1、7.2-rc2（source build）で成功した。
 PR 作成後の checks と Copilot レビューも別途完了まで確認する。
 
-測定値は [benchmarks/mixed-startup](benchmarks/mixed-startup/README.md) に保存した。
-`verify.py` により全 3 回の対応平均と t 分布 CI、条件の欠落・重複、各条件の 6 対を再検証できる。
-生ログとバイナリは作業ディレクトリの `out/mixbench/`、`out/mixbench2/`、`out/mixbench3/` に残した。
+全 3 回の集計 CSV と既存の検算スクリプトは [benchmarks/mixed-startup](benchmarks/mixed-startup/README.md) に保存した。
+生ログとバイナリは作業ディレクトリ `/tmp/claude-1000/xdperf-seqA/` の `out/mixbench/`、`out/mixbench2/`、`out/mixbench3/` に残した。
+追跡対象から外した raw CSV、実行順、ビルド情報、通常 TCP 起動測定値、命令比較結果は、同じ作業ディレクトリの `out/mixed-startup-review-data/` に元の構成で保全した。
+生データの保存先を `verify.py` に明示して、全 3 回の対応平均と t 分布 CI、条件の欠落と重複、各条件の 6 対を再検証する。
+検算にはリポジトリ外の測定値が必要であり、実行手順は上記 README を参照する。
