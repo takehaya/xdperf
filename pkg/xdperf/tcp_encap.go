@@ -252,14 +252,11 @@ func parseTCPEncapsulation(base guest.BasePacket, e *guest.TCPEncapsulation) (*p
 			flags := binary.BigEndian.Uint16(b[off:])
 			proto = binary.BigEndian.Uint16(b[off+2:])
 			off += 4
-			// A GRE checksum changes with every segment but has no patch kind yet.
-			if flags&^uint16(0x3000) != 0 {
-				return nil, fmt.Errorf("GRE supports only version 0 key/sequence; checksum/routing unsupported")
+			// Checksums and sequence numbers require per-packet engine updates.
+			if flags&^uint16(0x2000) != 0 {
+				return nil, fmt.Errorf("GRE supports only version 0 with optional key; checksum/routing/sequence unsupported")
 			}
 			if flags&0x2000 != 0 {
-				off += 4
-			}
-			if flags&0x1000 != 0 {
 				off += 4
 			}
 			if !need(off, 0) {

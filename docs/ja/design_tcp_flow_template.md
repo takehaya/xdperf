@@ -147,7 +147,7 @@ UDP が多段の場合は内側から計算し、外側が既に確定した内�
 最大修正数は長さ 8、IPv4 チェックサム 4、外側 UDP チェックサム 4、解析の入れ子 4 層とする。
 Go は VXLAN、GENEVE、GTP-U、SRv6、GRE、IPIP、MPLS の長さと構造を照合する。
 未知の構造、IPv4 options、断片、未対応の拡張機能は理由付きで拒否する。
-GENEVE の可変オプション長、GTP-U の optional fields、GRE の optional key/sequence、MPLS の bottom-of-stack を解析し、境界を確認する。
+GENEVE の可変オプション長、GTP-U の optional fields、GRE の optional key、MPLS の bottom-of-stack を解析し、境界を確認する。
 対応する送信構造と受信構造が異なる期間は、未対応の RX を利用する設定を明確に説明する。
 
 ## 受信側とフロー照合
@@ -240,9 +240,11 @@ clang-22 で生成した BPF 命令数は、packet TX 391、packet RX 176、通�
 ## 段階 2 の実装上の判断
 
 段階 2 は汎用 TX、VXLAN/GENEVE RX、Linux VXLAN 相手の IPv4/IPv6 E2E を実装する。
-GRE checksum と routing フラグは拒否する。
+GRE checksum、routing、sequence (S) フラグは拒否する。
 合意した修正表には GRE checksum の種類がなく、長さ変更後の正しい値を生成できないためである。
-key と sequence のバイトは保持し、version 0 の GRE、IPIP、SRv6、GTP-U、MPLS の送信ひな型を解析して照合する。
+sequence をひな型の固定値のまま繰り返すと、重複・逆順を検出する対向が後続パケットを破棄し得る。
+トンネル単位の採番を実装するまでは S ビットを受理せず、プラグイン所有バイトを無条件に保持する原則の例外とする。
+key のバイトは保持し、version 0 の GRE、IPIP、SRv6、GTP-U、MPLS の送信ひな型を解析して照合する。
 これらをカプセル化した応答の受信は段階 3 とし、カプセル化なしの応答は段階 2 でも受理する。
 SRH は内側 IP または Ethernet を包む形に限定し、TCP/UDP が SRH の直後にある形は擬似ヘッダの宛先が変わるため拒否する。
 

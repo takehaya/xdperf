@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -315,7 +316,7 @@ func tcpOtherTunnel(name string) guest.PacketVariant {
 		b[23] = 4
 	case "gre":
 		b[23] = 47
-		b = append(b, 0x30, 0, 8, 0, 0, 0, 0, 7, 0, 0, 0, 9)
+		b = append(b, 0x20, 0, 8, 0, 0, 0, 0, 7)
 	case "srv6":
 		b = append([]byte(nil), tcpTestBase(true, 0).Data[:54]...)
 		b[20] = 43
@@ -412,6 +413,31 @@ func TestMixedUDPOptionsAccounting(t *testing.T) {
 			}
 			if packets != want || nbytes != want*uint64(len(packet)) {
 				t.Fatalf("packets=%d bytes=%d", packets, nbytes)
+			}
+		})
+	}
+}
+
+func TestTCPGRESequenceRejected(t *testing.T) {
+	for _, key := range []bool{false, true} {
+		t.Run(fmt.Sprint(key), func(t *testing.T) {
+			v := tcpOtherTunnel("gre")
+			v.Base.Data[34] = 0x10
+			if key {
+				v.Base.Data[34] |= 0x20
+				b := append([]byte(nil), v.Base.Data[:42]...)
+				b = append(b, 0, 0, 0, 9)
+				b = append(b, v.Base.Data[42:]...)
+				v.Base = guest.BasePacket{Data: b, Length: uint16(len(b))}
+				e := v.TCPFlow.Encapsulation
+				e.InnerL3Offset += 4
+				e.InnerL4Offset += 4
+				for i := range e.Lengths {
+					e.Lengths[i].Constant += 4
+				}
+			}
+			if _, err := parseTCPVariant(v); err == nil || !strings.Contains(err.Error(), "sequence unsupported") {
+				t.Fatalf("sequence accepted or wrong validation: %v", err)
 			}
 		})
 	}
