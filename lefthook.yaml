@@ -42,7 +42,7 @@ pre-commit:
       run: |
         failed=0
         for f in {staged_files}; do
-          if ! jq -e empty "$f" >/dev/null 2>&1; then
+          if ! jq empty "$f" >/dev/null 2>&1; then
             echo "JSON parse error in $f"
             jq empty "$f"
             failed=1
