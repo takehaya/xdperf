@@ -75,6 +75,8 @@ int xdp_rx_tcp_mixed(struct xdp_md *ctx)
     __sync_fetch_and_add(&f->rx_replies, 1);
     return XDP_TX;
 unmatched:
+    if (inner.neighbor)
+        return XDP_PASS;
     if (inner.outer_udp) {
         struct mixed_cfg *mix = bpf_map_lookup_elem(&mixed_cfg_map, &zero);
         if (mix && mix->receive)

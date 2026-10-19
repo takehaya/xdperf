@@ -212,6 +212,9 @@ func parseTCPEncapsulation(base guest.BasePacket, e *guest.TCPEncapsulation) (*p
 				}
 				gtp := off
 				flags := b[off]
+				if flags&3 != 0 {
+					return nil, fmt.Errorf("GTP-U sequence/N-PDU numbering unsupported without per-packet sequencing")
+				}
 				off += 8
 				p.lengths = append(p.lengths, guest.TCPLengthField{Offset: uint16(gtp + 2), Kind: "gtpu", Constant: uint16(gtp + 8)})
 				if flags&7 != 0 {

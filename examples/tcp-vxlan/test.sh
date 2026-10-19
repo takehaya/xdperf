@@ -30,6 +30,9 @@ for outer in 4 6; do
         for mode in $modes; do
             endpoint="${idst}:${DST_PORT}"
             if [ "$inner" = 6 ]; then endpoint="[${idst}]:${DST_PORT}"; fi
+            # Force the return SYN-ACK to resolve the peer through ARP/ND.
+            ip -n "$NS_TX" neigh flush dev vxlan7
+            ip -n "$NS_RX" neigh flush dev vxlan7
             start_sink "$endpoint"
             config="$(python3 - "$srcmac" "$dstmac" "$osrc" "$odst" "$ism" "$idm" "$isrc" "$idst" "$mode" "$DST_PORT" "$TX_IP4" "$RX_IP4" <<'PY'
 import base64,ipaddress,json,struct,sys
@@ -54,7 +57,7 @@ PY
 )"
             report="${XDPERF_EXAMPLE_RUNDIR}/vxlan-${outer}-${inner}-${mode}.csv"
             TX_LOG="${XDPERF_EXAMPLE_RUNDIR}/vxlan-${outer}-${inner}-${mode}.log"
-            if ! ip netns exec "$NS_TX" "$XDPERF_BIN" run --send --device "$VETH_TX" \
+            if ! ip netns exec "$NS_TX" "$XDPERF_BIN" run --send --recv --device "$VETH_TX" \
                 --plugin mixed.go --plugin-path "$PLUGIN_PATH" --plugin-config "$config" \
                 --count 128 --pps 4000 --parallelism 1 --tcp-flow-report "$report" > "$TX_LOG" 2>&1; then
                 tail -n 40 "$TX_LOG"; exit 1

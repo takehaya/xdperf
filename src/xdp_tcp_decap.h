@@ -8,6 +8,7 @@ struct tcp_inner_packet {
     __u32 dst[4];
     __u8 version;
     __u8 outer_udp;
+    __u8 neighbor;
 };
 
 static __noinline int tcp_geneve_options(struct xdp_md *ctx, __u32 off, __u32 end)
@@ -52,6 +53,10 @@ static __noinline int tcp_find_inner(struct xdp_md *ctx, struct tcp_inner_packet
                 }
             }
         }
+        if (depth > 0 && proto == ETH_P_ARP) {
+            out->neighbor = 1;
+            return 0;
+        }
         if (off > 216)
             return 0;
         __u32 ip_end;
@@ -94,6 +99,11 @@ static __noinline int tcp_find_inner(struct xdp_md *ctx, struct tcp_inner_packet
             out->ip_end = ip_end;
             out->limit = limit;
             return 1;
+        }
+        if (depth > 0 && out->version == 6 && next == IPPROTO_ICMPV6 && ip_end <= limit && off < ip_end &&
+            bpf_xdp_load_bytes(ctx, off, h, 1) == 0 && h[0] >= 133 && h[0] <= 137) {
+            out->neighbor = 1;
+            return 0;
         }
         if (next != IPPROTO_UDP || ip_end > limit || off + 8 > ip_end || off > 228 || bpf_xdp_load_bytes(ctx, off, h, 8) < 0)
             return 0;

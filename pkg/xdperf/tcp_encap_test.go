@@ -442,3 +442,71 @@ func TestTCPGRESequenceRejected(t *testing.T) {
 		})
 	}
 }
+
+func TestTCPGTPSequenceRejected(t *testing.T) {
+	for _, flags := range []byte{1, 2, 3, 5, 6, 7} {
+		t.Run(fmt.Sprint(flags), func(t *testing.T) {
+			v := tcpOtherTunnel("gtpu")
+			b := append([]byte(nil), v.Base.Data[:50]...)
+			b[42] |= flags
+			b = append(b, 0, 9, 7, 0)
+			b = append(b, v.Base.Data[50:]...)
+			v.Base = guest.BasePacket{Data: b, Length: uint16(len(b))}
+			e := v.TCPFlow.Encapsulation
+			e.InnerL3Offset += 4
+			e.InnerL4Offset += 4
+			for i := range e.Lengths {
+				e.Lengths[i].Constant += 4
+			}
+			if _, err := parseTCPVariant(v); err == nil || !strings.Contains(err.Error(), "GTP-U sequence/N-PDU numbering unsupported") {
+				t.Fatalf("numbering accepted or wrong validation: %v", err)
+			}
+		})
+	}
+}
+
+func TestMixedTunnelNeighborPass(t *testing.T) {
+	objs, _, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer objs.Close()
+	if err := objs.MixedCfgMap.Put(uint32(0), coreelf.BpfMixedCfg{Receive: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"vxlan", "geneve"} {
+		for _, nd := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/nd=%v", name, nd), func(t *testing.T) {
+				v := tcpTestTunnel(name, false, nd, "zero")
+				l3 := int(v.TCPFlow.Encapsulation.InnerL3Offset)
+				frame := append([]byte(nil), v.Base.Data[:l3]...)
+				if nd {
+					frame = append(frame, v.Base.Data[l3:l3+40]...)
+					frame[l3+6] = 58
+					frame = append(frame, make([]byte, 24)...)
+					frame[l3+40] = 135
+					binary.BigEndian.PutUint16(frame[l3+4:], 24)
+				} else {
+					binary.BigEndian.PutUint16(frame[l3-2:], 0x0806)
+					frame = append(frame, make([]byte, 28)...)
+					copy(frame[l3:], []byte{0, 1, 8, 0, 6, 4, 0, 1})
+				}
+				binary.BigEndian.PutUint16(frame[16:], uint16(len(frame)-14))
+				binary.BigEndian.PutUint16(frame[38:], uint16(len(frame)-34))
+				action, _, err := objs.XdpRxMixed.Test(frame)
+				if err != nil || action != 2 {
+					t.Fatalf("neighbor action=%d err=%v", action, err)
+				}
+			})
+		}
+	}
+	stats := make([]coreelf.BpfDatarec, ebpf.MustPossibleCPU())
+	if err := objs.RxStatsMap.Lookup(uint32(0), &stats); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range stats {
+		if s.Packets != 0 {
+			t.Fatal("neighbor traffic counted as UDP")
+		}
+	}
+}
