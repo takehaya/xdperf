@@ -104,7 +104,12 @@ func readCollection(constants map[string]any, sizes map[string]uint32, mixed boo
 	}
 
 	if !mixed {
-		objs.BpfMaps, objs.BpfVariables = base.BpfMaps, base.BpfVariables
+		objs.BpfMaps = base.BpfMaps
+		objs.BpfVariables = BpfVariables{
+			MaxBasePackets: base.MaxBasePackets, MaxChecksumEntries: base.MaxChecksumEntries,
+			MaxDiffsPerPacket: base.MaxDiffsPerPacket, MaxPacketSize: base.MaxPacketSize,
+			MinPacketSize: base.MinPacketSize, SwapResp: base.SwapResp,
+		}
 		objs.XdpPassDummy, objs.XdpRx, objs.XdpRxTcp, objs.XdpRxTcpServer = base.XdpPassDummy, base.XdpRx, base.XdpRxTcp, base.XdpRxTcpServer
 		objs.XdpTx, objs.XdpTxChecksum, objs.XdpTxCsumDiff, objs.XdpTxCsumRecalc, objs.XdpTxTcp = base.XdpTx, base.XdpTxChecksum, base.XdpTxCsumDiff, base.XdpTxCsumRecalc, base.XdpTxTcp
 	}
@@ -215,16 +220,23 @@ func loadWithVerifierLog(spec *ebpf.CollectionSpec, objs any) error {
 // Maps remain shared with programs loaded later.
 type baseObjects struct {
 	BpfMaps
-	BpfVariables
-	XdpPassDummy    *ebpf.Program `ebpf:"xdp_pass_dummy"`
-	XdpRx           *ebpf.Program `ebpf:"xdp_rx"`
-	XdpRxTcp        *ebpf.Program `ebpf:"xdp_rx_tcp"`
-	XdpRxTcpServer  *ebpf.Program `ebpf:"xdp_rx_tcp_server"`
-	XdpTx           *ebpf.Program `ebpf:"xdp_tx"`
-	XdpTxChecksum   *ebpf.Program `ebpf:"xdp_tx_checksum"`
-	XdpTxCsumDiff   *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
-	XdpTxCsumRecalc *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
-	XdpTxTcp        *ebpf.Program `ebpf:"xdp_tx_tcp"`
+	// Do not embed BpfVariables: assigning a mixed variable also loads its
+	// backing map, even when none of the base programs references it.
+	MaxBasePackets     *ebpf.Variable `ebpf:"max_base_packets"`
+	MaxChecksumEntries *ebpf.Variable `ebpf:"max_checksum_entries"`
+	MaxDiffsPerPacket  *ebpf.Variable `ebpf:"max_diffs_per_packet"`
+	MaxPacketSize      *ebpf.Variable `ebpf:"max_packet_size"`
+	MinPacketSize      *ebpf.Variable `ebpf:"min_packet_size"`
+	SwapResp           *ebpf.Variable `ebpf:"swap_resp"`
+	XdpPassDummy       *ebpf.Program  `ebpf:"xdp_pass_dummy"`
+	XdpRx              *ebpf.Program  `ebpf:"xdp_rx"`
+	XdpRxTcp           *ebpf.Program  `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpServer     *ebpf.Program  `ebpf:"xdp_rx_tcp_server"`
+	XdpTx              *ebpf.Program  `ebpf:"xdp_tx"`
+	XdpTxChecksum      *ebpf.Program  `ebpf:"xdp_tx_checksum"`
+	XdpTxCsumDiff      *ebpf.Program  `ebpf:"xdp_tx_csum_diff"`
+	XdpTxCsumRecalc    *ebpf.Program  `ebpf:"xdp_tx_csum_recalc"`
+	XdpTxTcp           *ebpf.Program  `ebpf:"xdp_tx_tcp"`
 }
 
 // LoadMixedPrograms adds mixed dispatch/TCP programs to an existing collection.

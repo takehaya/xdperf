@@ -187,6 +187,18 @@ func TestBpfMixedSpecializations(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer objs.Close()
+			if objs.MixedMaxLengths != nil || objs.MixedMaxOuterIps != nil || objs.MixedMaxUdps != nil || objs.MixedHasLco != nil {
+				t.Fatal("base load assigned mixed constants")
+			}
+			for _, v := range []*ebpf.Variable{objs.MaxBasePackets, objs.MaxChecksumEntries, objs.MaxDiffsPerPacket, objs.MaxPacketSize, objs.MinPacketSize, objs.SwapResp} {
+				if v == nil {
+					t.Fatal("base variable missing")
+				}
+				var value uint32
+				if err := v.Get(&value); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := LoadMixedProgramsWithFeatures(objs, spec, features); err != nil {
 				t.Fatal(err)
 			}
