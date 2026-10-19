@@ -1,0 +1,21 @@
+{
+  "base": {
+    "source_commit": "7b16bbcb9dfc01922d1a43e4f5307360b6c5a259",
+    "files": {
+      "simpleudp.go.wasm": "de97aa929bcad87692bb52be9768a4e90fa467d02d498d83cf7e50fd87e7aff1",
+      "mixed.go.wasm": "2bbe39047cd85287cc87b50724d6b2ac95004596c7f930078937e551eaf48849",
+      "xdperf-sink": "7dc282ec8bfc7890d2253f998d62321d55d98e72f868ae8e21a54482f3ee6822",
+      "xdperf": "ab02bc3f8f5c5da76f89e14cc6dffca259f30eeff1b62a73be99e2368613310f"
+    },
+    "note": "Built after plan-only commit 3332c73; production source and embedded BPF equal origin/main 7b16bbc."
+  },
+  "head": {
+    "source_commit": "ae262c4c64ee7b432c1f12d3472e739cf30e9c02",
+    "files": {
+      "xdperf-sink": "7dc282ec8bfc7890d2253f998d62321d55d98e72f868ae8e21a54482f3ee6822",
+      "xdperf": "414cef96ac0fbccfb5c04ba418e3512b8c49c78844508b2a79c0412470881ca6",
+      "simpleudp.go.wasm": "de97aa929bcad87692bb52be9768a4e90fa467d02d498d83cf7e50fd87e7aff1",
+      "mixed.go.wasm": "2bbe39047cd85287cc87b50724d6b2ac95004596c7f930078937e551eaf48849"
+    }
+  }
+}
