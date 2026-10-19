@@ -270,15 +270,45 @@ type BpfTcpStats struct {
 }
 
 type BpfTcpTemplate struct {
-	_           structs.HostLayout
-	Cfg         BpfTcpCfg
-	Prefix      [64]uint8
-	TcpHeader   [20]uint8
-	SynOptions  [40]uint8
-	DataOptions [40]uint8
-	SynLen      uint8
-	DataLen     uint8
-	Pad         [2]uint8
+	_       structs.HostLayout
+	Cfg     BpfTcpCfg
+	Prefix  [256]uint8
+	Lengths [8]struct {
+		_        structs.HostLayout
+		Offset   uint16
+		Constant uint16
+	}
+	OuterIps [4]struct {
+		_       structs.HostLayout
+		Offset  uint16
+		Version uint8
+		Pad     uint8
+	}
+	Udps [4]struct {
+		_         structs.HostLayout
+		Offset    uint16
+		IpOffset  uint16
+		PseudoSum uint32
+		Version   uint8
+		Mode      uint8
+		Pad       uint16
+	}
+	EntropyOffset uint16
+	EntropyBase   uint16
+	EntropyCount  uint16
+	LengthCount   uint8
+	OuterIpCount  uint8
+	UdpCount      uint8
+	TcpHeader     [20]uint8
+	_             [3]byte
+	SynSum        uint32
+	DataSum       uint32
+	SynOptions    [40]uint8
+	DataOptions   [40]uint8
+	SynLen        uint8
+	DataLen       uint8
+	Pad           [2]uint8
+	_             [4]byte
 }
 
 // LoadBpf returns the embedded CollectionSpec for Bpf.

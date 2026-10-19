@@ -103,12 +103,15 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		if f == nil || len(f.Flows) == 0 || len(v.Params) != 0 || len(v.Checksums) != 0 {
 			return fmt.Errorf("TCP variant %d requires flows and cannot contain variable_params or checksums", i)
 		}
+		if f.Encapsulation != nil && len(v.Base.Data) == 0 {
+			return fmt.Errorf("encapsulation requires base_packet")
+		}
 		dest := f.Destination
 		if len(v.Base.Data) != 0 || v.Base.Length != 0 {
 			if x.cfg.TCPSrcIP != "" || x.cfg.TCPDstMAC != "" || x.cfg.TCPVlanID != 0 || x.cfg.TCPVlanPCP != 0 {
 				return fmt.Errorf("TCP base_packet cannot be combined with source IP, MAC or VLAN overrides")
 			}
-			t, err := parseTCPBase(v.Base)
+			t, err := parseTCPVariant(v)
 			if err != nil {
 				return fmt.Errorf("TCP variant %d: %w", i, err)
 			}

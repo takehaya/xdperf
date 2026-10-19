@@ -107,7 +107,11 @@ func (x *Xdperf) templateMSS(t *tcpTarget, options int) error {
 		if t.ipVersion == 6 {
 			mss = tcpDefaultMSSv6
 		}
-		mss -= int(t.l3Off) - 14
+		ipLen := 20
+		if t.ipVersion == 6 {
+			ipLen = 40
+		}
+		mss -= int(t.l4Off) - 14 - ipLen
 	}
 	mss -= options
 	max := x.Device.MTU + 14 - int(t.hdrLen) - options
@@ -128,7 +132,7 @@ func (x *Xdperf) initTCPTemplates(fallback *tcpTarget, frame []byte, cfg coreelf
 		f := g.variant.TCPFlow
 		if len(g.variant.Base.Data) != 0 {
 			var err error
-			t, err = parseTCPBase(g.variant.Base)
+			t, err = parseTCPVariant(g.variant)
 			if err != nil {
 				return err
 			}
@@ -183,9 +187,24 @@ func (x *Xdperf) initTCPTemplates(fallback *tcpTarget, frame []byte, cfg coreelf
 		copy(v.SynOptions[:], []byte{2, 4, byte(tc.mss >> 8), byte(tc.mss), 1, 3, 3, 7})
 		copy(v.SynOptions[8:], syn)
 		copy(v.DataOptions[:], data)
+		v.SynSum = tcpOptionSum(v.SynOptions[:])
+		v.DataSum = tcpOptionSum(v.DataOptions[:])
+		if f.Encapsulation != nil {
+			if err := initTCPEncapsulation(&v, g.variant); err != nil {
+				return err
+			}
+		}
 		if err := x.bpfobjs.TcpTemplateMap.Put(uint32(i), v); err != nil {
 			return fmt.Errorf("TCP template %d: %w", i, err)
 		}
 	}
 	return nil
+}
+
+func tcpOptionSum(b []byte) uint32 {
+	var sum uint32
+	for i := 0; i+1 < len(b); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(b[i:]))
+	}
+	return sum
 }

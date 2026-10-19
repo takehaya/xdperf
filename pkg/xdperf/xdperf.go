@@ -123,7 +123,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	if cfg.TCPServer {
 		tcpSrvFlows = uint32(cfg.TCPMaxConns)
 	}
-	obj, bpfSpec, err := coreelf.ReadCollectionWithSizes(consts,
+	obj, bpfSpec, err := coreelf.ReadBaseCollectionWithSizes(consts,
 		map[string]uint32{"diff_map": diffMapSize, "tcp_srv_flow_map": tcpSrvFlows}, cfg.DebugMode > 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load eBPF objects: %w", err)
@@ -265,6 +265,9 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 		return err
 	}
 	if x.mixed != nil {
+		if err := coreelf.LoadMixedPrograms(x.bpfobjs, x.bpfSpec); err != nil {
+			return err
+		}
 		return x.runTCP(ctx)
 	}
 	if x.cfg.TCPFlowReport != "" {
