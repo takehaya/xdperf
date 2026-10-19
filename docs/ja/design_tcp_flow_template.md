@@ -188,6 +188,29 @@ helper を呼ぶときは bpf_spin_lock を保持しない。
 
 ## 段階 4 の設計
 
+### 段階 4 の実装計画（ジョブ C）
+
+段階 4 は `feat/tcp-flow-payload` で実装し、PR の base を `feat/tcp-flow-rx-tunnels` とする。
+以下の三機能を同じテンプレート生成経路に追加する。
+未使用時は起動時に設定する BPF 定数で分岐と補助関数を検証対象から除き、通常 TCP と packet 専用の入口に処理を追加しない。
+
+- **Timestamps**：`tcp_flow.timestamps` だけをプラグインの指定とする。SYN と通常セグメントのオプション先頭に 12 バイト（NOP、NOP、kind=8、length=10、TSval、TSecr）をエンジンが生成する。SYN-ACK で合意しなければ以後は付けない。TSval は単調時計のミリ秒を 32 bit に切り詰め、フローロック内で非減少にする。TSecr と PAWS 用の TS.Recent をフロー状態に保持する。[RFC 7323](https://www.rfc-editor.org/rfc/rfc7323.html) に従い、古い timestamp と合意後の timestamp 欠落は状態更新から除き、RST は timestamp の有無で排除しない。24 日を超える TS.Recent は失効させる。オプションの合計は 40 バイト以下に制限し、EOL より前にエンジンのオプションを置く。
+- **ペイロードパターン**：`tcp_flow.payload_pattern` を最大 256 バイトの base64 列とする。未指定と全ゼロは既存のゼロ生成へ正規化する。送信決定と同じフローロック内で `bytes_acked + uint32(seq - snd_una)` を求め、64 bit のストリーム位置から繰り返しパターンを選ぶ。再送、短い末尾、4 GiB 超、seq ラップで同じ内容を生成する。パターンの繰り返しを最大 512 バイトの偶数周期へ拡張し、16 bit 語の部分和を起動時に用意する。チェックサムは周期和と端数の差分で求め、送信時の書き込みだけをペイロード長に比例させる。外側 UDP の LCO は既存の内側 TCP チェックサムを使う。
+- **フロー別 variable_params**：明示的な base_packet を必須とし、起動時に sequential または mixed を一度だけ評価する。まず安全な許可範囲として内側送信元 IP のバイト部分範囲を扱う。宛先、ヘッダ構造、長さ、ポート、オプション、チェックサムなどのエンジン所有領域は拒否する。各フローの確定済みテンプレートと擬似ヘッダ和を既存テンプレートマップに展開し、RX も同じ値で照合する。追加 lookup は不要とする。マップは必要なエントリ数にだけ拡張し、値領域を 64 MiB 以下に制限する。drain/abort と再送も展開済みテンプレートを使う。
+
+variable_params の任意オフセットを一括で許可すると、カプセル化識別子と受信照合、外側 UDP 擬似ヘッダ和の所有権が曖昧になる。
+このため段階 4 の初期 API は内側送信元 IP に限定し、未対応範囲は明示的なエラーにする。
+全フロー分のペイロード部分和を複製するとメモリが増えるため、パターンは最大 16 個のグループ別マップに分離する。
+
+検証は Go の入力検査、BPF_PROG_RUN による生成バイト列と独立チェックサム照合、Linux TCP 対向の veth E2E を組み合わせる。
+Timestamps の合意と非合意、SYN 再送、PAWS、timestamp のラップ、再送時の同一ペイロード、フロー別 IP による RX の正負照合を含める。
+全 sudo race テスト、全 examples、lint、OCR を完了して PR を作成し、Copilot と CI を確認する。
+
+性能は既存 mixbench と同じ veth、CPU 配置、MSS、window、batch を用い、未使用の既存混合 TCP と packet 専用を比較する。
+6 ブロックで条件順と base/head 順を無作為化し、各対は隣接実行する。
+スループットと起動時間について対応差の平均と両側 95% CI（t 分布）を報告し、CI が広い場合は同等と断定しない。
+生データとビルド物は `out/job-c/`、`out/mixbench/` と既存 scratchpad の `mixbench/tcp-flow-payload/` に保存し、Git には結果表、小さな summary CSV、検算スクリプトだけを残す。
+
 `tcp_flow.timestamps: true` はエンジン生成の TSval/TSecr を有効にする。
 SYN でネゴシエーションし、未対応の相手には送らない。
 TSval は単調クロックから作り、TSecr は受信した timestamp をフロー状態に保持する。
