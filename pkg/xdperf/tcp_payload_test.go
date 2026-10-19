@@ -213,6 +213,20 @@ func TestTCPFlowPayloadEncapBPF(t *testing.T) {
 				t.Fatal("RTO payload mismatch", action, err)
 			}
 			verifyTCPEncapFrame(t, rtx, tmpl)
+			// A bare timestamped SYN-ACK must produce the configured tunnel
+			// envelope, including correct LCO and the captured IPv4 ID.
+			handshake := coreelf.BpfTcpFlow{TemplateId: uint32(i), State: tcpFlowSynSent, SrcPort: uint16(40000 + i), Iss: 100, SndUna: 100, SndNxt: 101, SndMax: 101, TsClock: uint32(now.Nano() / 1000000), BytesTarget: 100}
+			selectExtensionFlow(t, x, uint32(i), handshake)
+			input := extensionReply(v, handshake.SrcPort, 5000, 101, 0x12, timestampOption(7))
+			input = append(input, bytes.Repeat([]byte{0xa5}, 2049-len(input))...)
+			action, reply, err := x.bpfobjs.XdpRxTcpMixed.Test(input)
+			if err != nil || action != 3 || len(reply) != int(tmpl.Cfg.L4Off)+20+int(tmpl.DataLen)+12 {
+				t.Fatal("extended tunnel RX", action, len(reply), err)
+			}
+			if binary.BigEndian.Uint32(reply[int(tmpl.Cfg.L4Off)+28:]) != 7 {
+				t.Fatal("extended tunnel TSecr")
+			}
+			verifyTCPEncapFrame(t, reply, tmpl)
 		}
 	}
 }
