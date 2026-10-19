@@ -329,7 +329,12 @@ struct tcp_tx_action {
     __u8 flags;
     __u8 kind;
     __u16 ip_id;
+};
+
+// Optional state never enlarges the legacy action or its stack frame.
+struct tcp_tx_extra {
     __u8 timestamps;
+    __u16 ip_id;
     __u32 tsval;
     __u32 tsecr;
     __u64 stream_offset;
@@ -360,7 +365,8 @@ static __always_inline int tcp_tx_fail(struct tcp_flow *f, struct tcp_stats *st,
 
 // Returns the action kind; fills *a. No helper calls inside the lock region.
 static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cfg *cfg, struct tcp_stats *st, __u64 now,
-                                         struct tcp_tx_action *a, const int mixed_mode, const int timestamps)
+                                         struct tcp_tx_action *a, struct tcp_tx_extra *extra, const int mixed_mode,
+                                         const int timestamps)
 {
     int kind = TXA_NONE;
     __u64 rto = cfg->rto_ns;
@@ -584,15 +590,15 @@ out:
     if (kind != TXA_NONE && kind != TXA_CLOSED)
         a->ip_id = f->ip_id++;
     if (mixed_mode && mixed_has_payload && a->len)
-        a->stream_offset = f->bytes_acked + (__u32)(a->seq - f->snd_una);
+        extra->stream_offset = f->bytes_acked + (__u32)(a->seq - f->snd_una);
     if (mixed_mode && mixed_has_timestamps && timestamps) {
         __u32 clock = now / 1000000;
         if (state != TF_CLOSED && (__s32)(clock - f->ts_clock) < 0)
             clock = f->ts_clock;
         f->ts_clock = clock;
-        a->timestamps = (a->flags & TCPF_SYN) || f->ts_enabled;
-        a->tsval = clock;
-        a->tsecr = (a->flags & TCPF_ACK) ? f->ts_recent : 0;
+        extra->timestamps = (a->flags & TCPF_SYN) || f->ts_enabled;
+        extra->tsval = clock;
+        extra->tsecr = (a->flags & TCPF_ACK) ? f->ts_recent : 0;
     }
     bpf_spin_unlock(&f->lock);
     a->kind = kind;
@@ -740,6 +746,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
 
     __u64 now = bpf_ktime_get_ns();
     struct tcp_tx_action act = {0};
+    struct tcp_tx_extra extra = {0};
     struct tcp_flow *sel = NULL;
     int kind = TXA_NONE;
     struct tcp_template *tmpl = NULL;
@@ -767,7 +774,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
                 return XDP_ABORTED;
             cfg = &tmpl->cfg;
         }
-        kind = tcp_tx_decide(f, cfg, st, now, &act, extended, extended && mixed_has_timestamps && tmpl->timestamps);
+        kind = tcp_tx_decide(f, cfg, st, now, &act, &extra, extended, extended && mixed_has_timestamps && tmpl->timestamps);
         if (kind != TXA_NONE && kind != TXA_CLOSED) {
             sel = f;
             break;
@@ -782,11 +789,13 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
     int built;
     if (mixed_mode) {
         if (extended)
-            built = tcp_template_build_ext(ctx, tmpl, cs, &act);
+            built = tcp_template_build_ext(ctx, tmpl, cs, &act, &extra);
         else
             built = tcp_template_build(ctx, tmpl, cs, &act);
     } else
         built = tcp_tx_build(ctx, cfg, cs, &act);
+    if (built >= 0 && extended)
+        built = tcp_template_finish(ctx, tmpl, &act, &extra);
     if (built >= 0 && extended && mixed_has_payload && act.len) {
         __u32 id = tmpl->payload_id;
         const struct tcp_payload *p = bpf_map_lookup_elem(&tcp_payload_map, &id);
@@ -794,9 +803,9 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
             built = -1;
         } else if (p->period) {
             __u32 offset = tmpl->cfg.l4_off + 20 + tmpl->data_len;
-            if (mixed_has_timestamps && act.timestamps)
+            if (mixed_has_timestamps && extra.timestamps)
                 offset += 12;
-            built = tcp_payload_write(ctx, offset, act.len, act.stream_offset, p);
+            built = tcp_payload_write(ctx, offset, act.len, extra.stream_offset, p);
         }
     }
     if (built < 0) {
@@ -1027,6 +1036,9 @@ struct tcp_rx_info {
     __u8 flags;
     __u8 doff;
     __u8 wscale; // window-scale option of a SYN-ACK (0xFF = not present)
+};
+
+struct tcp_rx_timestamp {
     __u32 tsval;
     __u8 has_timestamp;
 };
@@ -1080,9 +1092,6 @@ static __always_inline void tcp_parse_syn_opts(struct xdp_md *ctx, __u32 l4_off,
 struct tcp_rx_resp {
     __u32 seq;
     __u32 ack;
-    __u32 tsval;
-    __u32 tsecr;
-    __u8 timestamps;
     __u8 flags; // 0 = no reply
 };
 
@@ -1097,7 +1106,8 @@ static __always_inline void tcp_rx_reply(struct tcp_rx_resp *r, __u32 seq, __u32
 // Replies (ACK / RST) use seq = snd_max: after a go-back-N rewind snd_nxt may
 // lie below the peer's RCV.NXT, which would make the segment unacceptable.
 static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *st, const struct tcp_rx_info *in, __u16 cfg_mss,
-                                          __u64 now, struct tcp_rx_resp *r, const int timestamps)
+                                          __u64 now, struct tcp_rx_resp *r, const struct tcp_rx_timestamp *ts,
+                                          struct tcp_tx_extra *extra, const int timestamps)
 {
     __u8 flags = in->flags;
     __u8 need_ack = 0;
@@ -1105,14 +1115,14 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
     bpf_spin_lock(&f->lock);
     __u8 state = f->state;
     if (timestamps && f->ts_enabled && !(flags & TCPF_RST)) {
-        if (!in->has_timestamp)
+        if (!ts->has_timestamp)
             goto out;
-        if ((__s32)(in->tsval - f->ts_recent) < 0 && (now <= f->ts_recent_ns || now - f->ts_recent_ns < 2073600000000000ULL)) {
+        if ((__s32)(ts->tsval - f->ts_recent) < 0 && (now <= f->ts_recent_ns || now - f->ts_recent_ns < 2073600000000000ULL)) {
             tcp_rx_reply(r, f->snd_max, f->rcv_nxt, TCPF_ACK);
             goto out;
         }
         if (seq_leq(in->seq, f->rcv_nxt) && (flags & TCPF_ACK) && seq_leq(f->snd_una, in->ack) && seq_leq(in->ack, f->snd_max)) {
-            f->ts_recent = in->tsval;
+            f->ts_recent = ts->tsval;
             f->ts_recent_ns = now;
         }
     }
@@ -1146,9 +1156,9 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
     if (state == TF_SYN_SENT) {
         if ((flags & (TCPF_SYN | TCPF_ACK)) == (TCPF_SYN | TCPF_ACK) && in->ack == f->iss + 1) {
             if (timestamps) {
-                f->ts_enabled = in->has_timestamp;
-                if (in->has_timestamp) {
-                    f->ts_recent = in->tsval;
+                f->ts_enabled = ts->has_timestamp;
+                if (ts->has_timestamp) {
+                    f->ts_recent = ts->tsval;
                     f->ts_recent_ns = now;
                 }
             }
@@ -1278,9 +1288,9 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
 
 out:
     if (timestamps && f->ts_enabled && r->flags) {
-        r->timestamps = 1;
-        r->tsval = tcp_timestamp_clock(f, now);
-        r->tsecr = f->ts_recent;
+        extra->timestamps = 1;
+        extra->tsval = tcp_timestamp_clock(f, now);
+        extra->tsecr = f->ts_recent;
     }
     bpf_spin_unlock(&f->lock);
 }
@@ -1403,7 +1413,7 @@ int xdp_rx_tcp(struct xdp_md *ctx)
 
     __u64 now = bpf_ktime_get_ns();
     struct tcp_rx_resp resp = {0};
-    tcp_rx_update(f, st, &in, cfg->mss, now, &resp, 0);
+    tcp_rx_update(f, st, &in, cfg->mss, now, &resp, NULL, NULL, 0);
     if (!resp.flags)
         return XDP_DROP;
 

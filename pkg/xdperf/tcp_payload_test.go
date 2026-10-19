@@ -162,51 +162,57 @@ func TestTCPFlowPayloadEncapBPF(t *testing.T) {
 		if err := x.bpfobjs.TcpTemplateMap.Lookup(uint32(i), &tmpl); err != nil {
 			t.Fatal(err)
 		}
-		f := lookupExtensionFlow(t, x, uint32(i))
-		f.State = tcpFlowEstablished
-		f.SndUna = 0xfffffff0
-		f.SndNxt = f.SndUna + 7
-		f.SndMax = f.SndNxt + 33
-		f.BytesAcked = 1<<32 + 17
-		f.BytesTarget = f.BytesAcked + 40
-		f.SndWnd = 65535
-		f.Mss = 33
-		f.TsEnabled = 1
-		f.TsRecent = 7
-		var now unix.Timespec
-		if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
-			t.Fatal(err)
-		}
-		f.LastAckNs = uint64(now.Nano())
-		f.LastSendNs = f.LastAckNs
-		// Give the synthetic established flow a valid timestamp clock.
-		f.TsClock = uint32(now.Nano() / 1000000)
-		selectExtensionFlow(t, x, uint32(i), f)
-		action, out, err := x.bpfobjs.XdpTxTcpMixed.Test(bytes.Repeat([]byte{0xa5}, 2049))
-		if err != nil || action != 3 {
-			t.Fatal("encap extensions", action, err)
-		}
-		verifyTCPEncapFrame(t, out, tmpl)
-		off := int(tmpl.Cfg.L4Off) + 20 + int(tmpl.DataLen) + 12
-		for k, b := range out[off:] {
-			if b != v.TCPFlow.PayloadPattern[(f.BytesAcked+7+uint64(k))%3] {
-				t.Fatal("GBN payload offset")
+		for _, shared := range []uint8{0, 1} {
+			tmpl.Cfg.IpIdShared = shared
+			if err := x.bpfobjs.TcpTemplateMap.Put(uint32(i), tmpl); err != nil {
+				t.Fatal(err)
 			}
+			f := lookupExtensionFlow(t, x, uint32(i))
+			f.State = tcpFlowEstablished
+			f.SndUna = 0xfffffff0
+			f.SndNxt = f.SndUna + 7
+			f.SndMax = f.SndNxt + 33
+			f.BytesAcked = 1<<32 + 17
+			f.BytesTarget = f.BytesAcked + 40
+			f.SndWnd = 65535
+			f.Mss = 33
+			f.TsEnabled = 1
+			f.TsRecent = 7
+			var now unix.Timespec
+			if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
+				t.Fatal(err)
+			}
+			f.LastAckNs = uint64(now.Nano())
+			f.LastSendNs = f.LastAckNs
+			// Give the synthetic established flow a valid timestamp clock.
+			f.TsClock = uint32(now.Nano() / 1000000)
+			selectExtensionFlow(t, x, uint32(i), f)
+			action, out, err := x.bpfobjs.XdpTxTcpMixed.Test(bytes.Repeat([]byte{0xa5}, 2049))
+			if err != nil || action != 3 {
+				t.Fatal("encap extensions", action, err)
+			}
+			verifyTCPEncapFrame(t, out, tmpl)
+			off := int(tmpl.Cfg.L4Off) + 20 + int(tmpl.DataLen) + 12
+			for k, b := range out[off:] {
+				if b != v.TCPFlow.PayloadPattern[(f.BytesAcked+7+uint64(k))%3] {
+					t.Fatal("GBN payload offset")
+				}
+			}
+			if len(out[off:]) != 33 {
+				t.Fatal("short GBN length")
+			}
+			// The rest of go-back-N and an RTO must use the same absolute stream.
+			f.SndUna = f.SndNxt
+			f.BytesAcked += 7
+			f.SndNxt = f.SndMax
+			f.LastAckNs = 1
+			f.LastSendNs = 1
+			selectExtensionFlow(t, x, uint32(i), f)
+			action, rtx, err := x.bpfobjs.XdpTxTcpMixed.Test(bytes.Repeat([]byte{0xa5}, 2049))
+			if err != nil || action != 3 || !bytes.Equal(out[off:], rtx[off:]) {
+				t.Fatal("RTO payload mismatch", action, err)
+			}
+			verifyTCPEncapFrame(t, rtx, tmpl)
 		}
-		if len(out[off:]) != 33 {
-			t.Fatal("short GBN length")
-		}
-		// The rest of go-back-N and an RTO must use the same absolute stream.
-		f.SndUna = f.SndNxt
-		f.BytesAcked += 7
-		f.SndNxt = f.SndMax
-		f.LastAckNs = 1
-		f.LastSendNs = 1
-		selectExtensionFlow(t, x, uint32(i), f)
-		action, rtx, err := x.bpfobjs.XdpTxTcpMixed.Test(bytes.Repeat([]byte{0xa5}, 2049))
-		if err != nil || action != 3 || !bytes.Equal(out[off:], rtx[off:]) {
-			t.Fatal("RTO payload mismatch", action, err)
-		}
-		verifyTCPEncapFrame(t, rtx, tmpl)
 	}
 }

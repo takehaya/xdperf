@@ -6,9 +6,9 @@
 
 // Mixed TCP has a separate builder, leaving standalone TCP's instructions intact.
 __noinline int tcp_template_build_ext(struct xdp_md *ctx, const struct tcp_template *t, struct tcp_cpu_state *cs,
-                                      const struct tcp_tx_action *a)
+                                      const struct tcp_tx_action *a, struct tcp_tx_extra *extra)
 {
-    if (!t || !cs || !a)
+    if (!t || !cs || !a || !extra)
         return -1;
     const struct tcp_cfg *cfg = &t->cfg;
     __u32 l3 = cfg->l3_off, l4 = cfg->l4_off;
@@ -17,7 +17,7 @@ __noinline int tcp_template_build_ext(struct xdp_md *ctx, const struct tcp_templ
         return -1;
     __u32 staticopts = opts;
     __u32 tslen = 0;
-    if (mixed_has_timestamps && t->timestamps && a->timestamps) {
+    if (mixed_has_timestamps && t->timestamps && extra->timestamps) {
         tslen = 12;
         opts += tslen;
         if (opts > 40)
@@ -52,7 +52,7 @@ __noinline int tcp_template_build_ext(struct xdp_md *ctx, const struct tcp_templ
         if (!p)
             return -1;
         if (p->period) {
-            int result = tcp_payload_sum(a->len, a->stream_offset, p);
+            int result = tcp_payload_sum(a->len, extra->stream_offset, p);
             if (result < 0)
                 return -1;
             payload_sum = result;
@@ -61,8 +61,8 @@ __noinline int tcp_template_build_ext(struct xdp_md *ctx, const struct tcp_templ
     __u8 ts[12] = {1, 1, 8, 10};
     __u32 ts_sum = 0;
     if (mixed_has_timestamps && tslen) {
-        put_be32(ts + 4, a->tsval);
-        put_be32(ts + 8, a->tsecr);
+        put_be32(ts + 4, extra->tsval);
+        put_be32(ts + 8, extra->tsecr);
         __u64 sum = 0;
         SUM16_BUF(sum, ts, 12);
         ts_sum = sum;
@@ -101,6 +101,7 @@ __noinline int tcp_template_build_ext(struct xdp_md *ctx, const struct tcp_templ
     __u8 ih[40];
     __builtin_memcpy(ih, t->prefix + l3, 40);
     __u16 ip_id = cfg->ip_id_shared ? (__u16)cs->ip_id++ : a->ip_id;
+    extra->ip_id = ip_id;
     if (cfg->ip_version == 4) {
         ih[1] &= 0xfc;
         put_be16(ih + 2, 20 + tcp_len);
@@ -117,10 +118,19 @@ __noinline int tcp_template_build_ext(struct xdp_md *ctx, const struct tcp_templ
         if (bpf_xdp_store_bytes(ctx, l3, ih, 40) < 0)
             return -1;
     }
-    // Every supported outer IP/UDP header has a length patch. Bare TCP and
-    // MPLS-only templates need no envelope edits, so omit the helper entirely.
+    return 0;
+}
+
+// Run envelope fixups after releasing the builder's stack frame. Keep the
+// exact shared/per-flow IPv4 ID selected by the builder in optional state.
+static __always_inline int tcp_template_finish(struct xdp_md *ctx, const struct tcp_template *t, const struct tcp_tx_action *a,
+                                               const struct tcp_tx_extra *extra)
+{
     if (mixed_max_lengths == 0)
         return 0;
-    return tcp_encap_patch(ctx, t, tcp_len, (__u32)a->src_port - cfg->port_base, ip_id);
+    __u32 options = (a->flags & TCPF_SYN) ? t->syn_len : t->data_len;
+    if (mixed_has_timestamps && extra->timestamps)
+        options += 12;
+    return tcp_encap_patch(ctx, t, 20 + options + a->len, (__u32)a->src_port - t->cfg.port_base, extra->ip_id);
 }
 #endif

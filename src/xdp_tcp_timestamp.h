@@ -3,7 +3,7 @@
 
 // Timestamp parsing is absent from programs specialized without timestamps.
 // Forty NOPs are legal; the bound therefore counts bytes, not just TLVs.
-static __noinline int tcp_parse_timestamp(struct xdp_md *ctx, __u32 l4, __u32 doff, struct tcp_rx_info *in)
+static __noinline int tcp_parse_timestamp(struct xdp_md *ctx, __u32 l4, __u32 doff, struct tcp_rx_timestamp *in)
 {
     __u32 off = l4 + 20, limit = l4 + doff * 4;
     for (int i = 0; i < 40; i++) {

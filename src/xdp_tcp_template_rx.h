@@ -54,35 +54,35 @@ static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extend
                              .doff = th->doff,
                              .flags = ((__u8 *)th)[13],
                              .wscale = 0xff};
-    if (extended && mixed_has_timestamps && t->timestamps && tcp_parse_timestamp(ctx, l4, in.doff, &in) < 0)
+    struct tcp_rx_timestamp ts = {0};
+    struct tcp_tx_extra extra = {0};
+    if (extended && mixed_has_timestamps && t->timestamps && tcp_parse_timestamp(ctx, l4, in.doff, &ts) < 0)
         return XDP_DROP;
     if ((in.flags & (TCPF_SYN | TCPF_ACK)) == (TCPF_SYN | TCPF_ACK) && in.doff > 5) {
         tcp_parse_syn_opts(ctx, l4, in.doff, &in.wscale, &in.mss);
-        __u32 extra = t->data_len;
-        if (extended && mixed_has_timestamps && t->timestamps && in.has_timestamp)
-            extra += 12;
+        __u32 option_bytes = t->data_len;
+        if (extended && mixed_has_timestamps && t->timestamps && ts.has_timestamp)
+            option_bytes += 12;
         if (in.mss)
-            in.mss = in.mss > extra ? in.mss - extra : 1;
+            in.mss = in.mss > option_bytes ? in.mss - option_bytes : 1;
     }
     __sync_fetch_and_add(&f->rx_pkts, 1);
     struct tcp_rx_resp resp = {0};
-    tcp_rx_update(f, st, &in, t->cfg.mss, bpf_ktime_get_ns(), &resp, extended && mixed_has_timestamps && t->timestamps);
+    tcp_rx_update(f, st, &in, t->cfg.mss, bpf_ktime_get_ns(), &resp, &ts, &extra,
+                  extended && mixed_has_timestamps && t->timestamps);
     if (!resp.flags)
         return XDP_DROP;
     struct tcp_tx_action act = {.seq = resp.seq, .ack = resp.ack, .flags = resp.flags, .src_port = dport};
-    if (extended && mixed_has_timestamps) {
-        act.timestamps = resp.timestamps;
-        act.tsval = resp.tsval;
-        act.tsecr = resp.tsecr;
-    }
     bpf_spin_lock(&f->lock);
     act.ip_id = f->ip_id++;
     bpf_spin_unlock(&f->lock);
     int built;
     if (extended)
-        built = tcp_template_build_ext(ctx, t, cs, &act);
+        built = tcp_template_build_ext(ctx, t, cs, &act, &extra);
     else
         built = tcp_template_build(ctx, t, cs, &act);
+    if (built >= 0 && extended)
+        built = tcp_template_finish(ctx, t, &act, &extra);
     if (built < 0) {
         st->build_errors++;
         return XDP_DROP;
