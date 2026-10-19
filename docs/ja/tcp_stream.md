@@ -211,8 +211,10 @@ sudo env HH_CASES='linux6 linux4vlan linux6vlan xdp6 xdp4vlan xdp6vlan loss4' \
 sudo examples/tcpstream/teardown.sh
 ```
 
-E2E は各フローの完了状態、CSV の送信量と新規データセグメント数、受信側の 4 接続と合計 67,305,472 バイトを検査します。
+有限の heavy hitter ケースでは、各フローの完了状態、CSV の送信量と新規データセグメント数、受信側の 4 接続と合計 67,305,472 バイトを検査します。
 `loss4` は Linux シンク側で送受信方向に損失を注入し、データ再送の発生も検査します。
+標準実行には、有限フロー 3 本と無制限フロー 1 本を混在させる `mixed4` も含まれます。
+`mixed4` は `--duration 5s --pps 10000` で実行し、有限フローの各 65,537 バイト、無制限フローの送信、全フローの終了、受信量と CSV 合計の一致を検査します。
 CSV と送信ログは `/run/xdperf-examples/heavyhitter-<case>.csv` と `.log` に残します。
 
 現在は単一宛先、全フローの `start_ns="0"`、ゼロペイロード、スロット再利用なしに限定します。

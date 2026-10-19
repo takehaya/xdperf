@@ -31,6 +31,12 @@ func TestTCPScenarioResponseContract(t *testing.T) {
 		{"wrong type", strings.Replace(valid, `"65536"`, `65536`, 1), true, true},
 		{"empty duration", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":""`, 1), true, true},
 		{"null duration", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":null`, 1), true, true},
+		{"duplicate duration null", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":"1","duration_ns":null`, 1), true, true},
+		{"duplicate duration case alias", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":"1","DURATION_NS":null`, 1), true, true},
+		{"duplicate duration Unicode alias", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":"1","duration_nſ":null`, 1), true, true},
+		{"duplicate escaped duration", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":"1","duration_\u006es":null`, 1), true, true},
+		{"duplicate envelope", strings.Replace(valid, `"template_type":`, `"template_type":"raw","template_type":`, 1), true, true},
+		{"duplicate flow bytes", strings.Replace(valid, `"bytes":`, `"bytes":"0","bytes":`, 1), true, true},
 		{"positive duration", strings.Replace(valid, `"version":1`, `"version":1,"duration_ns":"1"`, 1), true, false},
 		{"unknown field", strings.Replace(valid, `"version":1`, `"version":1,"arrivals":[]`, 1), true, true},
 		{"unknown flow field", strings.Replace(valid, `"bytes":`, `"typo":0,"bytes":`, 1), true, true},
@@ -41,6 +47,7 @@ func TestTCPScenarioResponseContract(t *testing.T) {
 		{"mixed in packet mode", strings.Replace(valid, `"template_type":"tcp_scenario"`, `"template_type":"raw"`, 1), false, true},
 		{"legacy raw", `{"template_type":"raw","raw_packet_template":[],"extra":true}`, false, false},
 		{"legacy variable", `{"template_type":"variable","variable_packet_template":{"variants":[]}}`, false, false},
+		{"legacy duplicate remains compatible", `{"template_type":"raw","template_type":"raw"}`, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,6 +63,57 @@ func TestTCPScenarioResponseContract(t *testing.T) {
 	}
 	if _, err := decodeGeneratorResponse(append(boundary, ' '), true); err == nil {
 		t.Fatal("accepted oversized response")
+	}
+}
+
+func TestTCPScenarioResponseArrayBounds(t *testing.T) {
+	for _, tc := range []struct {
+		field, element string
+		limit          int
+	}{
+		{"flows", `{}`, 65535},
+		{"FLOWS", `{}`, 65535},
+		{"flowſ", `{}`, 65535},
+		{"endpoints", `{}`, 1},
+		{"payloads", `{}`, 1},
+		{"requires", `"static_flows"`, 65535},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			for _, count := range []int{tc.limit, tc.limit + 1} {
+				b := []byte(`{"template_type":"tcp_scenario","tcp_scenario":{"` + tc.field + `":[` +
+					strings.Repeat(tc.element+",", count-1) + tc.element + `]}}`)
+				_, err := decodeGeneratorResponse(b, true)
+				if (err != nil) != (count > tc.limit) {
+					t.Fatalf("count %d: err = %v", count, err)
+				}
+			}
+		})
+	}
+	// Stop at the count limit, before parsing or allocating the remaining items.
+	b := []byte(`{"tcp_scenario":{"flows":[` + strings.Repeat(`{},`, 65535) + `invalid]}}`)
+	if _, err := decodeGeneratorResponse(b, true); err == nil || !strings.Contains(err.Error(), "exceeds 65535 entries") {
+		t.Fatalf("expected an early count-limit error, got %v", err)
+	}
+}
+
+func TestTCPScenarioJSONMalformedStructures(t *testing.T) {
+	for _, b := range []string{
+		strings.Repeat(`[`, 18) + `0` + strings.Repeat(`]`, 18),
+		`{"tcp_scenario":{"flows":[{]}}`,
+		`{"tcp_scenario":{"flows":[]}`, // unclosed envelope
+		`{"tcp_scenario":{}} {}`,
+		`{"tcp_scenario":{}} trailing`,
+	} {
+		if err := checkTCPScenarioJSON([]byte(b)); err == nil {
+			t.Fatalf("accepted malformed structure: %s", b)
+		}
+	}
+	var fields []string
+	for i := 0; i < 17; i++ {
+		fields = append(fields, fmt.Sprintf(`"field%d":null`, i))
+	}
+	if err := checkTCPScenarioJSON([]byte(`{` + strings.Join(fields, ",") + `}`)); err == nil {
+		t.Fatal("accepted excessive object members")
 	}
 }
 

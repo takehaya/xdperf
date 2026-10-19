@@ -77,6 +77,11 @@ func decodeGeneratorResponse(b []byte, tcp bool) (*guest.GeneratorProcessRespons
 	if len(b) > maxPluginOutputBytes {
 		return nil, fmt.Errorf("plugin response exceeds %d bytes", maxPluginOutputBytes)
 	}
+	if tcp {
+		if err := checkTCPScenarioJSON(b); err != nil {
+			return nil, fmt.Errorf("invalid plugin response: %w", err)
+		}
+	}
 	var resp guest.GeneratorProcessResponse
 	dec := json.NewDecoder(bytes.NewReader(b))
 	if tcp {

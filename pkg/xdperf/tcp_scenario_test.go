@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
@@ -148,46 +149,88 @@ func TestTCPScenarioMaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer objs.Close()
-	x := &Xdperf{cfg: tcpTestConfig(), bpfobjs: objs, cpus: []int{0}, Logger: zap.NewNop()}
 	target := &tcpTarget{srcIP: net.ParseIP("192.0.2.1").To4(), dstIP: net.ParseIP("192.0.2.2").To4(), srcMAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, dstMAC: net.HardwareAddr{2, 0, 0, 0, 0, 2}, ipVersion: 4, mss: 1024, dstPort: 5201, l3Off: 14, l4Off: 34, hdrLen: 54}
-	template, err := buildTCPTemplate(target, uint16(x.cfg.TCPPortBase))
+	template, err := buildTCPTemplate(target, uint16(tcpTestConfig().TCPPortBase))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []bool{false, true} {
-		if scenario {
-			x.cfg.TCPFlows = 1
-			if err := x.applyTCPScenario(testTCPScenario()); err != nil {
-				t.Fatal(err)
+	numCPU, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workers := []struct {
+		name   string
+		cpus   []int
+		states []coreelf.BpfTcpCpuState
+	}{
+		{"single worker", []int{0}, []coreelf.BpfTcpCpuState{{First: 0, Stride: 1, Count: 4}}},
+		{"two workers", []int{0, 1}, []coreelf.BpfTcpCpuState{{First: 0, Stride: 2, Count: 2}, {First: 1, Stride: 2, Count: 2}}},
+	}
+	mixed := testTCPScenario()
+	mixed.DurationNS = "1000000000"
+	for i, n := range []string{"0", "9007199254740993", "18446744073709551615", "65537"} {
+		mixed.Flows[i].Bytes = n
+	}
+	cases := []struct {
+		name         string
+		scenario     *guest.TCPScenario
+		targets      []uint64
+		bytesPerFlow uint64
+	}{
+		{"legacy", nil, []uint64{1000, 1000, 1000, 1000}, 1000},
+		{"heavy hitter", testTCPScenario(), []uint64{65536, 65536, 65536, 67108864}, 0},
+		{"mixed boundaries", mixed, []uint64{0, 1<<53 + 1, math.MaxUint64, 65537}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, worker := range workers {
+				t.Run(worker.name, func(t *testing.T) {
+					if len(worker.cpus) > numCPU {
+						t.Skip("two possible CPUs are required for the ownership test")
+					}
+					x := &Xdperf{cfg: tcpTestConfig(), bpfobjs: objs, cpus: worker.cpus, Logger: zap.NewNop()}
+					if tc.scenario != nil {
+						x.cfg.TCPFlows = 1
+						if err := x.applyTCPScenario(tc.scenario); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := x.initTCPMaps(target, template); err != nil {
+						t.Fatal(err)
+					}
+					flows, err := x.readTCPFlows(len(tc.targets))
+					if err != nil {
+						t.Fatal(err)
+					}
+					for i, f := range flows {
+						if f.BytesTarget != tc.targets[i] || f.SrcPort != uint16(x.cfg.TCPPortBase+i) || f.State != tcpFlowClosed || f.TxData != 0 {
+							t.Fatalf("flow %d = %+v, target %d", i, f, tc.targets[i])
+						}
+					}
+					var cfg coreelf.BpfTcpCfg
+					key := uint32(0)
+					if err := objs.TcpCfgMap.Lookup(&key, &cfg); err != nil {
+						t.Fatal(err)
+					}
+					if cfg.FlowCount != 4 || cfg.DstPort != 5201 || cfg.BytesPerFlow != tc.bytesPerFlow {
+						t.Fatalf("cfg = %+v, want bytes_per_flow %d", cfg, tc.bytesPerFlow)
+					}
+					states := make([]coreelf.BpfTcpCpuState, numCPU)
+					if err := objs.TcpCpuStateMap.Lookup(&key, &states); err != nil {
+						t.Fatal(err)
+					}
+					for cpu, state := range states {
+						want := coreelf.BpfTcpCpuState{}
+						if cpu < len(worker.states) {
+							want = worker.states[cpu]
+						}
+						if state != want {
+							t.Fatalf("CPU %d state = %+v, want %+v", cpu, state, want)
+						}
+					}
+				})
 			}
-		}
-		if err := x.initTCPMaps(target, template); err != nil {
-			t.Fatal(err)
-		}
-		flows, err := x.readTCPFlows(4)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for i, f := range flows {
-			want := uint64(1000)
-			if scenario {
-				want = 65536
-				if i == 3 {
-					want = 67108864
-				}
-			}
-			if f.BytesTarget != want || f.SrcPort != uint16(x.cfg.TCPPortBase+i) || f.State != tcpFlowClosed || f.TxData != 0 {
-				t.Fatalf("flow %d = %+v, target %d", i, f, want)
-			}
-		}
-		var cfg coreelf.BpfTcpCfg
-		key := uint32(0)
-		if err := objs.TcpCfgMap.Lookup(&key, &cfg); err != nil {
-			t.Fatal(err)
-		}
-		if cfg.FlowCount != 4 || cfg.DstPort != 5201 {
-			t.Fatalf("cfg = %+v", cfg)
-		}
+		})
 	}
 }
 
