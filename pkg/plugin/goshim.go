@@ -25,10 +25,11 @@ const (
 	getShutdownRequested = "getShutdownRequested"
 )
 
-// writeBytesIfUnderLimit writes bytes to memory if they fit within the limit
+// writeBytesIfUnderLimit writes bytes when they fit, or returns the needed
+// length so the guest can resize its buffer and retry.
 func writeBytesIfUnderLimit(memory api.Memory, bytes []byte, buf, bufLimit uint32) uint32 {
 	if uint32(len(bytes)) > bufLimit {
-		return 0
+		return uint32(len(bytes))
 	}
 	if !memory.Write(buf, bytes) {
 		return 0
@@ -108,12 +109,15 @@ func makeReadHandler[T byteSlice](setter func(*GeneratorStack, T)) api.GoModuleF
 		buf := uint32(stack[0])
 		size := uint32(stack[1])
 
+		if size > maxPluginOutputBytes {
+			panic("plugin response exceeds 32 MiB")
+		}
 		resp, ok := mod.Memory().Read(buf, size)
 		if !ok {
 			panic("out of memory reading result metrics") // Bug: caller passed a length outside memory
 		}
 
-		setter(paramsFromContext(ctx), T(resp))
+		setter(paramsFromContext(ctx), T(append([]byte(nil), resp...)))
 	}
 }
 
@@ -124,7 +128,7 @@ var pluginInitRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
 var pluginInitResponseFn = makeReadHandler(func(s *GeneratorStack, b []byte) {
 	s.GeneratorInitResponse = b
 	if s.InitResponseChan != nil {
-		s.InitResponseChan <- b
+		sendResponse(s.InitResponseChan, b)
 	}
 })
 
@@ -135,7 +139,7 @@ var pluginProcessRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
 var pluginProcessResponseFn = makeReadHandler(func(s *GeneratorStack, b []byte) {
 	s.GeneratorProcessResponse = b
 	if s.ProcessResponseChan != nil {
-		s.ProcessResponseChan <- b
+		sendResponse(s.ProcessResponseChan, b)
 	}
 })
 
@@ -146,9 +150,19 @@ var pluginCleanupRequestFn = makeWriteHandler(func(s *GeneratorStack) []byte {
 var pluginCleanupResponseFn = makeReadHandler(func(s *GeneratorStack, b []byte) {
 	s.GeneratorCleanupResponse = b
 	if s.CleanupResponseChan != nil {
-		s.CleanupResponseChan <- b
+		sendResponse(s.CleanupResponseChan, b)
 	}
 })
+
+// The export runs synchronously; its caller consumes the response after return.
+// A second response must trap, since blocking here also blocks cancellation.
+func sendResponse(ch chan []byte, b []byte) {
+	select {
+	case ch <- b:
+	default:
+		panic("plugin sent more than one response")
+	}
+}
 
 func getShutdownRequestedFn(ctx context.Context, mod api.Module, stack []uint64) {
 	// Read the shutdown requested flag from the stack

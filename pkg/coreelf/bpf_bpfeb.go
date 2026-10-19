@@ -56,6 +56,33 @@ type BpfDiffEntry struct {
 	CsumCached uint8
 }
 
+type BpfMixedCfg struct {
+	_            structs.HostLayout
+	TotalWeight  uint32
+	PacketWeight uint32
+	Groups       uint32
+	Workers      uint32
+	Receive      uint32
+}
+
+type BpfMixedGroup struct {
+	_      structs.HostLayout
+	Upper  uint32
+	First  uint32
+	Count  uint32
+	Cursor uint32
+}
+
+type BpfMixedState struct {
+	_                   structs.HostLayout
+	PacketOpportunities uint64
+	TcpOpportunities    uint64
+	DrainOpportunities  uint64
+	Errors              uint64
+	SelectedFlow        uint32
+	_                   [4]byte
+}
+
 type BpfPktState struct {
 	_           structs.HostLayout
 	Count       uint32
@@ -139,7 +166,7 @@ type BpfTcpFlow struct {
 	SndMax      uint32
 	RcvNxt      uint32
 	SndWnd      uint32
-	_           [4]byte
+	TemplateId  uint32
 	BytesTarget uint64
 	BytesAcked  uint64
 	LastSendNs  uint64
@@ -242,6 +269,48 @@ type BpfTcpStats struct {
 	ChallengeAcks    uint64
 }
 
+type BpfTcpTemplate struct {
+	_       structs.HostLayout
+	Cfg     BpfTcpCfg
+	Prefix  [256]uint8
+	Lengths [8]struct {
+		_        structs.HostLayout
+		Offset   uint16
+		Constant uint16
+	}
+	OuterIps [4]struct {
+		_       structs.HostLayout
+		Offset  uint16
+		Version uint8
+		Pad     uint8
+	}
+	Udps [4]struct {
+		_         structs.HostLayout
+		Offset    uint16
+		IpOffset  uint16
+		PseudoSum uint32
+		Version   uint8
+		Mode      uint8
+		Pad       uint16
+	}
+	EntropyOffset uint16
+	EntropyBase   uint16
+	EntropyCount  uint16
+	LengthCount   uint8
+	OuterIpCount  uint8
+	UdpCount      uint8
+	TcpHeader     [20]uint8
+	_             [3]byte
+	SynSum        uint32
+	DataSum       uint32
+	SynOptions    [40]uint8
+	DataOptions   [40]uint8
+	SynLen        uint8
+	DataLen       uint8
+	Pad           [2]uint8
+	_             [4]byte
+}
+
 // LoadBpf returns the embedded CollectionSpec for Bpf.
 func LoadBpf() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_BpfBytes)
@@ -286,13 +355,17 @@ type BpfSpecs struct {
 type BpfProgramSpecs struct {
 	XdpPassDummy    *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
 	XdpRx           *ebpf.ProgramSpec `ebpf:"xdp_rx"`
+	XdpRxMixed      *ebpf.ProgramSpec `ebpf:"xdp_rx_mixed"`
 	XdpRxTcp        *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpMixed   *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_mixed"`
 	XdpRxTcpServer  *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_server"`
 	XdpTx           *ebpf.ProgramSpec `ebpf:"xdp_tx"`
 	XdpTxChecksum   *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
 	XdpTxCsumDiff   *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_diff"`
 	XdpTxCsumRecalc *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_recalc"`
+	XdpTxMixed      *ebpf.ProgramSpec `ebpf:"xdp_tx_mixed"`
 	XdpTxTcp        *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp"`
+	XdpTxTcpMixed   *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -302,6 +375,10 @@ type BpfMapSpecs struct {
 	BasePacketMap   *ebpf.MapSpec `ebpf:"base_packet_map"`
 	ChecksumMetaMap *ebpf.MapSpec `ebpf:"checksum_meta_map"`
 	DiffMap         *ebpf.MapSpec `ebpf:"diff_map"`
+	MixedCfgMap     *ebpf.MapSpec `ebpf:"mixed_cfg_map"`
+	MixedGroupMap   *ebpf.MapSpec `ebpf:"mixed_group_map"`
+	MixedProgs      *ebpf.MapSpec `ebpf:"mixed_progs"`
+	MixedStateMap   *ebpf.MapSpec `ebpf:"mixed_state_map"`
 	PktStateMap     *ebpf.MapSpec `ebpf:"pkt_state_map"`
 	RxStatsMap      *ebpf.MapSpec `ebpf:"rx_stats_map"`
 	TailCallCtxMap  *ebpf.MapSpec `ebpf:"tail_call_ctx_map"`
@@ -312,6 +389,7 @@ type BpfMapSpecs struct {
 	TcpSrvFlowMap   *ebpf.MapSpec `ebpf:"tcp_srv_flow_map"`
 	TcpSrvStatsMap  *ebpf.MapSpec `ebpf:"tcp_srv_stats_map"`
 	TcpStatsMap     *ebpf.MapSpec `ebpf:"tcp_stats_map"`
+	TcpTemplateMap  *ebpf.MapSpec `ebpf:"tcp_template_map"`
 	TxStatsMap      *ebpf.MapSpec `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.MapSpec `ebpf:"xdp_progs"`
 }
@@ -351,6 +429,10 @@ type BpfMaps struct {
 	BasePacketMap   *ebpf.Map `ebpf:"base_packet_map"`
 	ChecksumMetaMap *ebpf.Map `ebpf:"checksum_meta_map"`
 	DiffMap         *ebpf.Map `ebpf:"diff_map"`
+	MixedCfgMap     *ebpf.Map `ebpf:"mixed_cfg_map"`
+	MixedGroupMap   *ebpf.Map `ebpf:"mixed_group_map"`
+	MixedProgs      *ebpf.Map `ebpf:"mixed_progs"`
+	MixedStateMap   *ebpf.Map `ebpf:"mixed_state_map"`
 	PktStateMap     *ebpf.Map `ebpf:"pkt_state_map"`
 	RxStatsMap      *ebpf.Map `ebpf:"rx_stats_map"`
 	TailCallCtxMap  *ebpf.Map `ebpf:"tail_call_ctx_map"`
@@ -361,6 +443,7 @@ type BpfMaps struct {
 	TcpSrvFlowMap   *ebpf.Map `ebpf:"tcp_srv_flow_map"`
 	TcpSrvStatsMap  *ebpf.Map `ebpf:"tcp_srv_stats_map"`
 	TcpStatsMap     *ebpf.Map `ebpf:"tcp_stats_map"`
+	TcpTemplateMap  *ebpf.Map `ebpf:"tcp_template_map"`
 	TxStatsMap      *ebpf.Map `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.Map `ebpf:"xdp_progs"`
 }
@@ -370,6 +453,10 @@ func (m *BpfMaps) Close() error {
 		m.BasePacketMap,
 		m.ChecksumMetaMap,
 		m.DiffMap,
+		m.MixedCfgMap,
+		m.MixedGroupMap,
+		m.MixedProgs,
+		m.MixedStateMap,
 		m.PktStateMap,
 		m.RxStatsMap,
 		m.TailCallCtxMap,
@@ -380,6 +467,7 @@ func (m *BpfMaps) Close() error {
 		m.TcpSrvFlowMap,
 		m.TcpSrvStatsMap,
 		m.TcpStatsMap,
+		m.TcpTemplateMap,
 		m.TxStatsMap,
 		m.XdpProgs,
 	)
@@ -403,26 +491,34 @@ type BpfVariables struct {
 type BpfPrograms struct {
 	XdpPassDummy    *ebpf.Program `ebpf:"xdp_pass_dummy"`
 	XdpRx           *ebpf.Program `ebpf:"xdp_rx"`
+	XdpRxMixed      *ebpf.Program `ebpf:"xdp_rx_mixed"`
 	XdpRxTcp        *ebpf.Program `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpMixed   *ebpf.Program `ebpf:"xdp_rx_tcp_mixed"`
 	XdpRxTcpServer  *ebpf.Program `ebpf:"xdp_rx_tcp_server"`
 	XdpTx           *ebpf.Program `ebpf:"xdp_tx"`
 	XdpTxChecksum   *ebpf.Program `ebpf:"xdp_tx_checksum"`
 	XdpTxCsumDiff   *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
 	XdpTxCsumRecalc *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
+	XdpTxMixed      *ebpf.Program `ebpf:"xdp_tx_mixed"`
 	XdpTxTcp        *ebpf.Program `ebpf:"xdp_tx_tcp"`
+	XdpTxTcpMixed   *ebpf.Program `ebpf:"xdp_tx_tcp_mixed"`
 }
 
 func (p *BpfPrograms) Close() error {
 	return _BpfClose(
 		p.XdpPassDummy,
 		p.XdpRx,
+		p.XdpRxMixed,
 		p.XdpRxTcp,
+		p.XdpRxTcpMixed,
 		p.XdpRxTcpServer,
 		p.XdpTx,
 		p.XdpTxChecksum,
 		p.XdpTxCsumDiff,
 		p.XdpTxCsumRecalc,
+		p.XdpTxMixed,
 		p.XdpTxTcp,
+		p.XdpTxTcpMixed,
 	)
 }
 

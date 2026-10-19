@@ -90,7 +90,7 @@ func newApp(version string) *cli.App {
 		cli.StringFlag{
 			Name: "count, c",
 			Usage: "Number of packets to send (e.g., 100k, 1m). " +
-				"If --infinite is set, this value is used as the number of packet pools. Required if --duration not specified.",
+				"With --infinite or mixed TCP variants, this is the packet pool size. Required if --duration not specified.",
 		},
 		cli.DurationFlag{
 			Name:  "duration, t",
@@ -147,7 +147,7 @@ func newApp(version string) *cli.App {
 		},
 		cli.BoolFlag{
 			Name:  "tcp",
-			Usage: "TCP stream mode: open --tcp-flows connections to --tcp-dst from XDP and stream data (no plugin). See docs/ja/design_xdp_tcp.md",
+			Usage: "TCP stream mode: open --tcp-flows connections to --tcp-dst from XDP and stream data; use packet variants for mixed traffic. See docs/ja/design_xdp_tcp.md",
 		},
 		cli.StringFlag{
 			Name:  "tcp-dst",
@@ -204,7 +204,7 @@ func newApp(version string) *cli.App {
 		},
 		cli.StringFlag{
 			Name:  "tcp-flow-report",
-			Usage: "TCP stream: write each flow's ledger (frames sent/received, data segments, retransmissions) to this CSV file at the end",
+			Usage: "TCP stream or mixed variants: write each TCP flow's ledger (frames sent/received, data segments, retransmissions) to this CSV file at the end",
 		},
 		cli.BoolFlag{
 			Name:  "tcp-server",
@@ -296,6 +296,10 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.OTLPAttributes = ctx.String("otlp-attributes")
 	c.Version = version
 	c.TCP = ctx.Bool("tcp")
+	// The default packet plugin does not apply to standalone TCP.
+	if c.TCP && !ctx.IsSet("plugin") && !ctx.IsSet("p") {
+		c.PluginName = ""
+	}
 	c.TCPDst = ctx.String("tcp-dst")
 	c.TCPSrcIP = ctx.String("tcp-src-ip")
 	c.TCPDstMAC = ctx.String("tcp-dst-mac")
@@ -338,6 +342,10 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	if c.DebugMode > 0 {
 		// set verbose logging
 		c.LoggerConfig.Verbose = 1
+	}
+
+	if c.TCP && c.PluginName != "" {
+		return xdperf.Config{}, fmt.Errorf("--tcp cannot be combined with --plugin; use TCP flow variants")
 	}
 
 	// Derive computed fields (e.g. PluginLanguage) before validating.

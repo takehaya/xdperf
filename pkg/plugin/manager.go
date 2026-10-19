@@ -18,10 +18,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// maxPluginOutputBytes is the ceiling for a single plugin response. The host
-// pre-allocates a guest buffer of this size for each plugin call, so it bounds
-// how much memory a plugin can ask the host to reserve per invocation.
-const maxPluginOutputBytes = 32 * 1024 * 1024 // 32 MiB
+// MaxPluginOutputBytes is the ceiling for a single plugin response on both
+// Go goshim and TinyGo/C ABIs.
+const MaxPluginOutputBytes = 32 * 1024 * 1024 // 32 MiB
+
+const maxPluginOutputBytes = MaxPluginOutputBytes
 
 // ManagerOption is a functional option for NewManager
 type ManagerOption func(*managerOptions)
@@ -103,7 +104,7 @@ func NewManager(pluginDir string, pluginCfg string, pluginLang string, opts ...M
 		cache = wazero.NewCompilationCache()
 	}
 
-	runtimeConfig := wazero.NewRuntimeConfig().WithCompilationCache(cache)
+	runtimeConfig := wazero.NewRuntimeConfig().WithCompilationCache(cache).WithCloseOnContextDone(true)
 	runtime := wazero.NewRuntimeWithConfig(ctx, runtimeConfig)
 
 	ctx, sys, err := imports.NewBuilder().

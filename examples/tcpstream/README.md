@@ -96,3 +96,7 @@ sudo ./teardown.sh
   path drains more slowly than the untagged one. Expect retransmissions in
   the VLAN cases; `WINDOW` keeps them bounded. They do not affect the
   byte-count comparison because every lost segment is retransmitted.
+
+## Mixed packet and TCP variants
+
+See [the mixed E2E example](../mixed/test.sh) for UDP queries alongside TCP flows with unequal byte targets.

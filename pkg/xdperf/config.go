@@ -44,7 +44,7 @@ type Config struct {
 	OTLPInsecure   bool          // use plaintext gRPC for OTLP export
 	OTLPAttributes string        // extra OTLP resource attributes ("key=value,key=value")
 
-	// TCP stream mode (--tcp): an XDP-implemented TCP client, no plugin involved.
+	// TCP stream mode (--tcp): an XDP TCP client; configured by CLI flags.
 	// See docs/ja/design_xdp_tcp.md.
 	TCP         bool
 	TCPDst      string        // "host:port" ("[v6]:port" for IPv6); picks the address family
@@ -100,7 +100,7 @@ func (c *Config) Normalize() {
 		c.Receiver = true
 		c.Sender = false
 	}
-	if c.PluginLanguage != "" || c.TCP || c.TCPServer {
+	if c.PluginLanguage != "" || c.TCPServer {
 		return
 	}
 	if sp := strings.Split(c.PluginName, "."); len(sp) == 2 {
@@ -135,8 +135,8 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.TCPFlowReport != "" && !c.TCP {
-		return fmt.Errorf("--tcp-flow-report requires --tcp")
+	if c.TCPFlowReport != "" && !c.TCP && (!c.Sender || c.PluginName == "") {
+		return fmt.Errorf("--tcp-flow-report requires --tcp or TCP flow variants")
 	}
 
 	if c.TCPServer {
@@ -235,6 +235,9 @@ func (c *Config) validateTCP() error {
 	if c.Count > 0 {
 		return fmt.Errorf("--tcp does not use --count; use --tcp-bytes and/or --duration")
 	}
+	if c.PluginName != "" {
+		return fmt.Errorf("--tcp cannot be combined with --plugin; use TCP flow variants without --tcp")
+	}
 	if c.TCPDst == "" {
 		return fmt.Errorf("--tcp requires --tcp-dst host:port")
 	}
@@ -251,7 +254,7 @@ func (c *Config) validateTCP() error {
 	if c.TCPFlows <= 0 || c.TCPFlows > 65536 {
 		return fmt.Errorf("--tcp-flows must be in 1..65536")
 	}
-	if c.TCPPortBase <= 0 || c.TCPPortBase+c.TCPFlows > 65536 {
+	if c.TCPPortBase <= 0 || c.TCPPortBase > 65535 || (c.TCPFlows > 65536-c.TCPPortBase) {
 		return fmt.Errorf("--tcp-port-base (%d) + --tcp-flows (%d) must not exceed 65536", c.TCPPortBase, c.TCPFlows)
 	}
 	if c.TCPWindow <= 0 || c.TCPWindow > 65535 {

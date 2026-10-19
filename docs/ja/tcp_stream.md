@@ -25,7 +25,9 @@ sudo xdperf run --tcp --device eth0 --tcp-dst '[fd00::2]:5201' --tcp-flows 16 --
 sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.100.2:5201 --tcp-vlan-id 100 --tcp-flows 8 --tcp-bytes 100m
 ```
 
-プラグイン (`--plugin`) は使いません。`--count` と `--infinite` は併用できません。
+上の例はプラグインを使わずに実行します。
+`--plugin` を指定するシナリオ方式は後述します。
+`--count` と `--infinite` は併用できません。
 
 ### フラグ
 
@@ -158,3 +160,10 @@ sudo examples/tcpstream/setup.sh
 sudo examples/tcpstream/test.sh      # IPv4 / IPv6 / VLAN、受信側は xdperf-sink と --tcp-server の両方、socat → --tcp-server も
 sudo examples/tcpstream/teardown.sh
 ```
+
+## UDP と TCP の混合送信
+
+`--plugin mixed.go` は UDP パケットと TCP フローを同じバリアント集合として返します。
+`--tcp` は併記しません。
+使い方は [混合バリアントの設計](design_mixed_variants.md) と [E2E サンプル](../../examples/mixed/test.sh) を参照してください。
+`--tcp-flow-report` は混合送信でも TCP フローのみを CSV に記録します。
