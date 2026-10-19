@@ -74,6 +74,26 @@ func tcpMaxGeneveTemplate() guest.PacketVariant {
 	return v
 }
 
+// Raw IPv4 saves the inner Ethernet header, allowing 41 minimum options.
+func tcpMaxRawGeneveTemplate() guest.PacketVariant {
+	v := tcpMaxGeneveTemplate()
+	b := append([]byte(nil), v.Base.Data[:202]...)
+	for i := 0; i < 3; i++ {
+		b = append(b, 0x12, 0x34, 1, 0)
+	}
+	b = append(b, v.Base.Data[216:]...)
+	b[42] = 41
+	binary.BigEndian.PutUint16(b[44:], 0x0800)
+	v.Base = guest.BasePacket{Data: b, Length: uint16(len(b))}
+	e := v.TCPFlow.Encapsulation
+	e.InnerL3Offset -= 2
+	e.InnerL4Offset -= 2
+	for i := range e.Lengths {
+		e.Lengths[i].Constant -= 2
+	}
+	return v
+}
+
 func TestTCPEncapValidation(t *testing.T) {
 	maxTemplate := tcpMaxGeneveTemplate()
 	if maxTemplate.Base.Length != 256 {
@@ -169,7 +189,10 @@ func verifyTCPEncapFrame(t *testing.T, frame []byte, tmpl coreelf.BpfTcpTemplate
 	}
 }
 
-func TestTCPEncapBPF(t *testing.T) {
+func TestTCPEncapBPF(t *testing.T)     { testTCPEncapBPF(t, false) }
+func TestTCPRawGeneveBPF(t *testing.T) { testTCPEncapBPF(t, true) }
+
+func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
 	objs, spec, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +214,9 @@ func TestTCPEncapBPF(t *testing.T) {
 	for _, name := range []string{"ipip", "gre", "srv6", "gtpu", "mpls", "nested"} {
 		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants, tcpOtherTunnel(name))
 	}
+	if rawGeneve {
+		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], tcpMaxRawGeneveTemplate())
+	}
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +229,7 @@ func TestTCPEncapBPF(t *testing.T) {
 		t.Fatal(err)
 	}
 	states := make([]coreelf.BpfMixedState, ebpf.MustPossibleCPU())
-	for i, g := range x.mixed.groups {
+	for i := range x.mixed.groups {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			var tmpl coreelf.BpfTcpTemplate
 			if err := objs.TcpTemplateMap.Lookup(uint32(i), &tmpl); err != nil {
@@ -251,7 +277,7 @@ func TestTCPEncapBPF(t *testing.T) {
 				binary.BigEndian.PutUint32(frame[l4+8:], 101)
 				frame[l4+13] = 0x12
 				// RX for the other tunnel protocols belongs to phase 3.
-				if i >= 9 && i != 14 {
+				if !rawGeneve && i >= 9 && i != 14 {
 					continue
 				}
 				// Outer tuple/VNI intentionally remain in the TX direction; they are not keys.
@@ -268,7 +294,7 @@ func TestTCPEncapBPF(t *testing.T) {
 					t.Fatalf("short parent UDP %d %v", action, err)
 				}
 				// Bare responses accepted; the configured outer envelope is restored.
-				bare := append([]byte(nil), g.variant.Base.Data[l3-14:l3]...)
+				bare := append([]byte(nil), tcpTestBase(tmpl.Cfg.IpVersion == 6, 0).Data[:14]...)
 				bare = append(bare, frame[l3:]...)
 				action, reply, err = objs.XdpRxTcpMixed.Test(bare)
 				if err != nil || action != 3 {
@@ -331,6 +357,61 @@ func TestTCPKnownTunnelParsers(t *testing.T) {
 			v := tcpOtherTunnel(name)
 			if _, err := parseTCPVariant(v); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMixedUDPOptionsAccounting(t *testing.T) {
+	objs, _, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer objs.Close()
+	if err := objs.MixedCfgMap.Put(uint32(0), coreelf.BpfMixedCfg{Receive: 1}); err != nil {
+		t.Fatal(err)
+	}
+	packet := append([]byte(nil), tcpTestBase(false, 0).Data[:34]...)
+	packet[14] = 0x46
+	packet[23] = 17
+	packet = append(packet, 1, 1, 1, 1, 0xc0, 0, 0x27, 0x10, 0, 8, 0, 0)
+	binary.BigEndian.PutUint16(packet[16:], uint16(len(packet)-14))
+	for _, receiver := range []bool{true, false} {
+		t.Run(fmt.Sprint(receiver), func(t *testing.T) {
+			var cfg coreelf.BpfMixedCfg
+			if receiver {
+				cfg.Receive = 1
+			}
+			if err := objs.MixedCfgMap.Put(uint32(0), cfg); err != nil {
+				t.Fatal(err)
+			}
+			before := make([]coreelf.BpfDatarec, ebpf.MustPossibleCPU())
+			if err := objs.RxStatsMap.Lookup(uint32(0), &before); err != nil {
+				t.Fatal(err)
+			}
+			action, _, err := objs.XdpRxMixed.Test(packet)
+			wantAction := uint32(2)
+			if receiver {
+				wantAction = 1
+			} // The legacy receiver counts and drops.
+			if err != nil || action != wantAction {
+				t.Fatalf("action=%d err=%v", action, err)
+			}
+			after := make([]coreelf.BpfDatarec, len(before))
+			if err := objs.RxStatsMap.Lookup(uint32(0), &after); err != nil {
+				t.Fatal(err)
+			}
+			var packets, nbytes uint64
+			for i := range after {
+				packets += after[i].Packets - before[i].Packets
+				nbytes += after[i].Bytes - before[i].Bytes
+			}
+			want := uint64(0)
+			if receiver {
+				want = 1
+			}
+			if packets != want || nbytes != want*uint64(len(packet)) {
+				t.Fatalf("packets=%d bytes=%d", packets, nbytes)
 			}
 		})
 	}

@@ -14,7 +14,7 @@ static __noinline int tcp_geneve_options(struct xdp_md *ctx, __u32 off, __u32 en
 {
     __u8 h[4];
 #pragma unroll
-    for (int i = 0; i < 40; i++) {
+    for (int i = 0; i < 41; i++) {
         if (off >= end)
             return off == end;
         if (off > 232 || off + 4 > end || bpf_xdp_load_bytes(ctx, off, h, 4) < 0 || (h[2] & 0x80) || (h[3] & 0xe0))
@@ -57,7 +57,13 @@ static __noinline int tcp_find_inner(struct xdp_md *ctx, struct tcp_inner_packet
         __u32 ip_end;
         __u8 next;
         if (proto == ETH_P_IP) {
-            if (off + 20 > limit || bpf_xdp_load_bytes(ctx, off, h, 20) < 0 || h[0] != 0x45 || (h[6] & 0x3f) || h[7])
+            if (off + 20 > limit || bpf_xdp_load_bytes(ctx, off, h, 20) < 0)
+                return 0;
+            // Preserve legacy outer UDP accounting even when this TCP parser
+            // cannot inspect the packet (e.g. IPv4 options or fragments).
+            if (depth == 0 && h[9] == IPPROTO_UDP)
+                out->outer_udp = 1;
+            if (h[0] != 0x45 || (h[6] & 0x3f) || h[7])
                 return 0;
             __builtin_memcpy(out->src, h + 12, 4);
             __builtin_memcpy(out->dst, h + 16, 4);
@@ -68,7 +74,11 @@ static __noinline int tcp_find_inner(struct xdp_md *ctx, struct tcp_inner_packet
             ip_end = off + (((__u16)h[2] << 8) | h[3]);
             off += 20;
         } else if (proto == ETH_P_IPV6) {
-            if (off + 40 > limit || bpf_xdp_load_bytes(ctx, off, h, 40) < 0 || h[0] >> 4 != 6)
+            if (off + 40 > limit || bpf_xdp_load_bytes(ctx, off, h, 40) < 0)
+                return 0;
+            if (depth == 0 && h[6] == IPPROTO_UDP)
+                out->outer_udp = 1;
+            if (h[0] >> 4 != 6)
                 return 0;
             __builtin_memcpy(out->src, h + 8, 16);
             __builtin_memcpy(out->dst, h + 24, 16);
@@ -79,8 +89,6 @@ static __noinline int tcp_find_inner(struct xdp_md *ctx, struct tcp_inner_packet
         } else {
             return 0;
         }
-        if (depth == 0 && next == IPPROTO_UDP)
-            out->outer_udp = 1;
         if (next == IPPROTO_TCP) {
             out->l4 = off;
             out->ip_end = ip_end;
