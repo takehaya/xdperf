@@ -43,6 +43,31 @@ func rxTunnel(name string, inner []byte) []byte {
 		proto, next = 0x86dd, 41
 	}
 	switch name {
+	case "vxlan-gre":
+		return rxTunnel("vxlan", rxTunnel("gre-key", inner)[14:])
+	case "gre-vxlan":
+		return rxTunnel("gre-key", rxTunnel("vxlan", inner)[14:])
+	case "ipip-vxlan":
+		return rxTunnel("ipip4", rxTunnel("vxlan", inner)[14:])
+	case "vxlan-three-layers", "vxlan-four-layers":
+		count := 3
+		if name == "vxlan-four-layers" {
+			count = 4
+		}
+		for i := 0; i < count; i++ {
+			inner = rxIP(false, next, inner)
+			next = 4
+		}
+		return rxTunnel("vxlan", inner)
+	case "vxlan", "geneve-mpls":
+		h := append([]byte{8, 0, 0, 0, 0, 0, 7, 0}, rxEther(proto, inner)...)
+		u := []byte{0x12, 0x34, 0x12, 0xb5, 0, 0, 0, 0}
+		if name == "geneve-mpls" {
+			h = append([]byte{0, 0, 0x88, 0x47, 0, 0, 7, 0}, rxTunnel("mpls-one", inner)[14:]...)
+			u[2], u[3] = 0x17, 0xc1
+		}
+		binary.BigEndian.PutUint16(u[4:], uint16(8+len(h)))
+		return rxEther(0x800, rxIP(false, 17, append(u, h...)))
 	case "four-layers", "five-layers":
 		count := 4
 		if name == "five-layers" {
@@ -231,7 +256,7 @@ func TestTCPReceiveTunnels(t *testing.T) {
 			}
 			return f
 		}
-		for _, name := range []string{"bare", "ipip4", "ipip6", "srv6-one", "srv6-three", "srv6-ether", "gre", "gre-key", "gretap", "ip6gre", "gre-mpls", "mpls-one", "mpls-eight", "gtpu", "gtpu-spare", "gtpu-spn-unusedext", "gtpu-spn", "gtpu-ext", "gtpu-eight", "nested", "four-layers", "geneve-236"} {
+		for _, name := range []string{"bare", "ipip4", "ipip6", "srv6-one", "srv6-three", "srv6-ether", "gre", "gre-key", "gretap", "ip6gre", "gre-mpls", "mpls-one", "mpls-eight", "gtpu", "gtpu-spare", "gtpu-spn-unusedext", "gtpu-spn", "gtpu-ext", "gtpu-eight", "nested", "four-layers", "geneve-236", "vxlan-gre", "gre-vxlan", "ipip-vxlan", "geneve-mpls", "vxlan-three-layers"} {
 			t.Run(fmt.Sprintf("v6=%v/%s", v6, name), func(t *testing.T) {
 				put(initial)
 				rx := func(b []byte, want uint32) {
@@ -289,7 +314,7 @@ func TestTCPReceiveTunnels(t *testing.T) {
 			})
 		}
 		invalid := map[string][]byte{}
-		for _, name := range []string{"mpls-nine", "gtpu-nine", "five-layers", "geneve-240"} {
+		for _, name := range []string{"mpls-nine", "gtpu-nine", "five-layers", "geneve-240", "vxlan-four-layers"} {
 			invalid[name] = rxTunnel(name, reply(0x12, 5000, 101))
 		}
 		bad := func(name, kind string, mutate func([]byte)) {
@@ -313,6 +338,10 @@ func TestTCPReceiveTunnels(t *testing.T) {
 		bad("MPLS missing bottom", "mpls-one", func(b []byte) { b[16] = 0 })
 		bad("MPLS unknown version", "mpls-one", func(b []byte) { b[18] = 0x70 })
 		bad("outer fragment", "ipip4", func(b []byte) { b[20] = 0x20 })
+		bad("VXLAN GRE parent UDP", "vxlan-gre", func(b []byte) { binary.BigEndian.PutUint16(b[38:], 16) })
+		bad("GRE VXLAN parent IP", "gre-vxlan", func(b []byte) { binary.BigEndian.PutUint16(b[16:], 28) })
+		bad("IPIP VXLAN parent UDP", "ipip-vxlan", func(b []byte) { binary.BigEndian.PutUint16(b[58:], 16) })
+		bad("GENEVE MPLS parent UDP", "geneve-mpls", func(b []byte) { binary.BigEndian.PutUint16(b[38:], 16) })
 		for name, b := range invalid {
 			t.Run(fmt.Sprintf("v6=%v/invalid/%s", v6, name), func(t *testing.T) {
 				put(initial)
