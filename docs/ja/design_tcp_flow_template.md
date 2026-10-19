@@ -519,3 +519,15 @@ Linux 対向の ip6tnl/seg6、gre/gretap/ip6gre、MPLS router/lwtunnel、利用�
 性能は既存 mixbench と同じ対応比較の方式を使う。
 起動時間と既存の非カプセル化／VXLAN／GENEVE の性能を 6 対以上で測定し、対応差の平均と t 分布による両側 95% CI を記録する。
 生データと再集計手順を残し、差が不明確な場合は同等性を断定しない。
+
+### 段階 3 の実装時の判断
+
+各 IP 層へ全分岐を展開する最初の実装は、verifier の 100 万検証命令上限を超えた。
+1 層の解析を独立検証される global BPF サブプログラム `tcp_parse_layer` に分離し、呼び出し側は最大 5 層を進む構成へ変更した。
+追加のマップや tail call は使わず、通常 packet と通常 TCP のロード対象も維持する。
+混合 RX の入口も新しい EtherType と IP protocol を解析器へ振り分ける。
+
+GTP-U の受信では spare bit と E=0 の未使用 Next Extension Header 値を無視する。
+送信ひな型の厳格な検査とは区別し、TS 29.281 の受信規則に合わせる。
+S/PN ありの受信、8 個の拡張ヘッダ、8 label、4 外側 IP 層、TCP オフセット 236 バイトの正例と、それぞれの上限超過を BPF_PROG_RUN で確認する。
+各正常フレームを全バイト境界で切り詰め、フロー構造体全体が不変であることも検査する。

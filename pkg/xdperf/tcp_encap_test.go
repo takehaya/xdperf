@@ -304,22 +304,20 @@ func testTCPEncapBPF(t *testing.T, profile string) {
 				binary.BigEndian.PutUint32(frame[l4+4:], 5000)
 				binary.BigEndian.PutUint32(frame[l4+8:], 101)
 				frame[l4+13] = 0x12
-				// RX for the other tunnel protocols belongs to phase 3.
-				if profile == "mpls" || (profile == "all" && i >= 9 && i != 14) {
-					continue
-				}
 				// Outer tuple/VNI intentionally remain in the TX direction; they are not keys.
 				action, reply, err := objs.XdpRxTcpMixed.Test(frame)
 				if err != nil || action != 3 {
 					t.Fatalf("encap RX %d %v", action, err)
 				}
 				verifyTCPEncapFrame(t, reply, tmpl)
-				// A shorter UDP envelope must not expose the inner TCP carried in padding.
-				bad := append([]byte(nil), frame...)
-				binary.BigEndian.PutUint16(bad[int(tmpl.Udps[0].Offset)+4:], 8)
-				action, _, err = objs.XdpRxTcpMixed.Test(bad)
-				if err != nil || action != 2 {
-					t.Fatalf("short parent UDP %d %v", action, err)
+				if tmpl.UdpCount > 0 {
+					// A shorter UDP envelope must not expose the inner TCP carried in padding.
+					bad := append([]byte(nil), frame...)
+					binary.BigEndian.PutUint16(bad[int(tmpl.Udps[0].Offset)+4:], 8)
+					action, _, err = objs.XdpRxTcpMixed.Test(bad)
+					if err != nil || action != 2 {
+						t.Fatalf("short parent UDP %d %v", action, err)
+					}
 				}
 				// Bare responses accepted; the configured outer envelope is restored.
 				bare := append([]byte(nil), tcpTestBase(tmpl.Cfg.IpVersion == 6, 0).Data[:14]...)
