@@ -198,7 +198,9 @@ type GeneratorCleanupResponse struct {
 // TCPFlowVariant describes a group of static TCP connections sharing a target.
 // The engine owns TCP sequence numbers, flags, windows and checksums.
 type TCPFlowVariant struct {
-	Destination string    `json:"destination"`
+	Destination string    `json:"destination,omitempty"`
+	SynOptions  []byte    `json:"syn_options,omitempty"`
+	DataOptions []byte    `json:"data_options,omitempty"`
 	Flows       []TCPFlow `json:"flows"`
 }
 

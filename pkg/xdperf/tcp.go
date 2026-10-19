@@ -309,6 +309,11 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 		return fmt.Errorf("tcp_cfg_map: %w", err)
 	}
 
+	if x.mixed != nil {
+		if err := x.initTCPTemplates(t, template, cfg); err != nil {
+			return err
+		}
+	}
 	flows := x.cfg.TCPFlows
 	keys := make([]uint32, flows)
 	vals := make([]coreelf.BpfTcpFlow, flows)
@@ -323,6 +328,20 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 			SrcPort:     uint16(x.cfg.TCPPortBase + i),
 			Iss:         rand.Uint32(),
 			BytesTarget: bytesTarget,
+		}
+		if x.mixed != nil {
+			for j, g := range x.mixed.groups {
+				if uint32(i) >= g.first && uint32(i) < g.first+g.count {
+					vals[i].TemplateId = uint32(j)
+					if len(g.variant.Base.Data) != 0 {
+						tt, _ := parseTCPBase(g.variant.Base)
+						if tt.ipVersion == 4 {
+							vals[i].IpId = binary.BigEndian.Uint16(g.variant.Base.Data[int(tt.l3Off)+4:])
+						}
+					}
+					break
+				}
+			}
 		}
 	}
 	if _, err := x.bpfobjs.TcpFlowMap.BatchUpdate(keys, vals, nil); err != nil {
@@ -387,6 +406,18 @@ func (x *Xdperf) updateTCPCfg(fn func(*coreelf.BpfTcpCfg)) error {
 		return err
 	}
 	fn(&cfg)
+	if x.mixed != nil {
+		for i := range x.mixed.groups {
+			var v coreelf.BpfTcpTemplate
+			if err := x.bpfobjs.TcpTemplateMap.Lookup(uint32(i), &v); err != nil {
+				return err
+			}
+			fn(&v.Cfg)
+			if err := x.bpfobjs.TcpTemplateMap.Put(uint32(i), v); err != nil {
+				return err
+			}
+		}
+	}
 	return x.bpfobjs.TcpCfgMap.Put(&zero, &cfg)
 }
 
@@ -490,11 +521,21 @@ func (x *Xdperf) tcpWorker(ctx context.Context, cpu int, prog *ebpf.Program, run
 
 // runTCP is the client entry point of --tcp mode.
 func (x *Xdperf) runTCP(ctx context.Context) error {
-	t, err := x.resolveTCPTarget()
-	if err != nil {
-		return err
+	var t *tcpTarget
+	var template []byte
+	var err error
+	if x.mixed != nil && len(x.mixed.groups[0].variant.Base.Data) != 0 {
+		t, err = parseTCPBase(x.mixed.groups[0].variant.Base)
+		if err == nil {
+			err = x.templateMSS(t, 0)
+		}
+		template = append([]byte(nil), x.mixed.groups[0].variant.Base.Data...)
+	} else {
+		t, err = x.resolveTCPTarget()
+		if err == nil {
+			template, err = buildTCPTemplate(t, uint16(x.cfg.TCPPortBase))
+		}
 	}
-	template, err := buildTCPTemplate(t, uint16(x.cfg.TCPPortBase))
 	if err != nil {
 		return err
 	}
@@ -502,6 +543,18 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		return fmt.Errorf("failed to init TCP maps: %w", err)
 	}
 
+	if x.mixed != nil {
+		for i := range x.mixed.groups {
+			var v coreelf.BpfTcpTemplate
+			if err := x.bpfobjs.TcpTemplateMap.Lookup(uint32(i), &v); err != nil {
+				return err
+			}
+			n := int(v.Cfg.HdrLen) + max(int(v.DataLen)+int(v.Cfg.Mss), int(v.SynLen))
+			if n > len(template) {
+				template = append(template, make([]byte, n-len(template))...)
+			}
+		}
+	}
 	x.Logger.Info("TCP stream target resolved",
 		zap.Uint8("ip_version", t.ipVersion),
 		zap.String("src", t.srcIP.String()),
