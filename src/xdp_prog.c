@@ -1396,6 +1396,10 @@ int xdp_tx_mixed(struct xdp_md *ctx)
         return XDP_ABORTED;
     }
     st->tcp_opportunities++;
+    // Older verifiers lose the spilled loop counter's bounds across map
+    // lookups. This small fixed table can be fully unrolled without combining
+    // the TCP/checksum verifier state spaces.
+#pragma unroll
     for (__u32 i = 0; i < 16; i++) {
         if (i >= cfg->groups)
             break;
