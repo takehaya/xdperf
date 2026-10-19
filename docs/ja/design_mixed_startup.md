@@ -49,3 +49,39 @@ LCO の内側ループに計算範囲の定数上限を入れた最初の実装�
 全ファイルの lint には既存の失敗があった。
 `jq -e empty` は正常な JSON にも終了コード 4 を返すため、構文検査を `jq empty` に直す。
 併せて既存の YAML インデントと、lint が自動修正する 2 ファイルの末尾空白を整える。
+
+## ローカル検証
+
+Go 1.25.5、ホストカーネル 7.0.0-38-generic で次を確認した。
+BPF は Docker 内の clang 22.1.8 で `make bpf-gen` により再生成した。
+
+- `make test`（`go test -v -exec sudo -race ./...`）：全パッケージ成功。
+- `TestTCPZeroUDPEncapBPF` と既存の encapsulation 2 ケースの sudo race：成功。
+- `examples/run_all.sh`：12 シナリオすべて成功。
+- `make lint`：全ファイル成功。
+- OCR：Principal 2 人と Quality 2 人の独立レビューを完了。zero-only パケット検証の追加指摘に対応し、未対応の指摘はない。
+
+packet TX/RX、checksum の 3 段、通常 TCP TX/RX、TCP server RX の 8 プログラムは、main と再配置済み BPF 命令バイト列が完全一致した。
+比較スクリプトと SHA-256 は `out/mixbench/compare.go` と `bytecode.txt` に保存した。
+通常の起動順序と RX のトンネル解析器も変更していない。
+
+設計上の前提は [混合バリアント](design_mixed_variants.md)、[TCP フローひな型](design_tcp_flow_template.md)、[XDP TCP エンジン](design_xdp_tcp.md) を参照する。
+
+ロード後の同一性は BPF tag と `bytes_xlated` で確認する。
+既存 packet プログラムの一部では、tag と変換後 BPF 長が同じでも `bytes_jited` に試行間で 3〜6 バイトの差を観測した。
+JIT サイズの完全一致を BPF バイトコード不変の判定には使わず、各試行の値は生データに残す。
+
+## 初回測定で検出した回帰と修正
+
+初回実装 `8844011` の 96 試行は、エラーと再送が 0 で、全フローの受信バイト数が一致した。
+起動時間は非カプセル化で約 27%、VXLAN/GENEVE で約 20% 短縮した。
+しかし非カプセル化の 1 worker では packet pps が −2.72%［95% CI: −4.62%, −0.81%］、TCP goodput が −2.76%［−4.69%, −0.83%］となり、性能の完了条件を満たさなかった。
+この 6 ブロックのデータとバイナリは `out/mixbench/` にそのまま保存する。
+
+修正では、外側の長さ修正が一つも必要ないときに、カプセル化修正 helper の呼び出し自体を省く。
+対応する外側 IP/UDP ヘッダには必ず長さ修正があるため、非カプセル化と MPLS のみのテンプレートはこの条件で区別できる。
+内側 IP/TCP の修正は先に完了している。
+初回実装ではこの条件でも helper に入り、上限定数のロードとテンプレートの検査が残っていた。
+
+修正後の測定は `out/mixbench2/` に分離し、同じ 96 試行を新たに完走する。
+初回の不利な試行を除外したり、修正後の結果と混ぜたりしない。
