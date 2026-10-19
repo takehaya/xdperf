@@ -1366,3 +1366,99 @@ int xdp_tx_csum_diff(struct xdp_md *ctx)
     DEBUG_PRINT("xdp_tx_csum_diff: idx=%u len=%u\n", local_idx, target_len);
     return XDP_TX;
 }
+
+SEC("xdp")
+int xdp_tx_mixed(struct xdp_md *ctx)
+{
+    __u32 zero = 0;
+    struct mixed_cfg *cfg = bpf_map_lookup_elem(&mixed_cfg_map, &zero);
+    struct mixed_state *st = bpf_map_lookup_elem(&mixed_state_map, &zero);
+    struct tcp_cfg *tcp = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
+    if (!cfg || !st || !tcp || !cfg->total_weight)
+        return XDP_ABORTED;
+    st->active = 1;
+    // Drain/abort uses the legacy all-flow cursor and stops packet traffic.
+    if (tcp->drain) {
+        st->active = 2;
+        st->drain_opportunities++;
+        bpf_tail_call(ctx, &mixed_progs, 1);
+        st->errors++;
+        return XDP_ABORTED;
+    }
+    __u32 pick = (__u64)bpf_get_prandom_u32() * cfg->total_weight >> 32;
+    if (pick < cfg->packet_weight) {
+        st->packet_opportunities++;
+        struct pkt_state *ps = bpf_map_lookup_elem(&pkt_state_map, &zero);
+        if (ps)
+            ps->last_base_idx = 0xffffffff;
+        bpf_tail_call(ctx, &mixed_progs, 0);
+        st->errors++;
+        return XDP_ABORTED;
+    }
+    st->tcp_opportunities++;
+    for (__u32 i = 0; i < 16; i++) {
+        if (i >= cfg->groups)
+            break;
+        struct mixed_group *g = bpf_map_lookup_elem(&mixed_group_map, &i);
+        if (!g || pick >= g->upper)
+            continue;
+        if (!g->count)
+            return XDP_DROP;
+        __u32 cursor = g->cursor;
+        if (cursor >= g->count)
+            cursor = 0;
+        g->cursor = cursor + 1;
+        st->selected_flow = g->first + cursor * cfg->workers;
+        bpf_tail_call(ctx, &mixed_progs, 1);
+        break;
+    }
+    st->errors++;
+    return XDP_ABORTED;
+}
+
+SEC("xdp")
+int xdp_rx_mixed(struct xdp_md *ctx)
+{
+    void *data = (void *)(long)ctx->data;
+    void *end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > end)
+        return XDP_PASS;
+    __u16 proto = eth->h_proto;
+    __u32 off = sizeof(*eth);
+    for (int i = 0; i < 2; i++) {
+        if (proto != bpf_htons(ETH_P_8021Q) && proto != bpf_htons(ETH_P_8021AD))
+            break;
+        struct vlan_hdr *v = data + off;
+        if ((void *)(v + 1) > end)
+            return XDP_PASS;
+        proto = v->h_vlan_encapsulated_proto;
+        off += sizeof(*v);
+    }
+    __u8 transport;
+    if (proto == bpf_htons(ETH_P_IP)) {
+        struct iphdr *ip = data + off;
+        if ((void *)(ip + 1) > end)
+            return XDP_PASS;
+        transport = ip->protocol;
+    } else if (proto == bpf_htons(ETH_P_IPV6)) {
+        struct ipv6hdr *ip = data + off;
+        if ((void *)(ip + 1) > end)
+            return XDP_PASS;
+        transport = ip->nexthdr;
+    } else {
+        return XDP_PASS;
+    }
+    if (transport == IPPROTO_TCP) {
+        bpf_tail_call(ctx, &mixed_progs, 2);
+        return XDP_ABORTED;
+    }
+    // Leave ND, ICMP and unknown traffic to the host stack.
+    __u32 zero = 0;
+    struct mixed_cfg *cfg = bpf_map_lookup_elem(&mixed_cfg_map, &zero);
+    if (cfg && cfg->receive && transport == IPPROTO_UDP) {
+        bpf_tail_call(ctx, &mixed_progs, 3);
+        return XDP_ABORTED;
+    }
+    return XDP_PASS;
+}

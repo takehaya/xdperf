@@ -37,9 +37,6 @@ const (
 	// Pre-built packets are sent as they are.
 	GeneratorTemplateTypeRaw GeneratorTemplateType = "raw"
 
-	// TCP scenario: the host initializes the existing TCP engine.
-	GeneratorTemplateTypeTCPScenario GeneratorTemplateType = "tcp_scenario"
-
 	// Variable template.
 	// Packets are generated on the host/XDP data-plane side using a template
 	// and variable parameter sets.
@@ -48,13 +45,10 @@ const (
 
 // GeneratorResponse represents the response returned from the packet
 // generation plugin to simpleudp.
-// Depending on TemplateType, RawPacketTemplate, VariablePacketTemplate,
-// or TCPScenario is used.
+// TemplateType selects RawPacketTemplate or VariablePacketTemplate.
 type GeneratorProcessResponse struct {
 	// Template type.
 	TemplateType GeneratorTemplateType `json:"template_type"`
-
-	TCPScenario *TCPScenario `json:"tcp_scenario,omitempty"`
 
 	// Packet list for raw templates.
 	// Used when TemplateType is raw.
@@ -162,6 +156,10 @@ type ChecksumSpec struct {
 // PacketVariant represents a base packet, the variable regions inside it,
 // and a weight used for selection when patterns require it.
 type PacketVariant struct {
+	// Empty kind preserves the packet-only ABI.
+	Kind    string          `json:"kind,omitempty"`
+	TCPFlow *TCPFlowVariant `json:"tcp_flow,omitempty"`
+
 	// Base packet containing raw bytes beginning from the Ethernet header.
 	Base BasePacket `json:"base_packet"`
 
@@ -195,4 +193,16 @@ type GeneratorCleanupRequest struct {
 type GeneratorCleanupResponse struct {
 	// Indicates whether the cleanup was successful.
 	Success bool `json:"success"`
+}
+
+// TCPFlowVariant describes a group of static TCP connections sharing a target.
+// The engine owns TCP sequence numbers, flags, windows and checksums.
+type TCPFlowVariant struct {
+	Destination string    `json:"destination"`
+	Flows       []TCPFlow `json:"flows"`
+}
+
+// TCPFlow.Bytes is a decimal uint64 string; zero requires --duration.
+type TCPFlow struct {
+	Bytes string `json:"bytes"`
 }

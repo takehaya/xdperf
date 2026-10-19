@@ -142,11 +142,11 @@ func (x *Xdperf) resolveTCPTarget() (*tcpTarget, error) {
 	egressName := egress.Attrs().Name
 	if route.LinkIndex != x.Device.Index {
 		// A VLAN sub-interface of --device is the expected case when tagging;
-		// Preserve the legacy CLI warning, but reject mismatched scenario routes.
+		// Preserve the legacy CLI warning, but reject mismatched plugin routes.
 		parent := egress.Attrs().ParentIndex
 		if _, isVlan := egress.(*netlink.Vlan); !isVlan || parent != x.Device.Index {
 			if x.cfg.PluginName != "" {
-				return nil, fmt.Errorf("TCP scenario route via %s does not use device %s or its VLAN child", egressName, x.Device.Name)
+				return nil, fmt.Errorf("TCP variant route via %s does not use device %s or its VLAN child", egressName, x.Device.Name)
 			}
 			x.Logger.Warn("route to --tcp-dst leaves through a different interface than --device; frames are still sent on --device",
 				zap.String("route_dev", egressName), zap.String("device", x.Device.Name))
@@ -315,8 +315,8 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 	for i := 0; i < flows; i++ {
 		keys[i] = uint32(i)
 		bytesTarget := x.cfg.TCPBytes
-		if x.tcpScenarioBytes != nil {
-			bytesTarget = x.tcpScenarioBytes[i]
+		if x.tcpVariantBytes != nil {
+			bytesTarget = x.tcpVariantBytes[i]
 		}
 		vals[i] = coreelf.BpfTcpFlow{
 			State:       tcpFlowClosed,
@@ -490,11 +490,6 @@ func (x *Xdperf) tcpWorker(ctx context.Context, cpu int, prog *ebpf.Program, run
 
 // runTCP is the client entry point of --tcp mode.
 func (x *Xdperf) runTCP(ctx context.Context) error {
-	if x.cfg.PluginName != "" {
-		if err := x.loadTCPScenario(ctx); err != nil {
-			return err
-		}
-	}
 	t, err := x.resolveTCPTarget()
 	if err != nil {
 		return err
@@ -523,10 +518,19 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		zap.Duration("rto", x.cfg.TCPRTO),
 	)
 
+	if x.mixed != nil {
+		if err := x.initMixedMaps(); err != nil {
+			return err
+		}
+	}
 	x.warnEphemeralPortOverlap()
 
 	// The RX program must be in place before the first SYN leaves.
-	lrx, err := x.attachXDP(x.bpfobjs.XdpRxTcp, x.Device)
+	rxProg := x.bpfobjs.XdpRxTcp
+	if x.mixed != nil {
+		rxProg = x.bpfobjs.XdpRxMixed
+	}
+	lrx, err := x.attachXDP(rxProg, x.Device)
 	if err != nil {
 		return err
 	}
@@ -561,6 +565,9 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	if synLen := int(t.hdrLen) + tcpSynOptLen; synLen > len(liveFrame) {
 		liveFrame = append(liveFrame, make([]byte, synLen-len(liveFrame))...)
 	}
+	if x.mixed != nil && len(liveFrame) < 2048 {
+		liveFrame = append(liveFrame, make([]byte, 2048-len(liveFrame))...)
+	}
 	liveFrame = append(liveFrame, 0)
 	runOpts := &ebpf.RunOptions{
 		Data:      liveFrame,
@@ -579,7 +586,11 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	var once sync.Once
 	var firstErr error
 	for k, cpu := range x.cpus {
-		p, err := x.bpfobjs.XdpTxTcp.Clone()
+		txProg := x.bpfobjs.XdpTxTcp
+		if x.mixed != nil {
+			txProg = x.bpfobjs.XdpTxMixed
+		}
+		p, err := txProg.Clone()
 		if err != nil {
 			cancel()
 			wg.Wait()
@@ -711,6 +722,11 @@ loop:
 	}
 
 	s, statsErr := x.showTCPFinalStats(recs)
+	if x.mixed != nil {
+		if err := x.showMixedStats(); err != nil && statsErr == nil {
+			statsErr = err
+		}
+	}
 	// The report is written even when flows failed: that is when the
 	// per-flow view matters most.
 	if err := x.writeTCPFlowReport(); err != nil {

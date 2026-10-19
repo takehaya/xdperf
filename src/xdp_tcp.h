@@ -1,3 +1,4 @@
+#include "xdp_mixed.h"
 #ifndef XDP_TCP_H
 #define XDP_TCP_H
 
@@ -642,7 +643,8 @@ int xdp_tx_tcp(struct xdp_md *ctx)
     struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
     if (!cfg || !cs || !st)
         return XDP_ABORTED;
-    if (cs->count == 0) {
+    struct mixed_state *mixed = bpf_map_lookup_elem(&mixed_state_map, &zero);
+    if ((!mixed || mixed->active != 1) && cs->count == 0) {
         st->idle_iters++;
         return XDP_DROP;
     }
@@ -658,6 +660,11 @@ int xdp_tx_tcp(struct xdp_md *ctx)
             cursor = 0;
         cs->cursor = cursor + 1;
         __u32 idx = cs->first + cursor * cs->stride;
+        if (mixed && mixed->active == 1) {
+            if (i > 0)
+                break;
+            idx = mixed->selected_flow;
+        }
         if (idx >= MAX_TCP_FLOWS)
             continue;
         struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
@@ -675,6 +682,16 @@ int xdp_tx_tcp(struct xdp_md *ctx)
         return XDP_DROP;
     }
 
+    // Packet variants may leave arbitrary bytes throughout the payload.
+    // Shrink to the fixed headers so tcp_tx_build grows a zero-filled payload.
+    // This also applies during drain, when active=2 selects the legacy cursor.
+    if (mixed && mixed->active) {
+        __u32 len = ctx->data_end - ctx->data;
+        if (bpf_xdp_adjust_tail(ctx, (int)cfg->hdr_len - (int)len) < 0) {
+            st->build_errors++;
+            return XDP_DROP;
+        }
+    }
     if (tcp_tx_build(ctx, cfg, cs, &act) < 0) {
         st->build_errors++;
         return XDP_DROP;

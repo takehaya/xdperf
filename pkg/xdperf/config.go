@@ -44,7 +44,7 @@ type Config struct {
 	OTLPInsecure   bool          // use plaintext gRPC for OTLP export
 	OTLPAttributes string        // extra OTLP resource attributes ("key=value,key=value")
 
-	// TCP stream mode (--tcp): an XDP TCP client; an optional plugin supplies a scenario.
+	// TCP stream mode (--tcp): an XDP TCP client; configured by CLI flags.
 	// See docs/ja/design_xdp_tcp.md.
 	TCP         bool
 	TCPDst      string        // "host:port" ("[v6]:port" for IPv6); picks the address family
@@ -135,8 +135,8 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.TCPFlowReport != "" && !c.TCP {
-		return fmt.Errorf("--tcp-flow-report requires --tcp")
+	if c.TCPFlowReport != "" && !c.TCP && (!c.Sender || c.PluginName == "") {
+		return fmt.Errorf("--tcp-flow-report requires --tcp or TCP flow variants")
 	}
 
 	if c.TCPServer {
@@ -235,16 +235,10 @@ func (c *Config) validateTCP() error {
 	if c.Count > 0 {
 		return fmt.Errorf("--tcp does not use --count; use --tcp-bytes and/or --duration")
 	}
-	scenario := c.PluginName != ""
-	if scenario {
-		if c.TCPDst != "" || c.TCPBytes != 0 || (c.TCPFlows != 0 && c.TCPFlows != 1) {
-			return fmt.Errorf("--tcp with --plugin takes destination, flows and bytes from the scenario")
-		}
-		if c.PluginLanguage == "" && len(strings.Split(c.PluginName, ".")) != 2 {
-			return fmt.Errorf("invalid plugin name format, must be <name>.<lang>")
-		}
+	if c.PluginName != "" {
+		return fmt.Errorf("--tcp cannot be combined with --plugin; use TCP flow variants without --tcp")
 	}
-	if !scenario && c.TCPDst == "" {
+	if c.TCPDst == "" {
 		return fmt.Errorf("--tcp requires --tcp-dst host:port")
 	}
 	if c.Parallelism <= 0 {
@@ -257,10 +251,10 @@ func (c *Config) validateTCP() error {
 	if c.Parallelism > numCPU {
 		return fmt.Errorf("parallelism (%d) exceeds available CPU cores (%d)", c.Parallelism, numCPU)
 	}
-	if !scenario && (c.TCPFlows <= 0 || c.TCPFlows > 65536) {
+	if c.TCPFlows <= 0 || c.TCPFlows > 65536 {
 		return fmt.Errorf("--tcp-flows must be in 1..65536")
 	}
-	if c.TCPPortBase <= 0 || c.TCPPortBase > 65535 || (!scenario && c.TCPFlows > 65536-c.TCPPortBase) {
+	if c.TCPPortBase <= 0 || c.TCPPortBase > 65535 || (c.TCPFlows > 65536-c.TCPPortBase) {
 		return fmt.Errorf("--tcp-port-base (%d) + --tcp-flows (%d) must not exceed 65536", c.TCPPortBase, c.TCPFlows)
 	}
 	if c.TCPWindow <= 0 || c.TCPWindow > 65535 {
@@ -284,7 +278,7 @@ func (c *Config) validateTCP() error {
 	if c.Duration < 0 {
 		return fmt.Errorf("duration must be non-negative")
 	}
-	if !scenario && c.TCPBytes == 0 && c.Duration == 0 {
+	if c.TCPBytes == 0 && c.Duration == 0 {
 		return fmt.Errorf("--tcp requires --tcp-bytes and/or --duration (otherwise it would never stop)")
 	}
 	return nil

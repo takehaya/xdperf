@@ -122,6 +122,13 @@ func ReadCollectionWithSizes(constants map[string]any, sizes map[string]uint32, 
 		return nil, nil, fmt.Errorf("fail to populate xdp_progs[2] (xdp_tx_csum_recalc): %w", err)
 	}
 
+	for i, prog := range []*ebpf.Program{objs.XdpTx, objs.XdpTxTcp, objs.XdpRxTcp, objs.XdpRx} {
+		if err := objs.MixedProgs.Put(uint32(i), uint32(prog.FD())); err != nil {
+			objs.Close()
+			return nil, nil, fmt.Errorf("mixed tail call %d: %w", i, err)
+		}
+	}
+
 	return objs, spec, nil
 }
 
