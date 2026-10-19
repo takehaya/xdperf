@@ -13,6 +13,7 @@ typedef __UINT32_TYPE__ vx_u32;
 
 #define VXLAN_UDP_PORT 4789
 #define VXLAN_FLAG_VNI 0x08
+#define VX_VNI_MAX 0xFFFFFF
 
 /* Outer Ethernet + IPv4 (no options) + UDP + VXLAN, then the inner frame. */
 #define VX_ETH_LEN 14

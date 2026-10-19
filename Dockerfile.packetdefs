@@ -1,0 +1,10 @@
+# Regeneration environment: pin base images and the compiler package version.
+FROM golang:1.25.5@sha256:8bbd14091f2c61916134fa6aeb8f76b18693fcb29a39ec6d8be9242c0a7e9260 AS go
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates make gcc libc6-dev sudo \
+    clang-22=1:22.1.2-1ubuntu1 lld-22=1:22.1.2-1ubuntu1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=go /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:/usr/lib/llvm-22/bin:${PATH}"
+WORKDIR /work

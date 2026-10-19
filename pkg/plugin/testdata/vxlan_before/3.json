@@ -1,0 +1,50 @@
+{
+  "template_type": "variable",
+  "raw_packet_template": null,
+  "variable_packet_template": {
+    "variants": [
+      {
+        "base_packet": {
+          "data": "qrvM3e7/AgAAAAABCABFAAByAAAAAEARZnkKAAABCgAAAgAAIRgAXgAACAAAAAAAZAACAAAAAQICAAAAAQEIAEUAAEAAAAAAQBH5WcCoAAHAqAACBAATxAAsAAAAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiM=",
+          "length": 128
+        },
+        "variable_params": [
+          {
+            "byte_start": 45,
+            "byte_size": 4,
+            "byte_range": {
+              "start": 100,
+              "end": 200
+            },
+            "pattern_type": "sequential"
+          },
+          {
+            "byte_start": 84,
+            "byte_size": 2,
+            "byte_range": {
+              "start": 1024,
+              "end": 65535
+            },
+            "pattern_type": "sequential"
+          }
+        ],
+        "checksums": [
+          {
+            "checksum_offset": 24,
+            "header_start": 14,
+            "header_len": 20,
+            "ip_header_offset": 14
+          },
+          {
+            "checksum_offset": 74,
+            "header_start": 64,
+            "header_len": 20,
+            "ip_header_offset": 64
+          }
+        ],
+        "weight": 7
+      }
+    ],
+    "pattern": "mixed"
+  }
+}

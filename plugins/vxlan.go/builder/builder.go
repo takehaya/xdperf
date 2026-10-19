@@ -22,27 +22,25 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/takehaya/xdperf/pkg/guest"
+	"github.com/takehaya/xdperf/pkg/guest/packetdefs/vxlan"
 )
 
 // VXLANPort is the IANA-assigned VXLAN UDP destination port.
-const VXLANPort = 4789
+const VXLANPort = vxlan.UDPPort
 
 // Fixed layer sizes used to derive offsets.
 const (
-	ethLen     = guest.EthernetHeaderLen // 14
-	ipv4Len    = guest.IPv4HeaderLen     // 20
-	udpLen     = guest.UDPHeaderLen      // 8
-	vxlanLen   = 8                       // VXLAN header
-	vlanTagLen = 4                       // one 802.1Q tag (TPID + TCI)
+	ethLen     = vxlan.EthernetLen // 14
+	ipv4Len    = vxlan.IPv4Len     // 20
+	udpLen     = vxlan.UDPLen      // 8
+	vxlanLen   = vxlan.HeaderSize  // VXLAN header
+	vlanTagLen = 4                 // one 802.1Q tag (TPID + TCI)
 	// inner overhead: inner Ethernet + inner IPv4 + inner UDP.
 	innerOverhead = ethLen + ipv4Len + udpLen
 )
 
-// vxlanFlagValidVNI is the VXLAN flags byte with the I (VNI valid) bit set.
-const vxlanFlagValidVNI = 0x08
-
 // vniMax is the largest value representable in the 24-bit VNI field.
-const vniMax = 0xFFFFFF
+const vniMax = vxlan.VNIMax
 
 // PacketParams fully describes one VXLAN frame to build. main.go fills this from
 // the JSON GeneratorRequest; the builder stays free of JSON/default concerns.
@@ -105,21 +103,23 @@ func (p *PacketParams) vlanLen() int {
 // minimum (68 with an outer VLAN tag).
 func MinFrameLen(p PacketParams) int {
 	if p.InnerL2Only {
-		return ethLen + p.vlanLen() + ipv4Len + udpLen + vxlanLen + ethLen // 64 (+4 tagged)
+		return vxlan.OuterLen + p.vlanLen() + ethLen // 64 (+4 tagged)
 	}
-	return ethLen + p.vlanLen() + ipv4Len + udpLen + vxlanLen + innerOverhead // 92 (+4 tagged)
+	return vxlan.OuterLen + p.vlanLen() + innerOverhead // 92 (+4 tagged)
 }
 
 // buildVXLANHeader assembles the raw 8-byte VXLAN header: flags(1) +
 // reserved(3) + VNI(3) + reserved(1). The I bit marks the VNI valid.
-func buildVXLANHeader(vni uint32) []byte {
-	h := make([]byte, vxlanLen)
-	h[0] = vxlanFlagValidVNI
-	// VNI is a 24-bit field occupying bytes 4..6 (big-endian); byte 7 is reserved.
-	h[4] = byte(vni >> 16)
-	h[5] = byte(vni >> 8)
-	h[6] = byte(vni)
-	return h
+func buildVXLANHeader(vni uint32) ([]byte, error) {
+	header, err := vxlan.NewHeader(vni)
+	if err != nil {
+		return nil, err
+	}
+	dst := make([]byte, vxlan.HeaderSize)
+	if err := header.MarshalTo(dst); err != nil {
+		return nil, err
+	}
+	return dst, nil
 }
 
 // buildInner serializes the inner Ethernet/IPv4/UDP frame with correct inner
@@ -208,7 +208,10 @@ func BuildVXLANPacket(p PacketParams, totalLen int) (*PacketInfo, error) {
 			innerBytes = innerBytes[:want]
 		}
 	}
-	vxlanHeader := buildVXLANHeader(p.VNI)
+	vxlanHeader, err := buildVXLANHeader(p.VNI)
+	if err != nil {
+		return nil, err
+	}
 	vxlanPayload := make([]byte, 0, len(vxlanHeader)+len(innerBytes))
 	vxlanPayload = append(vxlanPayload, vxlanHeader...)
 	vxlanPayload = append(vxlanPayload, innerBytes...)
@@ -276,8 +279,8 @@ func BuildVXLANPacket(p PacketParams, totalLen int) (*PacketInfo, error) {
 		Offsets: map[string]uint64{
 			"outer.udp.src": uint64(outerUDPStart),
 			"vxlan.start":   uint64(vxlanStart),
-			"vxlan.vni":     uint64(vxlanStart + 4), // 24-bit VNI within the VXLAN header
-			"inner.start":   uint64(innerEthStart),  // inner Ethernet
+			"vxlan.vni":     uint64(vxlanStart + vxlan.HeaderVNIOffset), // 24-bit VNI within the VXLAN header
+			"inner.start":   uint64(innerEthStart),                      // inner Ethernet
 		},
 	}
 	if vlanLen > 0 {

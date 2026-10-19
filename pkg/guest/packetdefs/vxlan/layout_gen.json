@@ -1,0 +1,152 @@
+{
+  "Format": 1,
+  "InputSHA256": "23ec36f7fa64c258ce3b92e8b23b16cbea2ccc9b14048a0fe4899b1686c2c559",
+  "ManifestSHA256": "e0df7ddadfdbccc5d619fc7b66cd1a398c0d71a5d5a5409309395a6a763c862e",
+  "Schema": {
+    "Records": [
+      {
+        "C": "vxlan_hdr",
+        "Go": "Header",
+        "Kind": "wire",
+        "Endian": "big",
+        "Size": 8,
+        "Align": 1,
+        "Fields": [
+          {
+            "C": "flags",
+            "Go": "Flags",
+            "Offset": 0,
+            "Size": 1,
+            "Width": 1,
+            "Count": 0,
+            "Signed": false
+          },
+          {
+            "C": "rsvd0",
+            "Go": "Rsvd0",
+            "Offset": 1,
+            "Size": 3,
+            "Width": 1,
+            "Count": 3,
+            "Signed": false
+          },
+          {
+            "C": "vni",
+            "Go": "VNI",
+            "Offset": 4,
+            "Size": 3,
+            "Width": 1,
+            "Count": 3,
+            "Signed": false
+          },
+          {
+            "C": "rsvd1",
+            "Go": "Rsvd1",
+            "Offset": 7,
+            "Size": 1,
+            "Width": 1,
+            "Count": 0,
+            "Signed": false
+          }
+        ]
+      },
+      {
+        "C": "vx_inner_key",
+        "Go": "InnerKey",
+        "Kind": "internal",
+        "Endian": "",
+        "Size": 16,
+        "Align": 4,
+        "Fields": [
+          {
+            "C": "saddr",
+            "Go": "Saddr",
+            "Offset": 0,
+            "Size": 4,
+            "Width": 4,
+            "Count": 0,
+            "Signed": false
+          },
+          {
+            "C": "daddr",
+            "Go": "Daddr",
+            "Offset": 4,
+            "Size": 4,
+            "Width": 4,
+            "Count": 0,
+            "Signed": false
+          },
+          {
+            "C": "sport",
+            "Go": "Sport",
+            "Offset": 8,
+            "Size": 2,
+            "Width": 2,
+            "Count": 0,
+            "Signed": false
+          },
+          {
+            "C": "dport",
+            "Go": "Dport",
+            "Offset": 10,
+            "Size": 2,
+            "Width": 2,
+            "Count": 0,
+            "Signed": false
+          },
+          {
+            "C": "vni",
+            "Go": "VNI",
+            "Offset": 12,
+            "Size": 4,
+            "Width": 4,
+            "Count": 0,
+            "Signed": false
+          }
+        ]
+      }
+    ],
+    "Constants": [
+      {
+        "Name": "UDPPort",
+        "Value": 4789
+      },
+      {
+        "Name": "FlagVNI",
+        "Value": 8
+      },
+      {
+        "Name": "VNIMax",
+        "Value": 16777215
+      },
+      {
+        "Name": "EthernetLen",
+        "Value": 14
+      },
+      {
+        "Name": "IPv4Len",
+        "Value": 20
+      },
+      {
+        "Name": "UDPLen",
+        "Value": 8
+      },
+      {
+        "Name": "HeaderLen",
+        "Value": 8
+      },
+      {
+        "Name": "OuterLen",
+        "Value": 50
+      },
+      {
+        "Name": "InnerIPOffset",
+        "Value": 14
+      },
+      {
+        "Name": "InnerL4Offset",
+        "Value": 34
+      }
+    ]
+  }
+}

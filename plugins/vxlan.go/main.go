@@ -8,6 +8,7 @@ import (
 
 	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/takehaya/xdperf/pkg/guest/goshim"
+	"github.com/takehaya/xdperf/pkg/guest/packetdefs/vxlan"
 	"github.com/takehaya/xdperf/plugins/vxlan/builder"
 )
 
@@ -39,7 +40,7 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 	}
 	// VNI is a 24-bit field; reject out-of-range values instead of silently
 	// masking them.
-	if req.VNIStart > 0xFFFFFF || req.VNIEnd > 0xFFFFFF {
+	if req.VNIStart > vxlan.VNIMax || req.VNIEnd > vxlan.VNIMax {
 		guest.Log(3, "vni_start/vni_end must be in 0-16777215")
 		return -6
 	}
@@ -158,8 +159,8 @@ func plugin_process(inputPtr, inputLen, outputPtr, outputMaxLen uint32) int32 {
 		// so the layout stays correct while the 24-bit VNI is updated.
 		if req.VNIEnd > req.VNIStart {
 			vparams = append(vparams, guest.VariableParams{
-				ByteStart:   info.Offsets["vxlan.start"] + 3,
-				ByteSize:    4,
+				ByteStart:   info.Offsets["vxlan.vni"] - 1,
+				ByteSize:    vxlan.HeaderVNISize + 1,
 				ByteRange:   guest.TemplateRange{Start: uint64(req.VNIStart), End: uint64(req.VNIEnd)},
 				PatternType: guest.ValuePatternTypeSequential,
 			})

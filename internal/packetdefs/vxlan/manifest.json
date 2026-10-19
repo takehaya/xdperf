@@ -1,0 +1,25 @@
+{
+  "package": "vxlan",
+  "header": "plugins/vxlan.c/vxlan_shared.h",
+  "output": "pkg/guest/packetdefs/vxlan",
+  "types": [
+    {"c":"vxlan_hdr","go":"Header","kind":"wire","endian":"big","fields":[
+      {"c":"flags","go":"Flags"},{"c":"rsvd0","go":"Rsvd0"},{"c":"vni","go":"VNI"},{"c":"rsvd1","go":"Rsvd1"}
+    ]},
+    {"c":"vx_inner_key","go":"InnerKey","kind":"internal","fields":[
+      {"c":"saddr","go":"Saddr"},{"c":"daddr","go":"Daddr"},{"c":"sport","go":"Sport"},{"c":"dport","go":"Dport"},{"c":"vni","go":"VNI"}
+    ]}
+  ],
+  "constants": [
+    {"c":"VXLAN_UDP_PORT","go":"UDPPort"},
+    {"c":"VXLAN_FLAG_VNI","go":"FlagVNI"},
+    {"c":"VX_VNI_MAX","go":"VNIMax"},
+    {"c":"VX_ETH_LEN","go":"EthernetLen"},
+    {"c":"VX_IP4_LEN","go":"IPv4Len"},
+    {"c":"VX_UDP_LEN","go":"UDPLen"},
+    {"c":"VX_HDR_LEN","go":"HeaderLen"},
+    {"c":"VX_OUTER_LEN","go":"OuterLen"},
+    {"c":"VX_INNER_IP_OFF","go":"InnerIPOffset"},
+    {"c":"VX_INNER_L4_OFF","go":"InnerL4Offset"}
+  ]
+}
