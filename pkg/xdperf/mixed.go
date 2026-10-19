@@ -48,6 +48,7 @@ type mixedPlan struct {
 	packets                   guest.GeneratorProcessResponse
 	groups                    []mixedGroup
 	packetWeight, totalWeight uint32
+	features                  coreelf.MixedProgramFeatures
 }
 
 // prepareMixed validates the entire union before committing host configuration.
@@ -105,6 +106,20 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		}
 		if f.Encapsulation != nil && len(v.Base.Data) == 0 {
 			return fmt.Errorf("encapsulation requires base_packet")
+		}
+		if f.Encapsulation != nil {
+			p, err := parseTCPEncapsulation(v.Base, f.Encapsulation)
+			if err != nil {
+				return fmt.Errorf("TCP variant %d: %w", i, err)
+			}
+			plan.features.Lengths = max(plan.features.Lengths, uint32(len(p.lengths)))
+			plan.features.OuterIPs = max(plan.features.OuterIPs, uint32(len(p.ips)))
+			plan.features.UDPs = max(plan.features.UDPs, uint32(len(p.udps)))
+			for j := range p.udps {
+				if f.Encapsulation.UDPChecksums[j].Mode == "lco" {
+					plan.features.LCO = true
+				}
+			}
 		}
 		dest := f.Destination
 		if len(v.Base.Data) != 0 || v.Base.Length != 0 {

@@ -230,8 +230,47 @@ type baseObjects struct {
 // LoadMixedPrograms adds mixed dispatch/TCP programs to an existing collection.
 // Reusing every named map preserves configuration, flow state and tail calls.
 func LoadMixedPrograms(objs *BpfObjects, spec *ebpf.CollectionSpec) error {
+	return LoadMixedProgramsWithFeatures(objs, spec, MixedProgramFeatures{Lengths: 8, OuterIPs: 4, UDPs: 4, LCO: true})
+}
+
+// MixedProgramFeatures bounds the TX fixups across all validated TCP templates.
+// LCO enables checksummed outer UDP headers. RX parsing is deliberately not specialized, since
+// return packets need not use the outgoing encapsulation.
+type MixedProgramFeatures struct {
+	Lengths, OuterIPs, UDPs uint32
+	LCO                     bool
+}
+
+// LoadMixedProgramsWithFeatures specializes builders before verification. The
+// caller must include every template used for TX and RX replies, and must not
+// widen their requirements after loading. The first successful load wins.
+func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, features MixedProgramFeatures) error {
 	if objs.XdpTxMixed != nil {
 		return nil
+	}
+	if features.Lengths > 8 || features.OuterIPs > 4 || features.UDPs > 4 {
+		return fmt.Errorf("mixed program features exceed template limits: %+v", features)
+	}
+	// Copy before changing constants: base programs and later callers retain
+	// their original spec, and the mixed rodata is loaded with these values.
+	spec = spec.Copy()
+	lco := uint32(0)
+	if features.LCO {
+		lco = 1
+	}
+	for name, value := range map[string]uint32{
+		"mixed_max_lengths":   features.Lengths,
+		"mixed_max_outer_ips": features.OuterIPs,
+		"mixed_max_udps":      features.UDPs,
+		"mixed_has_lco":       lco,
+	} {
+		v, ok := spec.Variables[name]
+		if !ok {
+			return fmt.Errorf("mixed constant %s not found", name)
+		}
+		if err := v.Set(value); err != nil {
+			return fmt.Errorf("set %s: %w", name, err)
+		}
 	}
 	replacements := make(map[string]*ebpf.Map)
 	maps := reflect.ValueOf(objs.BpfMaps)

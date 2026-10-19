@@ -172,3 +172,45 @@ func TestBpfDeferredMixedLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// These are independently verified on every kernel in the BPF CI matrix.
+func TestBpfMixedSpecializations(t *testing.T) {
+	for name, features := range map[string]MixedProgramFeatures{
+		"bare":     {},
+		"udp-zero": {Lengths: 2, OuterIPs: 1, UDPs: 1},
+		"udp-lco":  {Lengths: 2, OuterIPs: 1, UDPs: 1, LCO: true},
+		"nested":   {Lengths: 4, OuterIPs: 2, UDPs: 2, LCO: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			objs, spec, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer objs.Close()
+			if err := LoadMixedProgramsWithFeatures(objs, spec, features); err != nil {
+				t.Fatal(err)
+			}
+			var original uint32
+			if err := spec.Variables["mixed_max_udps"].Get(&original); err != nil {
+				t.Fatal(err)
+			}
+			if original != 4 {
+				t.Fatalf("original spec was mutated: %d", original)
+			}
+			for i, want := range []*ebpf.Program{objs.XdpTx, objs.XdpTxTcpMixed, objs.XdpRxTcpMixed, objs.XdpRx} {
+				var got uint32
+				if err := objs.MixedProgs.Lookup(uint32(i), &got); err != nil {
+					t.Fatal(err)
+				}
+				info, err := want.Info()
+				if err != nil {
+					t.Fatal(err)
+				}
+				id, _ := info.ID()
+				if got != uint32(id) {
+					t.Fatalf("tail call %d: %d, want %d", i, got, id)
+				}
+			}
+		})
+	}
+}

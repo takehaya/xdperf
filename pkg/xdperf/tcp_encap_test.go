@@ -194,7 +194,7 @@ func TestTCPEncapBPF(t *testing.T)     { testTCPEncapBPF(t, false) }
 func TestTCPRawGeneveBPF(t *testing.T) { testTCPEncapBPF(t, true) }
 
 func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
-	objs, spec, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 100)
+	objs, spec, err := coreelf.ReadBaseCollectionWithSizes(map[string]any{"swap_resp": uint32(0)}, map[string]uint32{"diff_map": 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +219,9 @@ func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
 		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], tcpMaxRawGeneveTemplate())
 	}
 	if err := x.prepareMixed(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := coreelf.LoadMixedProgramsWithFeatures(objs, spec, x.mixed.features); err != nil {
 		t.Fatal(err)
 	}
 	target, err := parseTCPVariant(x.mixed.groups[0].variant)

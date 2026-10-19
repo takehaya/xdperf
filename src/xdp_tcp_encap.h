@@ -1,6 +1,13 @@
 #ifndef XDP_TCP_ENCAP_H
 #define XDP_TCP_ENCAP_H
 
+// Separate from the base collection's frozen rodata. The host specializes only
+// builders; RX parsing still accepts asymmetric return paths.
+const volatile __u32 mixed_max_lengths SEC(".rodata.mixed") = 8;
+const volatile __u32 mixed_max_outer_ips SEC(".rodata.mixed") = 4;
+const volatile __u32 mixed_max_udps SEC(".rodata.mixed") = 4;
+const volatile __u32 mixed_has_lco SEC(".rodata.mixed") = 1;
+
 // Outer headers use a validated fixup table, independent of tunnel protocol.
 static __noinline int tcp_encap_patch(struct xdp_md *ctx, const struct tcp_template *t, __u32 tcp_len, __u32 flow, __u16 ip_id)
 {
@@ -10,7 +17,7 @@ static __noinline int tcp_encap_patch(struct xdp_md *ctx, const struct tcp_templ
         return -1;
 #pragma unroll
     for (int i = 0; i < 8; i++) {
-        if (i < t->length_count) {
+        if (i < mixed_max_lengths && i < t->length_count) {
             __u32 off = t->lengths[i].offset;
             __u32 value = t->lengths[i].constant + tcp_len;
             if (off > 254 || value > 65535 || (void *)(data + off + 2) > end)
@@ -26,7 +33,7 @@ static __noinline int tcp_encap_patch(struct xdp_md *ctx, const struct tcp_templ
     }
 #pragma unroll
     for (int i = 0; i < 4; i++) {
-        if (i < t->outer_ip_count) {
+        if (i < mixed_max_outer_ips && i < t->outer_ip_count) {
             __u32 off = t->outer_ips[i].offset;
             if (off > 216)
                 return -1;
@@ -53,13 +60,13 @@ static __noinline int tcp_encap_patch(struct xdp_md *ctx, const struct tcp_templ
     // Innermost UDP first: outer UDP includes the already final inner checksum.
 #pragma unroll
     for (int i = 3; i >= 0; i--) {
-        if (i < t->udp_count) {
+        if (i < mixed_max_udps && i < t->udp_count) {
             __u32 off = t->udps[i].offset;
             __u32 l4 = t->cfg.l4_off;
             if (off > 248 || l4 > 236 || l4 < off + 8 || (void *)(data + off + 8) > end)
                 return -1;
             data[off + 6] = data[off + 7] = 0;
-            if (t->udps[i].mode) {
+            if (mixed_has_lco && t->udps[i].mode) {
                 __u32 udp_len = l4 - off + tcp_len;
                 __u64 sum = t->udps[i].pseudo_sum + IPPROTO_UDP + udp_len;
                 // A valid inner TCP segment sums to the complement of its

@@ -403,6 +403,10 @@ type BpfVariableSpecs struct {
 	MaxDiffsPerPacket  *ebpf.VariableSpec `ebpf:"max_diffs_per_packet"`
 	MaxPacketSize      *ebpf.VariableSpec `ebpf:"max_packet_size"`
 	MinPacketSize      *ebpf.VariableSpec `ebpf:"min_packet_size"`
+	MixedHasLco        *ebpf.VariableSpec `ebpf:"mixed_has_lco"`
+	MixedMaxLengths    *ebpf.VariableSpec `ebpf:"mixed_max_lengths"`
+	MixedMaxOuterIps   *ebpf.VariableSpec `ebpf:"mixed_max_outer_ips"`
+	MixedMaxUdps       *ebpf.VariableSpec `ebpf:"mixed_max_udps"`
 	SwapResp           *ebpf.VariableSpec `ebpf:"swap_resp"`
 }
 
@@ -482,6 +486,10 @@ type BpfVariables struct {
 	MaxDiffsPerPacket  *ebpf.Variable `ebpf:"max_diffs_per_packet"`
 	MaxPacketSize      *ebpf.Variable `ebpf:"max_packet_size"`
 	MinPacketSize      *ebpf.Variable `ebpf:"min_packet_size"`
+	MixedHasLco        *ebpf.Variable `ebpf:"mixed_has_lco"`
+	MixedMaxLengths    *ebpf.Variable `ebpf:"mixed_max_lengths"`
+	MixedMaxOuterIps   *ebpf.Variable `ebpf:"mixed_max_outer_ips"`
+	MixedMaxUdps       *ebpf.Variable `ebpf:"mixed_max_udps"`
 	SwapResp           *ebpf.Variable `ebpf:"swap_resp"`
 }
 
