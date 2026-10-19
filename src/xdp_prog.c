@@ -1403,7 +1403,8 @@ int xdp_tx_mixed(struct xdp_md *ctx)
     for (__u32 i = 0; i < 16; i++) {
         if (i >= cfg->groups)
             break;
-        struct mixed_group *g = bpf_map_lookup_elem(&mixed_group_map, &i);
+        __u32 key = i;
+        struct mixed_group *g = bpf_map_lookup_elem(&mixed_group_map, &key);
         if (!g || pick >= g->upper)
             continue;
         if (!g->count)
