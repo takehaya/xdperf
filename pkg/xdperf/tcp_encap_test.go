@@ -190,10 +190,11 @@ func verifyTCPEncapFrame(t *testing.T, frame []byte, tmpl coreelf.BpfTcpTemplate
 	}
 }
 
-func TestTCPEncapBPF(t *testing.T)     { testTCPEncapBPF(t, false) }
-func TestTCPRawGeneveBPF(t *testing.T) { testTCPEncapBPF(t, true) }
+func TestTCPEncapBPF(t *testing.T)        { testTCPEncapBPF(t, "all") }
+func TestTCPRawGeneveBPF(t *testing.T)    { testTCPEncapBPF(t, "raw-geneve") }
+func TestTCPZeroUDPEncapBPF(t *testing.T) { testTCPEncapBPF(t, "zero") }
 
-func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
+func testTCPEncapBPF(t *testing.T, profile string) {
 	objs, spec, err := coreelf.ReadBaseCollectionWithSizes(map[string]any{"swap_resp": uint32(0)}, map[string]uint32{"diff_map": 100})
 	if err != nil {
 		t.Fatal(err)
@@ -215,11 +216,16 @@ func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
 	for _, name := range []string{"ipip", "gre", "srv6", "gtpu", "mpls", "nested"} {
 		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants, tcpOtherTunnel(name))
 	}
-	if rawGeneve {
+	if profile == "raw-geneve" {
 		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], tcpMaxRawGeneveTemplate())
+	} else if profile == "zero" {
+		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], tcpTestTunnel("vxlan", false, false, "zero"))
 	}
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
+	}
+	if profile == "zero" && (x.mixed.features.LCO || x.mixed.features.UDPs != 1) {
+		t.Fatalf("expected UDP fixups without LCO: %+v", x.mixed.features)
 	}
 	if err := coreelf.LoadMixedProgramsWithFeatures(objs, spec, x.mixed.features); err != nil {
 		t.Fatal(err)
@@ -281,7 +287,7 @@ func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
 				binary.BigEndian.PutUint32(frame[l4+8:], 101)
 				frame[l4+13] = 0x12
 				// RX for the other tunnel protocols belongs to phase 3.
-				if !rawGeneve && i >= 9 && i != 14 {
+				if profile == "all" && i >= 9 && i != 14 {
 					continue
 				}
 				// Outer tuple/VNI intentionally remain in the TX direction; they are not keys.
