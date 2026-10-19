@@ -40,7 +40,10 @@ func decimalUint64(s string) (uint64, error) {
 	return strconv.ParseUint(s, 10, 64)
 }
 
-type mixedGroup struct{ weight, first, count uint32 }
+type mixedGroup struct {
+	weight, first, count uint32
+	variant              guest.PacketVariant
+}
 type mixedPlan struct {
 	packets                   guest.GeneratorProcessResponse
 	groups                    []mixedGroup
@@ -97,23 +100,51 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 			continue
 		}
 		f := v.TCPFlow
-		if f == nil || len(f.Flows) == 0 || len(v.Base.Data) != 0 || v.Base.Length != 0 || len(v.Params) != 0 || len(v.Checksums) != 0 {
-			return fmt.Errorf("TCP variant %d requires flows and cannot contain packet fields", i)
+		if f == nil || len(f.Flows) == 0 || len(v.Params) != 0 || len(v.Checksums) != 0 {
+			return fmt.Errorf("TCP variant %d requires flows and cannot contain variable_params or checksums", i)
 		}
-		host, port, err := net.SplitHostPort(f.Destination)
+		if f.Encapsulation != nil && len(v.Base.Data) == 0 {
+			return fmt.Errorf("encapsulation requires base_packet")
+		}
+		dest := f.Destination
+		if len(v.Base.Data) != 0 || v.Base.Length != 0 {
+			if x.cfg.TCPSrcIP != "" || x.cfg.TCPDstMAC != "" || x.cfg.TCPVlanID != 0 || x.cfg.TCPVlanPCP != 0 {
+				return fmt.Errorf("TCP base_packet cannot be combined with source IP, MAC or VLAN overrides")
+			}
+			t, err := parseTCPVariant(v)
+			if err != nil {
+				return fmt.Errorf("TCP variant %d: %w", i, err)
+			}
+			inferred := net.JoinHostPort(t.dstIP.String(), strconv.Itoa(int(t.dstPort)))
+			if dest == "" {
+				dest = inferred
+			} else {
+				h, p, e := net.SplitHostPort(dest)
+				n, pe := strconv.Atoi(p)
+				if e != nil || pe != nil || !net.ParseIP(h).Equal(t.dstIP) || n != int(t.dstPort) {
+					return fmt.Errorf("TCP variant %d destination disagrees with base_packet", i)
+				}
+			}
+		}
+		if _, err := tcpStaticOptions(f.SynOptions, true); err != nil {
+			return err
+		}
+		if _, err := tcpStaticOptions(f.DataOptions, false); err != nil {
+			return err
+		}
+		host, port, err := net.SplitHostPort(dest)
 		n, portErr := strconv.Atoi(port)
 		if err != nil || net.ParseIP(host) == nil || portErr != nil || n < 1 || n > 65535 {
 			return fmt.Errorf("TCP variant %d requires an IP literal and port 1..65535", i)
 		}
 		canonical := net.JoinHostPort(net.ParseIP(host).String(), strconv.Itoa(n))
-		if destination != "" && destination != canonical {
-			return fmt.Errorf("TCP variants require one common destination")
+		if destination == "" {
+			destination = canonical
 		}
-		destination = canonical
 		if x.cfg.TCPPortBase < 1 || x.cfg.TCPPortBase > 65535 || len(f.Flows) > 65536-x.cfg.TCPPortBase-len(targets) {
 			return fmt.Errorf("TCP flows exceed source port capacity")
 		}
-		plan.groups = append(plan.groups, mixedGroup{v.Weight, uint32(len(targets)), uint32(len(f.Flows))})
+		plan.groups = append(plan.groups, mixedGroup{weight: v.Weight, first: uint32(len(targets)), count: uint32(len(f.Flows)), variant: v})
 		for _, flow := range f.Flows {
 			b, err := decimalUint64(flow.Bytes)
 			if err != nil {

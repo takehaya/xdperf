@@ -75,6 +75,7 @@ struct tcp_flow {
     __u32 snd_max;      // highest seq ever sent (+ len); ACKs up to here are valid
     __u32 rcv_nxt;      // next expected peer seq (= our ack number)
     __u32 snd_wnd;      // peer receive window in bytes (scale applied)
+    __u32 template_id;  // mixed group, occupies existing alignment padding
     __u64 bytes_target; // bytes to send on this flow (0 = unlimited, until drain)
     __u64 bytes_acked;  // payload bytes acked (64-bit: never derived from 32-bit seq numbers)
     __u64 last_send_ns; // last (re)transmission, for RTO
@@ -121,6 +122,51 @@ struct tcp_cfg {
     // (e.g. skb_vlan_untag's memmove), so nothing in the frame can be trusted.
     __u8 hdr_tmpl[64];
 };
+
+struct tcp_length_patch {
+    __u16 offset;
+    __u16 constant;
+};
+struct tcp_outer_ip {
+    __u16 offset;
+    __u8 version;
+    __u8 _pad;
+};
+struct tcp_outer_udp {
+    __u16 offset;
+    __u16 ip_offset;
+    __u32 pseudo_sum;
+    __u8 version;
+    __u8 mode;
+    __u16 _pad;
+};
+struct tcp_template {
+    struct tcp_cfg cfg;
+    __u8 prefix[256];
+    struct tcp_length_patch lengths[8];
+    struct tcp_outer_ip outer_ips[4];
+    struct tcp_outer_udp udps[4];
+    __u16 entropy_offset;
+    __u16 entropy_base;
+    __u16 entropy_count;
+    __u8 length_count;
+    __u8 outer_ip_count;
+    __u8 udp_count;
+    __u8 tcp_header[20];
+    __u32 syn_sum;
+    __u32 data_sum;
+    __u8 syn_options[40];
+    __u8 data_options[40];
+    __u8 syn_len;
+    __u8 data_len;
+    __u8 _pad[2];
+};
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 16);
+    __type(key, __u32);
+    __type(value, struct tcp_template);
+} tcp_template_map SEC(".maps");
 
 // Per-CPU TX state. Flow ownership: this CPU drives flows first, first+stride, ...
 struct tcp_cpu_state {
@@ -634,6 +680,8 @@ static __always_inline int tcp_tx_build(struct xdp_md *ctx, const struct tcp_cfg
     return 0;
 }
 
+#include "xdp_tcp_template.h"
+
 // Compile separate entry points so mixed selection adds no verifier paths
 // or map lookup overhead to the standalone TCP scan.
 static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode)
@@ -658,6 +706,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode)
     struct tcp_tx_action act = {0};
     struct tcp_flow *sel = NULL;
     int kind = TXA_NONE;
+    struct tcp_template *tmpl = NULL;
 
     for (int i = 0; i < (mixed_mode ? 1 : TCP_TX_SCAN); i++) {
         __u32 idx;
@@ -675,6 +724,13 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode)
         struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
         if (!f)
             continue;
+        if (mixed_mode) {
+            __u32 group = f->template_id;
+            tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
+            if (!tmpl)
+                return XDP_ABORTED;
+            cfg = &tmpl->cfg;
+        }
         kind = tcp_tx_decide(f, cfg, st, now, &act);
         if (kind != TXA_NONE && kind != TXA_CLOSED) {
             sel = f;
@@ -687,17 +743,12 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode)
         return XDP_DROP;
     }
 
-    // Packet variants may leave arbitrary bytes throughout the payload.
-    // Shrink to the fixed headers so tcp_tx_build grows a zero-filled payload.
-    // The dispatcher selects one flow even during drain.
-    if (mixed_mode) {
-        __u32 len = ctx->data_end - ctx->data;
-        if (bpf_xdp_adjust_tail(ctx, (int)cfg->hdr_len - (int)len) < 0) {
-            st->build_errors++;
-            return XDP_DROP;
-        }
-    }
-    if (tcp_tx_build(ctx, cfg, cs, &act) < 0) {
+    int built;
+    if (mixed_mode)
+        built = tcp_template_build(ctx, tmpl, cs, &act);
+    else
+        built = tcp_tx_build(ctx, cfg, cs, &act);
+    if (built < 0) {
         st->build_errors++;
         return XDP_DROP;
     }
@@ -1279,5 +1330,7 @@ int xdp_rx_tcp(struct xdp_md *ctx)
     __sync_fetch_and_add(&f->rx_replies, 1);
     return XDP_TX;
 }
+
+#include "xdp_tcp_template_rx.h"
 
 #endif // XDP_TCP_H

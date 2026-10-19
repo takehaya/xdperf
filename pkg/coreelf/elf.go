@@ -3,6 +3,7 @@ package coreelf
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"structs"
 
 	"github.com/cilium/ebpf"
@@ -41,6 +42,17 @@ func ReadCollection(constants map[string]any, diffMapSize uint32, debug ...bool)
 //   - diff_map          per-CPU diff pool of the replay client
 //   - tcp_srv_flow_map  flow table of --tcp-server (LRU hash; 1 in other modes)
 func ReadCollectionWithSizes(constants map[string]any, sizes map[string]uint32, debug ...bool) (*BpfObjects, *ebpf.CollectionSpec, error) {
+	return readCollection(constants, sizes, true, debug...)
+}
+
+// ReadBaseCollectionWithSizes defers mixed TCP programs until the plugin returns
+// a mixed variant set. Ordinary packet and standalone TCP startup avoid their
+// verifier cost. ReadCollectionWithSizes still loads everything for load tests.
+func ReadBaseCollectionWithSizes(constants map[string]any, sizes map[string]uint32, debug ...bool) (*BpfObjects, *ebpf.CollectionSpec, error) {
+	return readCollection(constants, sizes, false, debug...)
+}
+
+func readCollection(constants map[string]any, sizes map[string]uint32, mixed bool, debug ...bool) (*BpfObjects, *ebpf.CollectionSpec, error) {
 	debugMode := len(debug) > 0 && debug[0]
 	// Remove memory limit for BPF
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -77,13 +89,24 @@ func ReadCollectionWithSizes(constants map[string]any, sizes map[string]uint32, 
 			return nil, nil, err
 		}
 	}
-	err = spec.LoadAndAssign(objs, nil)
+	var target any = objs
+	var base baseObjects
+	if !mixed {
+		target = &base
+	}
+	err = spec.LoadAndAssign(target, nil)
 	if err != nil {
 		if debugMode {
 			// Retry with verbose verifier log (expensive — can OOM in small VMs)
-			return nil, nil, fmt.Errorf("fail to load bpf objects: %w", loadWithVerifierLog(spec, objs))
+			return nil, nil, fmt.Errorf("fail to load bpf objects: %w", loadWithVerifierLog(spec, target))
 		}
 		return nil, nil, fmt.Errorf("fail to load bpf objects: %w", err)
+	}
+
+	if !mixed {
+		objs.BpfMaps, objs.BpfVariables = base.BpfMaps, base.BpfVariables
+		objs.XdpPassDummy, objs.XdpRx, objs.XdpRxTcp, objs.XdpRxTcpServer = base.XdpPassDummy, base.XdpRx, base.XdpRxTcp, base.XdpRxTcpServer
+		objs.XdpTx, objs.XdpTxChecksum, objs.XdpTxCsumDiff, objs.XdpTxCsumRecalc, objs.XdpTxTcp = base.XdpTx, base.XdpTxChecksum, base.XdpTxCsumDiff, base.XdpTxCsumRecalc, base.XdpTxTcp
 	}
 
 	// Populate the prog_array for tail calls
@@ -122,10 +145,10 @@ func ReadCollectionWithSizes(constants map[string]any, sizes map[string]uint32, 
 		return nil, nil, fmt.Errorf("fail to populate xdp_progs[2] (xdp_tx_csum_recalc): %w", err)
 	}
 
-	for i, prog := range []*ebpf.Program{objs.XdpTx, objs.XdpTxTcpMixed, objs.XdpRxTcp, objs.XdpRx} {
-		if err := objs.MixedProgs.Put(uint32(i), uint32(prog.FD())); err != nil {
+	if mixed {
+		if err := populateMixedPrograms(objs); err != nil {
 			objs.Close()
-			return nil, nil, fmt.Errorf("mixed tail call %d: %w", i, err)
+			return nil, nil, err
 		}
 	}
 
@@ -173,7 +196,7 @@ func LoadDummyProgram() (*ebpf.Program, func(), error) {
 // loadWithVerifierLog retries loading with verbose verifier log and returns the error.
 // Only called in debug mode — instruction-level verifier logging is expensive and
 // can OOM in memory-constrained CI VMs (especially on older kernels like 6.1).
-func loadWithVerifierLog(spec *ebpf.CollectionSpec, objs *BpfObjects) error {
+func loadWithVerifierLog(spec *ebpf.CollectionSpec, objs any) error {
 	err := spec.LoadAndAssign(objs, &ebpf.CollectionOptions{
 		Programs: ebpf.ProgramOptions{LogSizeStart: 1 << 30, LogLevel: ebpf.LogLevelInstruction},
 	})
@@ -186,4 +209,57 @@ func loadWithVerifierLog(spec *ebpf.CollectionSpec, objs *BpfObjects) error {
 	}
 	fmt.Printf("%+v\n", verr)
 	return err
+}
+
+// Only the programs needed before a plugin selects mixed mode are assigned.
+// Maps remain shared with programs loaded later.
+type baseObjects struct {
+	BpfMaps
+	BpfVariables
+	XdpPassDummy    *ebpf.Program `ebpf:"xdp_pass_dummy"`
+	XdpRx           *ebpf.Program `ebpf:"xdp_rx"`
+	XdpRxTcp        *ebpf.Program `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpServer  *ebpf.Program `ebpf:"xdp_rx_tcp_server"`
+	XdpTx           *ebpf.Program `ebpf:"xdp_tx"`
+	XdpTxChecksum   *ebpf.Program `ebpf:"xdp_tx_checksum"`
+	XdpTxCsumDiff   *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
+	XdpTxCsumRecalc *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
+	XdpTxTcp        *ebpf.Program `ebpf:"xdp_tx_tcp"`
+}
+
+// LoadMixedPrograms adds mixed dispatch/TCP programs to an existing collection.
+// Reusing every named map preserves configuration, flow state and tail calls.
+func LoadMixedPrograms(objs *BpfObjects, spec *ebpf.CollectionSpec) error {
+	if objs.XdpTxMixed != nil {
+		return nil
+	}
+	replacements := make(map[string]*ebpf.Map)
+	maps := reflect.ValueOf(objs.BpfMaps)
+	for i := 0; i < maps.NumField(); i++ {
+		name := maps.Type().Field(i).Tag.Get("ebpf")
+		if m, ok := maps.Field(i).Interface().(*ebpf.Map); ok && m != nil {
+			replacements[name] = m
+		}
+	}
+	var mixed struct {
+		XdpRxMixed    *ebpf.Program `ebpf:"xdp_rx_mixed"`
+		XdpRxTcpMixed *ebpf.Program `ebpf:"xdp_rx_tcp_mixed"`
+		XdpTxMixed    *ebpf.Program `ebpf:"xdp_tx_mixed"`
+		XdpTxTcpMixed *ebpf.Program `ebpf:"xdp_tx_tcp_mixed"`
+	}
+	if err := spec.LoadAndAssign(&mixed, &ebpf.CollectionOptions{MapReplacements: replacements}); err != nil {
+		return fmt.Errorf("load mixed programs: %w", err)
+	}
+	objs.XdpRxMixed, objs.XdpRxTcpMixed = mixed.XdpRxMixed, mixed.XdpRxTcpMixed
+	objs.XdpTxMixed, objs.XdpTxTcpMixed = mixed.XdpTxMixed, mixed.XdpTxTcpMixed
+	return populateMixedPrograms(objs)
+}
+
+func populateMixedPrograms(objs *BpfObjects) error {
+	for i, prog := range []*ebpf.Program{objs.XdpTx, objs.XdpTxTcpMixed, objs.XdpRxTcpMixed, objs.XdpRx} {
+		if err := objs.MixedProgs.Put(uint32(i), uint32(prog.FD())); err != nil {
+			return fmt.Errorf("mixed tail call %d: %w", i, err)
+		}
+	}
+	return nil
 }

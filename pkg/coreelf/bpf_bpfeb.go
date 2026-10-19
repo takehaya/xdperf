@@ -166,7 +166,7 @@ type BpfTcpFlow struct {
 	SndMax      uint32
 	RcvNxt      uint32
 	SndWnd      uint32
-	_           [4]byte
+	TemplateId  uint32
 	BytesTarget uint64
 	BytesAcked  uint64
 	LastSendNs  uint64
@@ -269,6 +269,48 @@ type BpfTcpStats struct {
 	ChallengeAcks    uint64
 }
 
+type BpfTcpTemplate struct {
+	_       structs.HostLayout
+	Cfg     BpfTcpCfg
+	Prefix  [256]uint8
+	Lengths [8]struct {
+		_        structs.HostLayout
+		Offset   uint16
+		Constant uint16
+	}
+	OuterIps [4]struct {
+		_       structs.HostLayout
+		Offset  uint16
+		Version uint8
+		Pad     uint8
+	}
+	Udps [4]struct {
+		_         structs.HostLayout
+		Offset    uint16
+		IpOffset  uint16
+		PseudoSum uint32
+		Version   uint8
+		Mode      uint8
+		Pad       uint16
+	}
+	EntropyOffset uint16
+	EntropyBase   uint16
+	EntropyCount  uint16
+	LengthCount   uint8
+	OuterIpCount  uint8
+	UdpCount      uint8
+	TcpHeader     [20]uint8
+	_             [3]byte
+	SynSum        uint32
+	DataSum       uint32
+	SynOptions    [40]uint8
+	DataOptions   [40]uint8
+	SynLen        uint8
+	DataLen       uint8
+	Pad           [2]uint8
+	_             [4]byte
+}
+
 // LoadBpf returns the embedded CollectionSpec for Bpf.
 func LoadBpf() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_BpfBytes)
@@ -315,6 +357,7 @@ type BpfProgramSpecs struct {
 	XdpRx           *ebpf.ProgramSpec `ebpf:"xdp_rx"`
 	XdpRxMixed      *ebpf.ProgramSpec `ebpf:"xdp_rx_mixed"`
 	XdpRxTcp        *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpMixed   *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_mixed"`
 	XdpRxTcpServer  *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_server"`
 	XdpTx           *ebpf.ProgramSpec `ebpf:"xdp_tx"`
 	XdpTxChecksum   *ebpf.ProgramSpec `ebpf:"xdp_tx_checksum"`
@@ -346,6 +389,7 @@ type BpfMapSpecs struct {
 	TcpSrvFlowMap   *ebpf.MapSpec `ebpf:"tcp_srv_flow_map"`
 	TcpSrvStatsMap  *ebpf.MapSpec `ebpf:"tcp_srv_stats_map"`
 	TcpStatsMap     *ebpf.MapSpec `ebpf:"tcp_stats_map"`
+	TcpTemplateMap  *ebpf.MapSpec `ebpf:"tcp_template_map"`
 	TxStatsMap      *ebpf.MapSpec `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.MapSpec `ebpf:"xdp_progs"`
 }
@@ -399,6 +443,7 @@ type BpfMaps struct {
 	TcpSrvFlowMap   *ebpf.Map `ebpf:"tcp_srv_flow_map"`
 	TcpSrvStatsMap  *ebpf.Map `ebpf:"tcp_srv_stats_map"`
 	TcpStatsMap     *ebpf.Map `ebpf:"tcp_stats_map"`
+	TcpTemplateMap  *ebpf.Map `ebpf:"tcp_template_map"`
 	TxStatsMap      *ebpf.Map `ebpf:"tx_stats_map"`
 	XdpProgs        *ebpf.Map `ebpf:"xdp_progs"`
 }
@@ -422,6 +467,7 @@ func (m *BpfMaps) Close() error {
 		m.TcpSrvFlowMap,
 		m.TcpSrvStatsMap,
 		m.TcpStatsMap,
+		m.TcpTemplateMap,
 		m.TxStatsMap,
 		m.XdpProgs,
 	)
@@ -447,6 +493,7 @@ type BpfPrograms struct {
 	XdpRx           *ebpf.Program `ebpf:"xdp_rx"`
 	XdpRxMixed      *ebpf.Program `ebpf:"xdp_rx_mixed"`
 	XdpRxTcp        *ebpf.Program `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpMixed   *ebpf.Program `ebpf:"xdp_rx_tcp_mixed"`
 	XdpRxTcpServer  *ebpf.Program `ebpf:"xdp_rx_tcp_server"`
 	XdpTx           *ebpf.Program `ebpf:"xdp_tx"`
 	XdpTxChecksum   *ebpf.Program `ebpf:"xdp_tx_checksum"`
@@ -463,6 +510,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpRx,
 		p.XdpRxMixed,
 		p.XdpRxTcp,
+		p.XdpRxTcpMixed,
 		p.XdpRxTcpServer,
 		p.XdpTx,
 		p.XdpTxChecksum,

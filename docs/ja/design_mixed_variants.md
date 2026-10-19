@@ -23,7 +23,8 @@ TCP フローを含む応答では未知フィールドと重複キーを拒否�
 混合送信は --plugin だけで選択し、--tcp は従来の CLI 指定による TCP 専用送信として残す。
 TCP 宛先は全 TCP バリアント共通の IP リテラルとポートに限定する。
 TCP ヘッダは既存の Go の生成処理を使い、経路、送信インターフェース、MAC、MSS、VLAN を検証する。
-TCP バリアントの base_packet、variable_params、checksums は受け付けない。
+この初期実装では TCP バリアントの base_packet、variable_params、checksums は受け付けない。
+後続の [TCP フローひな型](design_tcp_flow_template.md)では、base_packet とグループ別宛先、固定オプションを追加する。
 将来 base_packet の L2〜L4 を解析する際にも、seq、ack、flags、window、長さ、IP ID、チェックサムはエンジンが所有する。
 
 混合集合にはパケットと TCP をそれぞれ 1 種類以上含める。

@@ -595,3 +595,5 @@ codex (差分を標準入力で渡す形。この環境ではサンドボック�
 
 プラグインの PacketVariantSet に TCP フローの種類を追加する。
 JSON、送信機会の重み、受信の振り分けは [混合バリアントの設計](design_mixed_variants.md) を参照。
+
+TCP グループ別の base_packet とカプセル化の拡張は [TCP フローひな型の設計](design_tcp_flow_template.md)を参照。
