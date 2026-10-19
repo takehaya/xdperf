@@ -125,3 +125,50 @@ func TestBpfVariablesReadable(t *testing.T) {
 		}
 	}
 }
+
+// Ordinary startup must not verify mixed programs, but loading them later must
+// share the already initialized flow map and populate the same tail-call map.
+func TestBpfDeferredMixedLoad(t *testing.T) {
+	objs, spec, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer objs.Close()
+	if objs.XdpTxMixed != nil || objs.XdpRxTcpMixed != nil {
+		t.Fatal("mixed programs loaded during base startup")
+	}
+	flowInfo, err := objs.TcpFlowMap.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID, _ := flowInfo.ID()
+	if err := LoadMixedPrograms(objs, spec); err != nil {
+		t.Fatal(err)
+	}
+	info, err := objs.XdpTxTcpMixed.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, ok := info.MapIDs()
+	if !ok {
+		t.Fatal("missing program map IDs")
+	}
+	shared := false
+	for _, id := range ids {
+		if id == flowID {
+			shared = true
+		}
+	}
+	if !shared {
+		t.Fatal("deferred TCP program uses a different flow map")
+	}
+	for i := uint32(0); i < 4; i++ {
+		var id uint32
+		if err := objs.MixedProgs.Lookup(i, &id); err != nil || id == 0 {
+			t.Fatalf("mixed tail call %d: id=%d err=%v", i, id, err)
+		}
+	}
+	if err := LoadMixedPrograms(objs, spec); err != nil {
+		t.Fatal(err)
+	}
+}
