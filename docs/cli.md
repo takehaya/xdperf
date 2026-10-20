@@ -12,6 +12,43 @@ xdperf <command> [options]
 | `run` | `r` | Run the traffic generator (send or receive mode) |
 | `probe` | `p` | Probe XDP capabilities of a network device |
 
+### Environment Variables
+
+Every option defined for `run` and `probe` accepts an environment variable.
+Use `XDPERF_` followed by the long option name in uppercase, replacing hyphens with underscores.
+Aliases use the same variable as the long option.
+Values take precedence in this order: **CLI flag > environment variable > default**.
+A required option such as `--device` can be supplied through its environment variable.
+
+| Option | Environment variable | Example value |
+|--------|----------------------|---------------|
+| `--device`, `-d` | `XDPERF_DEVICE` | `eth0` |
+| `--plugin`, `-p` | `XDPERF_PLUGIN` | `simpleudp.go` |
+| `--count`, `-c` | `XDPERF_COUNT` | `100k` |
+| `--send`, `-s` | `XDPERF_SEND` | `false` |
+| `--duration`, `-t` | `XDPERF_DURATION` | `10s` |
+| `--tcp-flow-report` | `XDPERF_TCP_FLOW_REPORT` | `flows.csv` |
+| `--otlp-interval` | `XDPERF_OTLP_INTERVAL` | `5s` |
+| `--json`, `-j` (`probe`) | `XDPERF_JSON` | `true` |
+
+Values use the same formats and validation as CLI flags, including count/PPS suffixes and Go durations.
+Set booleans to `true` or `false`; a CLI flag such as `--recv=false` overrides an environment value of `true`.
+For `--tcp`, a nonempty `XDPERF_PLUGIN` counts as an explicit plugin selection and is rejected just like `--plugin`.
+Unset `XDPERF_PLUGIN` or override it with `--plugin=` to use standalone TCP.
+
+```shell
+# Set variables in the privileged process so sudo does not filter them out.
+sudo env XDPERF_DEVICE=eth0 XDPERF_COUNT=100k xdperf run
+
+# A flag overrides the environment: send 1m packets through eth0.
+sudo env XDPERF_DEVICE=eth0 XDPERF_COUNT=100k xdperf run --count 1m
+```
+
+Legacy field-based names that differ from this rule (such as `XDPERF_PLUGINNAME`, `XDPERF_PLUGINPATH`, and `XDPERF_SENDER`) are not supported; these values were previously overwritten by CLI defaults.
+Use `XDPERF_PLUGIN`, `XDPERF_PLUGIN_PATH`, and `XDPERF_SEND` instead.
+Logger-only variables remain supported: `XDPERF_LOGGERCONFIG_JSON`, `XDPERF_LOGGERCONFIG_NOCOLOR`, `XDPERF_LOGGERCONFIG_VERBOSE`, `XDPERF_LOGGERCONFIG_QUIET`, and `XDPERF_LOGGERCONFIG_ADDCALLER`.
+All logger settings default to `false` or `0`; `--debugmode` greater than zero sets logger verbosity to `1`.
+
 ### Probe Command Options
 
 | Option | Short | Required | Default | Description |

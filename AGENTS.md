@@ -137,7 +137,7 @@ WASMプラグインがパケットテンプレートを生成。`plugins/`にリ
 - **コミットメッセージ:** Conventional Commits準拠 (feat/fix/docs/chore/perf等)
 - **Go:** lefthook経由のgolangci-lint
 - **C/Hファイル:** clang-formatで整形
-- **設定:** CLIフラグを使う。`envconfig` は `XDPERF_` 環境変数を読み込むが、CLI相当のフィールドはCLIの既定値でも上書きされるため、現在はフラグで指定する。
+- **設定:** CLIフラグと `XDPERF_` 環境変数に対応。環境変数名はフラグの正式名を大文字にし、ハイフンをアンダースコアへ置き換える (例: `--tcp-flow-report` → `XDPERF_TCP_FLOW_REPORT`)。優先順位は CLIフラグ > 環境変数 > 既定値。ロガー専用の `XDPERF_LOGGERCONFIG_*` は `envconfig` で読み込む。詳細は [docs/cli.md](docs/cli.md#environment-variables) を参照。
 - **Goバージョン:** 1.25.5 (go.modで指定)
 
 <!-- OCR:START -->
