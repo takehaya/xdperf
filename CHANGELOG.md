@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/takehaya/xdperf/compare/v0.19.0...v0.19.1) (2026-10-20)
+
+
+### 🐛 Bug Fixes
+
+* **release:** include mixed Go and C VXLAN plugins ([#130](https://github.com/takehaya/xdperf/issues/130)) ([f56c9c1](https://github.com/takehaya/xdperf/commit/f56c9c1a5f794548e185afb2a403d2f6ede6e3a9))
+
 ## [0.19.0](https://github.com/takehaya/xdperf/compare/v0.18.0...v0.19.0) (2026-10-20)
 
 
