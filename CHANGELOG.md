@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.19.0](https://github.com/takehaya/xdperf/compare/v0.18.0...v0.19.0) (2026-10-20)
+
+
+### 🎉 Features
+
+* add XDP TCP stream client (--tcp) and TCP responder (--tcp-server) ([#114](https://github.com/takehaya/xdperf/issues/114)) ([5b5fc55](https://github.com/takehaya/xdperf/commit/5b5fc5571140e2e3480e1c34242e00e96aae39b2))
+* generate guest packet definitions from shared C headers ([#127](https://github.com/takehaya/xdperf/issues/127)) ([23228c6](https://github.com/takehaya/xdperf/commit/23228c6902a21dc4c4ec25f824634b3a8e6eea92))
+* **mixed:** mix weighted TCP flow variants, packet templates and tunnels into packet generation ([#120](https://github.com/takehaya/xdperf/issues/120)) ([7b16bbc](https://github.com/takehaya/xdperf/commit/7b16bbcb9dfc01922d1a43e4f5307360b6c5a259))
+* **plugins:** add a C VXLAN Wasm generator and CI integration ([#119](https://github.com/takehaya/xdperf/issues/119)) ([782ad15](https://github.com/takehaya/xdperf/commit/782ad155c19117943256d4c3d26c05211e790922))
+* **tcp:** add a per-flow ledger and --tcp-flow-report ([#117](https://github.com/takehaya/xdperf/issues/117)) ([34c5d9f](https://github.com/takehaya/xdperf/commit/34c5d9fc7e7c12b52e3532b2c17120e7662dac3b))
+* **tcp:** add timestamps and per-flow payload templates ([#126](https://github.com/takehaya/xdperf/issues/126)) ([fd1ae02](https://github.com/takehaya/xdperf/commit/fd1ae020af669acdfa02ffce05f9c3aa18849e10))
+* **tcp:** parse tunneled replies by the inner flow tuple ([#125](https://github.com/takehaya/xdperf/issues/125)) ([beff4d8](https://github.com/takehaya/xdperf/commit/beff4d80cc905c451d79e7e79d13fa9a17847149))
+* **veth:** warn about queue contention and support multiqueue examples ([#118](https://github.com/takehaya/xdperf/issues/118)) ([942913f](https://github.com/takehaya/xdperf/commit/942913f9031766bbfd1f9eec4aabaeafcd42db64))
+
+
+### 🐛 Bug Fixes
+
+* **cli:** honor XDPERF environment variables ([#129](https://github.com/takehaya/xdperf/issues/129)) ([535c5a7](https://github.com/takehaya/xdperf/commit/535c5a7267e567022318c5a3f17b1d5e0b8528b4))
+* **tcp:** give every connection its own IPv4 ID counter ([#116](https://github.com/takehaya/xdperf/issues/116)) ([9d0bb03](https://github.com/takehaya/xdperf/commit/9d0bb039ec69ffc2dc914cab10b97616323dcf74))
+
+
+### ⚡ Performance Improvements
+
+* **mixed:** specialize TCP builders before verification ([#124](https://github.com/takehaya/xdperf/issues/124)) ([04a8a68](https://github.com/takehaya/xdperf/commit/04a8a68cde588e0d147ae5a8082a5f7814dfe974))
+
+
+### 📝 Documentation
+
+* synchronize mixed traffic guides with main ([#128](https://github.com/takehaya/xdperf/issues/128)) ([008bb3d](https://github.com/takehaya/xdperf/commit/008bb3d2f671ad01eaf486219636da9b2c83e0f0))
+
 ## [0.18.0](https://github.com/takehaya/xdperf/compare/v0.17.0...v0.18.0) (2026-07-26)
 
 
