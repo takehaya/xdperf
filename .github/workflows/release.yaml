@@ -59,6 +59,8 @@ jobs:
           go-version-file: 'go.mod'
       - name: Install build tools
         run: make install-build-tools
+      - name: Install C plugin build dependencies
+        run: sudo apt-get update && sudo apt-get install -y make clang lld
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
