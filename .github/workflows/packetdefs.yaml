@@ -1,0 +1,46 @@
+---
+name: packet definitions
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  packetdefs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Check regeneration in pinned LLVM 22 environment
+        run: |
+          docker build -f Dockerfile.packetdefs -t packetdefs .
+          docker run --rm -v "$PWD:/work" packetdefs make packetdefs-check
+      - name: Install TinyGo 0.39.0
+        run: |
+          curl -fsSL -o /tmp/tinygo.deb \
+            https://github.com/tinygo-org/tinygo/releases/download/v0.39.0/tinygo_0.39.0_amd64.deb
+          sudo dpkg -i /tmp/tinygo.deb
+      - name: Build and execute Go and TinyGo codec fixtures
+        run: |
+          make packetdefs-fixtures
+          test -s out/packetdefs/fixture.go.wasm
+          test -s out/packetdefs/fixture.tinygo.wasm
+          docker run --rm -e XDPERF_REQUIRE_PACKETDEFS_WASM=1 -v "$PWD:/work" packetdefs sh -ec '
+            go test -race ./cmd/packetdefs-gen ./internal/packetdefs
+            cd pkg/guest && go test -race . ./packetdefs/...
+          '
+          (cd plugins/vxlan.go && go test -race ./builder)
+      - name: Build both VXLAN plugins and compare pre-migration bytes
+        run: |
+          docker run --rm -v "$PWD:/work" packetdefs sh -ec '
+            make make_outdir vxlan.go vxlan.c
+            test -s out/bin/vxlan.go.wasm
+            test -s out/bin/vxlan.c.wasm
+            go test -race ./pkg/plugin -run "TestVXLAN" -count=1
+          '

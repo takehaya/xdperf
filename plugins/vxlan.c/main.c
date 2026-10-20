@@ -322,7 +322,7 @@ EXPORT("plugin_process") int plugin_process(const char *in, vx_u32 n, char *out,
     u64 base = json_uint(in, n, "inner_sport_base", 10000);
     u64 flows = json_uint(in, n, "inner_flows", 1);
     u64 payload = json_uint(in, n, "payload", 18);
-    if (vni > 0xFFFFFF || oport > 0xFFFF || idport > 0xFFFF || base > 0xFFFF || !flows || flows > 0x10000 ||
+    if (vni > VX_VNI_MAX || oport > 0xFFFF || idport > 0xFFFF || base > 0xFFFF || !flows || flows > 0x10000 ||
         base + flows - 1 > 0xFFFF || payload > 1400) {
         logs(3, "vxlan.c: value out of range");
         return -6;

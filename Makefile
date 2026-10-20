@@ -11,7 +11,7 @@ DIFF_FROM_BRANCH_NAME ?= origin/main
 
 ENTRY_POINT_DIR=cmd
 ENTRY_POINT_DIR_PLUGINS=plugins
-TARGETS=$(notdir $(wildcard $(ENTRY_POINT_DIR)/*))
+TARGETS=$(filter-out packetdefs-gen,$(notdir $(wildcard $(ENTRY_POINT_DIR)/*)))
 PLUGIN_TARGETS := $(notdir $(shell find $(ENTRY_POINT_DIR_PLUGINS) -mindepth 1 -maxdepth 1 -type d))
 
 C_PLUGIN_TARGETS := $(filter %.c,$(PLUGIN_TARGETS))
@@ -185,3 +185,21 @@ help: ## Show this help.
 		} \
 		else if (/^## .*$$/) {printf "  ${CYAN}%s${RESET}\n", substr($$1,4)} \
 		}' $(MAKEFILE_LIST)
+
+## Shared packet definitions:
+.PHONY: packetdefs-gen packetdefs-check packetdefs-fixtures packetdefs-test
+packetdefs-gen: ## Generate guest packet definitions with LLVM 22
+	$(GOCMD) generate ./internal/packetdefs
+
+packetdefs-check: ## Check generated packet definitions without changing files
+	$(GOCMD) run ./cmd/packetdefs-gen -check
+
+packetdefs-fixtures: ## Build Go and TinyGo codec execution fixtures
+	mkdir -p out/packetdefs
+	cd internal/packetdefs/fixture && GOOS=wasip1 GOARCH=wasm $(GOCMD) build -o ../../../out/packetdefs/fixture.go.wasm .
+	cd internal/packetdefs/fixture && $(TINYGOCMD) build -target=wasip1 -o ../../../out/packetdefs/fixture.tinygo.wasm .
+
+packetdefs-test: packetdefs-check packetdefs-fixtures ## Verify host, guest and Go VXLAN modules
+	XDPERF_REQUIRE_PACKETDEFS_WASM=1 $(GOTEST) -exec sudo -race ./cmd/packetdefs-gen ./internal/packetdefs
+	cd pkg/guest && $(GOTEST) -exec sudo -race . ./packetdefs/...
+	cd plugins/vxlan.go && $(GOTEST) -exec sudo -race ./builder

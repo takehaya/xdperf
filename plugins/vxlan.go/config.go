@@ -1,6 +1,10 @@
 package main
 
-import "github.com/takehaya/xdperf/pkg/guest"
+import (
+	"encoding/json"
+	"github.com/takehaya/xdperf/pkg/guest"
+	"github.com/takehaya/xdperf/pkg/guest/packetdefs/vxlan"
+)
 
 var (
 	version = "dev"
@@ -34,7 +38,7 @@ type GeneratorRequest struct {
 	// set, in which case it sweeps from src_port up to 65535.
 	SrcPort uint16 `json:"src_port" default:"0"`
 	// Outer UDP destination port. The IANA-assigned VXLAN port is 4789.
-	DstPort uint16 `json:"dst_port" default:"4789"`
+	DstPort uint16 `json:"dst_port"`
 
 	// Optional outer 802.1Q VLAN tag (VXLAN underlay). vlan_id 0 (the default)
 	// means no tag — the VLAN header is omitted entirely, so it can be dropped
@@ -82,4 +86,18 @@ type GeneratorRequest struct {
 
 	// required param (injected by the host)
 	guest.BaseGeneratorRequest
+}
+
+// UnmarshalJSON applies the shared port default before decoding, matching the
+// previous defaults tag: absent/null retain 4789, while explicit zero stays zero.
+// The alias preserves other defaults already installed by goshim.
+func (r *GeneratorRequest) UnmarshalJSON(data []byte) error {
+	type request GeneratorRequest
+	v := request(*r)
+	v.DstPort = vxlan.UDPPort
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*r = GeneratorRequest(v)
+	return nil
 }

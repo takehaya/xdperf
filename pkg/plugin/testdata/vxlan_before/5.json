@@ -1,0 +1,61 @@
+{
+  "template_type": "variable",
+  "raw_packet_template": null,
+  "variable_packet_template": {
+    "variants": [
+      {
+        "base_packet": {
+          "data": "qrvM3e7/AgAAAAABCABFAAAyAAAAAEARZrkKAAABCgAAAgAAErUAHgAACAAAAAAAZAACAAAAAQICAAAAAQEAAA==",
+          "length": 64
+        },
+        "variable_params": [
+          {
+            "byte_start": 45,
+            "byte_size": 4,
+            "byte_range": {
+              "start": 100,
+              "end": 200
+            },
+            "pattern_type": "sequential"
+          }
+        ],
+        "checksums": [
+          {
+            "checksum_offset": 24,
+            "header_start": 14,
+            "header_len": 20,
+            "ip_header_offset": 14
+          }
+        ],
+        "weight": 7
+      },
+      {
+        "base_packet": {
+          "data": "qrvM3e7/AgAAAAABCABFAAByAAAAAEARZnkKAAABCgAAAgAAErUAXgAACAAAAAAAZAACAAAAAQICAAAAAQEAAAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+          "length": 128
+        },
+        "variable_params": [
+          {
+            "byte_start": 45,
+            "byte_size": 4,
+            "byte_range": {
+              "start": 100,
+              "end": 200
+            },
+            "pattern_type": "sequential"
+          }
+        ],
+        "checksums": [
+          {
+            "checksum_offset": 24,
+            "header_start": 14,
+            "header_len": 20,
+            "ip_header_offset": 14
+          }
+        ],
+        "weight": 1
+      }
+    ],
+    "pattern": "mixed"
+  }
+}
