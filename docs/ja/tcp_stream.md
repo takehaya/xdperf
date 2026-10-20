@@ -167,3 +167,29 @@ sudo examples/tcpstream/teardown.sh
 `--tcp` は併記しません。
 使い方は [混合バリアントの設計](design_mixed_variants.md) と [E2E サンプル](../../examples/mixed/test.sh) を参照してください。
 `--tcp-flow-report` は混合送信でも TCP フローのみを CSV に記録します。
+
+### 混合モードの RX 診断
+
+`mixed final statistics` に次の累積値を表示する。全 CPU を合算したパケット数であり、正常に照合できた応答は含めない。
+各パケットは以下のいずれか一つに入る。
+
+| フィールド | 意味 |
+| --- | --- |
+| `rx_parse_failed` | 内側 TCP に到達できない。未対応トンネル、解析上限、長さ不整合、IPv4 オプションや断片等を含む |
+| `rx_port_outside` | 内側 TCP の宛先ポートが xdperf のフロー範囲外。SSH 等の無関係な通信もここに入る |
+| `rx_tuple_mismatch` | 宛先ポートはフロー範囲内だが IP の版、アドレス、送信元ポート等がひな型と一致しない。終了時に警告する |
+| `rx_neighbor` | 外側・内側の ARP または IPv6 ND (ICMPv6 type 133–137) を PASS した数 |
+| `rx_other` | 通常の UDP や ICMP 等、TCP 以外の通信 |
+| `rx_invalid_tcp` | フローと照合後、TCP ヘッダ長、IP 長、Timestamp オプションの形式検査で DROP した数 |
+
+`rx_tuple_mismatch` が増えた場合は、まずフローレポートと対照し、対向の待ち受けポート、IPv4/IPv6、送受信アドレス、NAT による書き換え、同じ宛先ポートを使う別通信を確認する。
+応答が不足している場合は `rx_parse_failed` と `rx_invalid_tcp` も確認し、未対応トンネルやヘッダ形式、MTU による断片化、対向のトンネル設定を調べる。
+これらの値だけで応答の取りこぼしや損失とは断定できない。
+特に解析失敗からは、TCP や対象フローかどうかを判断できない。
+`rx_parse_failed`、`rx_port_outside`、`rx_tuple_mismatch`、`rx_other` は TCP 照合を外れた時点の分類であり、既存の外側 UDP 受信処理に渡されて DROP される場合もある。
+TCP チェックサムや ARP/ND 全体の妥当性を検証するカウンタではない。
+ND は直接 ICMPv6 に到達できる形式が対象で、未対応の拡張ヘッダを挟むものは解析失敗に含まれる。
+
+`--otlp-endpoint` 指定時は混合モードで `xdperf.mixed.rx` を出力する (単位 `{packet}`、累積単調増加カウンタ)。
+`reason` 属性はフィールド名から `rx_` を除いた `parse_failed`、`port_outside`、`tuple_mismatch`、`neighbor`、`other`、`invalid_tcp`。
+このメトリクスはプラグインを検証して混合モードを選択した後に登録する。

@@ -46,6 +46,12 @@ func TestBpfProgramsLoad(t *testing.T) {
 		{"xdp_tx_tcp", objs.XdpTxTcp},
 		{"xdp_rx_tcp", objs.XdpRxTcp},
 		{"xdp_rx_tcp_server", objs.XdpRxTcpServer},
+		{"xdp_tx_mixed", objs.XdpTxMixed},
+		{"xdp_rx_mixed", objs.XdpRxMixed},
+		{"xdp_tx_tcp_mixed", objs.XdpTxTcpMixed},
+		{"xdp_rx_tcp_mixed", objs.XdpRxTcpMixed},
+		{"xdp_tx_tcp_mixed_ext", objs.XdpTxTcpMixedExt},
+		{"xdp_rx_tcp_mixed_ext", objs.XdpRxTcpMixedExt},
 	} {
 		if p.prog == nil {
 			t.Errorf("program %s is nil", p.name)
@@ -67,7 +73,7 @@ func TestBpfProgramsLoadVariants(t *testing.T) {
 
 // TestBpfTailCallSetup verifies the tail call prog_array is populated.
 func TestBpfTailCallSetup(t *testing.T) {
-	objs, _ := loadOrFail(t, defaultConsts())
+	objs := loadWithDiffMap(t, 1)
 
 	// All three tail-call slots must be populated, else the len_changed /
 	// !len_changed paths abort at runtime:
@@ -105,7 +111,12 @@ func TestBpfDummyProgramLoad(t *testing.T) {
 
 // TestBpfVariablesReadable verifies BPF spec variables can be read after load.
 func TestBpfVariablesReadable(t *testing.T) {
-	_, spec := loadOrFail(t, defaultConsts())
+	objs, spec, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer objs.Close()
 
 	for _, name := range []string{
 		"max_packet_size",
@@ -170,5 +181,63 @@ func TestBpfDeferredMixedLoad(t *testing.T) {
 	}
 	if err := LoadMixedPrograms(objs, spec); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// These are independently verified on every kernel in the BPF CI matrix.
+func TestBpfMixedSpecializations(t *testing.T) {
+	for name, features := range map[string]MixedProgramFeatures{
+		"bare":               {},
+		"udp-zero":           {Lengths: 2, OuterIPs: 1, UDPs: 1},
+		"udp-lco":            {Lengths: 2, OuterIPs: 1, UDPs: 1, LCO: true},
+		"nested":             {Lengths: 4, OuterIPs: 2, UDPs: 2, LCO: true},
+		"timestamps":         {Timestamps: true},
+		"payload":            {Payload: true},
+		"timestamps-payload": {Timestamps: true, Payload: true},
+		"nested-extensions":  {Lengths: 4, OuterIPs: 2, UDPs: 2, LCO: true, Timestamps: true, Payload: true, TemplateEntries: 18},
+	} {
+		t.Run(name, func(t *testing.T) {
+			objs, spec, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer objs.Close()
+			if objs.MixedMaxLengths != nil || objs.MixedMaxOuterIps != nil || objs.MixedMaxUdps != nil || objs.MixedHasLco != nil {
+				t.Fatal("base load assigned mixed constants")
+			}
+			for _, v := range []*ebpf.Variable{objs.MaxBasePackets, objs.MaxChecksumEntries, objs.MaxDiffsPerPacket, objs.MaxPacketSize, objs.MinPacketSize, objs.SwapResp} {
+				if v == nil {
+					t.Fatal("base variable missing")
+				}
+				var value uint32
+				if err := v.Get(&value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := LoadMixedProgramsWithFeatures(objs, spec, features); err != nil {
+				t.Fatal(err)
+			}
+			var original uint32
+			if err := spec.Variables["mixed_max_udps"].Get(&original); err != nil {
+				t.Fatal(err)
+			}
+			if original != 4 {
+				t.Fatalf("original spec was mutated: %d", original)
+			}
+			for i, want := range []*ebpf.Program{objs.XdpTx, objs.XdpTxTcpMixed, objs.XdpRxTcpMixed, objs.XdpRx} {
+				var got uint32
+				if err := objs.MixedProgs.Lookup(uint32(i), &got); err != nil {
+					t.Fatal(err)
+				}
+				info, err := want.Info()
+				if err != nil {
+					t.Fatal(err)
+				}
+				id, _ := info.ID()
+				if got != uint32(id) {
+					t.Fatalf("tail call %d: %d, want %d", i, got, id)
+				}
+			}
+		})
 	}
 }

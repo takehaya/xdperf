@@ -36,17 +36,18 @@ func TestMixedBPFDispatch(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	objs, spec, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 100)
+	spec, err := coreelf.LoadBpf()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer objs.Close()
-	x := &Xdperf{cfg: mixedConfig(), bpfobjs: objs, bpfSpec: spec, cpus: []int{cpu}, Logger: zap.NewNop()}
+	x := &Xdperf{cfg: mixedConfig(), bpfSpec: spec, cpus: []int{cpu}, Logger: zap.NewNop()}
 	r := mixedResponse()
 	r.VariablePacketTemplate.Variants[1].TCPFlow.Flows[0].Bytes = "18446744073709551615"
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
 	}
+	objs := loadMixedTestObjects(t, x.mixed.features)
+	x.bpfobjs = objs
 	target := &tcpTarget{srcIP: net.ParseIP("192.0.2.1").To4(), dstIP: net.ParseIP("192.0.2.2").To4(), srcMAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, dstMAC: net.HardwareAddr{2, 0, 0, 0, 0, 2}, ipVersion: 4, mss: 1024, dstPort: 5201, l3Off: 14, l4Off: 34, hdrLen: 54}
 	template, err := buildTCPTemplate(target, 40000)
 	if err != nil {

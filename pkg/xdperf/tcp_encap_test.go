@@ -190,16 +190,17 @@ func verifyTCPEncapFrame(t *testing.T, frame []byte, tmpl coreelf.BpfTcpTemplate
 	}
 }
 
-func TestTCPEncapBPF(t *testing.T)     { testTCPEncapBPF(t, false) }
-func TestTCPRawGeneveBPF(t *testing.T) { testTCPEncapBPF(t, true) }
+func TestTCPEncapBPF(t *testing.T)        { testTCPEncapBPF(t, "all") }
+func TestTCPRawGeneveBPF(t *testing.T)    { testTCPEncapBPF(t, "raw-geneve") }
+func TestTCPZeroUDPEncapBPF(t *testing.T) { testTCPEncapBPF(t, "zero") }
+func TestTCPMPLSOnlyBPF(t *testing.T)     { testTCPEncapBPF(t, "mpls") }
 
-func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
-	objs, spec, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 100)
+func testTCPEncapBPF(t *testing.T, profile string) {
+	spec, err := coreelf.LoadBpf()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer objs.Close()
-	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfobjs: objs, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
+	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
 	x.cfg.TCPIPID = "shared"
 	r := mixedResponse()
 	r.VariablePacketTemplate.Variants = r.VariablePacketTemplate.Variants[:1]
@@ -215,12 +216,24 @@ func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
 	for _, name := range []string{"ipip", "gre", "srv6", "gtpu", "mpls", "nested"} {
 		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants, tcpOtherTunnel(name))
 	}
-	if rawGeneve {
+	if profile == "raw-geneve" {
 		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], tcpMaxRawGeneveTemplate())
+	} else if profile == "zero" {
+		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], tcpTestTunnel("vxlan", false, false, "zero"))
+	} else if profile == "mpls" {
+		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], tcpOtherTunnel("mpls"))
 	}
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
 	}
+	if profile == "zero" && (x.mixed.features.LCO || x.mixed.features.UDPs != 1) {
+		t.Fatalf("expected UDP fixups without LCO: %+v", x.mixed.features)
+	}
+	if profile == "mpls" && x.mixed.features != (coreelf.MixedProgramFeatures{}) {
+		t.Fatalf("MPLS-only template must not require envelope edits: %+v", x.mixed.features)
+	}
+	objs := loadMixedTestObjects(t, x.mixed.features)
+	x.bpfobjs = objs
 	target, err := parseTCPVariant(x.mixed.groups[0].variant)
 	if err != nil {
 		t.Fatal(err)
@@ -255,6 +268,18 @@ func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
 					t.Fatalf("TX %d %v", action, err)
 				}
 				verifyTCPEncapFrame(t, frame, tmpl)
+				if profile == "mpls" {
+					if !bytes.Equal(frame[:tmpl.Cfg.L3Off], tmpl.Prefix[:tmpl.Cfg.L3Off]) {
+						t.Fatal("MPLS/Ethernet prefix changed")
+					}
+					wantLen := int(tmpl.Cfg.L4Off) + 20 + int(tmpl.DataLen) + 3
+					if syn {
+						wantLen = int(tmpl.Cfg.L4Off) + 20 + int(tmpl.SynLen)
+					}
+					if len(frame) != wantLen {
+						t.Fatalf("MPLS frame length = %d, want %d", len(frame), wantLen)
+					}
+				}
 				if tmpl.EntropyCount != 0 && binary.BigEndian.Uint16(frame[tmpl.EntropyOffset:]) != uint16(49152+i) {
 					t.Fatal("flow entropy")
 				}
@@ -277,22 +302,20 @@ func testTCPEncapBPF(t *testing.T, rawGeneve bool) {
 				binary.BigEndian.PutUint32(frame[l4+4:], 5000)
 				binary.BigEndian.PutUint32(frame[l4+8:], 101)
 				frame[l4+13] = 0x12
-				// RX for the other tunnel protocols belongs to phase 3.
-				if !rawGeneve && i >= 9 && i != 14 {
-					continue
-				}
 				// Outer tuple/VNI intentionally remain in the TX direction; they are not keys.
 				action, reply, err := objs.XdpRxTcpMixed.Test(frame)
 				if err != nil || action != 3 {
 					t.Fatalf("encap RX %d %v", action, err)
 				}
 				verifyTCPEncapFrame(t, reply, tmpl)
-				// A shorter UDP envelope must not expose the inner TCP carried in padding.
-				bad := append([]byte(nil), frame...)
-				binary.BigEndian.PutUint16(bad[int(tmpl.Udps[0].Offset)+4:], 8)
-				action, _, err = objs.XdpRxTcpMixed.Test(bad)
-				if err != nil || action != 2 {
-					t.Fatalf("short parent UDP %d %v", action, err)
+				if tmpl.UdpCount > 0 {
+					// A shorter UDP envelope must not expose the inner TCP carried in padding.
+					bad := append([]byte(nil), frame...)
+					binary.BigEndian.PutUint16(bad[int(tmpl.Udps[0].Offset)+4:], 8)
+					action, _, err = objs.XdpRxTcpMixed.Test(bad)
+					if err != nil || action != 2 {
+						t.Fatalf("short parent UDP %d %v", action, err)
+					}
 				}
 				// Bare responses accepted; the configured outer envelope is restored.
 				bare := append([]byte(nil), tcpTestBase(tmpl.Cfg.IpVersion == 6, 0).Data[:14]...)
@@ -364,11 +387,7 @@ func TestTCPKnownTunnelParsers(t *testing.T) {
 }
 
 func TestMixedUDPOptionsAccounting(t *testing.T) {
-	objs, _, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer objs.Close()
+	objs := loadMixedTestObjects(t, coreelf.MixedProgramFeatures{Lengths: 8, OuterIPs: 4, UDPs: 4, LCO: true})
 	if err := objs.MixedCfgMap.Put(uint32(0), coreelf.BpfMixedCfg{Receive: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -466,11 +485,7 @@ func TestTCPGTPSequenceRejected(t *testing.T) {
 }
 
 func TestMixedTunnelNeighborPass(t *testing.T) {
-	objs, _, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer objs.Close()
+	objs := loadMixedTestObjects(t, coreelf.MixedProgramFeatures{Lengths: 8, OuterIPs: 4, UDPs: 4, LCO: true})
 	if err := objs.MixedCfgMap.Put(uint32(0), coreelf.BpfMixedCfg{Receive: 1}); err != nil {
 		t.Fatal(err)
 	}

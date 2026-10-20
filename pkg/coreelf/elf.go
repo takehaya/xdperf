@@ -89,6 +89,11 @@ func readCollection(constants map[string]any, sizes map[string]uint32, mixed boo
 			return nil, nil, err
 		}
 	}
+	if mixed {
+		if err := PrepareMixedRXDiagnostics(spec); err != nil {
+			return nil, nil, err
+		}
+	}
 	var target any = objs
 	var base baseObjects
 	if !mixed {
@@ -104,7 +109,12 @@ func readCollection(constants map[string]any, sizes map[string]uint32, mixed boo
 	}
 
 	if !mixed {
-		objs.BpfMaps, objs.BpfVariables = base.BpfMaps, base.BpfVariables
+		objs.BpfMaps = base.BpfMaps
+		objs.BpfVariables = BpfVariables{
+			MaxBasePackets: base.MaxBasePackets, MaxChecksumEntries: base.MaxChecksumEntries,
+			MaxDiffsPerPacket: base.MaxDiffsPerPacket, MaxPacketSize: base.MaxPacketSize,
+			MinPacketSize: base.MinPacketSize, SwapResp: base.SwapResp,
+		}
 		objs.XdpPassDummy, objs.XdpRx, objs.XdpRxTcp, objs.XdpRxTcpServer = base.XdpPassDummy, base.XdpRx, base.XdpRxTcp, base.XdpRxTcpServer
 		objs.XdpTx, objs.XdpTxChecksum, objs.XdpTxCsumDiff, objs.XdpTxCsumRecalc, objs.XdpTxTcp = base.XdpTx, base.XdpTxChecksum, base.XdpTxCsumDiff, base.XdpTxCsumRecalc, base.XdpTxTcp
 	}
@@ -215,23 +225,96 @@ func loadWithVerifierLog(spec *ebpf.CollectionSpec, objs any) error {
 // Maps remain shared with programs loaded later.
 type baseObjects struct {
 	BpfMaps
-	BpfVariables
-	XdpPassDummy    *ebpf.Program `ebpf:"xdp_pass_dummy"`
-	XdpRx           *ebpf.Program `ebpf:"xdp_rx"`
-	XdpRxTcp        *ebpf.Program `ebpf:"xdp_rx_tcp"`
-	XdpRxTcpServer  *ebpf.Program `ebpf:"xdp_rx_tcp_server"`
-	XdpTx           *ebpf.Program `ebpf:"xdp_tx"`
-	XdpTxChecksum   *ebpf.Program `ebpf:"xdp_tx_checksum"`
-	XdpTxCsumDiff   *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
-	XdpTxCsumRecalc *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
-	XdpTxTcp        *ebpf.Program `ebpf:"xdp_tx_tcp"`
+	// Do not embed BpfVariables: assigning a mixed variable also loads its
+	// backing map, even when none of the base programs references it.
+	MaxBasePackets     *ebpf.Variable `ebpf:"max_base_packets"`
+	MaxChecksumEntries *ebpf.Variable `ebpf:"max_checksum_entries"`
+	MaxDiffsPerPacket  *ebpf.Variable `ebpf:"max_diffs_per_packet"`
+	MaxPacketSize      *ebpf.Variable `ebpf:"max_packet_size"`
+	MinPacketSize      *ebpf.Variable `ebpf:"min_packet_size"`
+	SwapResp           *ebpf.Variable `ebpf:"swap_resp"`
+	XdpPassDummy       *ebpf.Program  `ebpf:"xdp_pass_dummy"`
+	XdpRx              *ebpf.Program  `ebpf:"xdp_rx"`
+	XdpRxTcp           *ebpf.Program  `ebpf:"xdp_rx_tcp"`
+	XdpRxTcpServer     *ebpf.Program  `ebpf:"xdp_rx_tcp_server"`
+	XdpTx              *ebpf.Program  `ebpf:"xdp_tx"`
+	XdpTxChecksum      *ebpf.Program  `ebpf:"xdp_tx_checksum"`
+	XdpTxCsumDiff      *ebpf.Program  `ebpf:"xdp_tx_csum_diff"`
+	XdpTxCsumRecalc    *ebpf.Program  `ebpf:"xdp_tx_csum_recalc"`
+	XdpTxTcp           *ebpf.Program  `ebpf:"xdp_tx_tcp"`
 }
 
 // LoadMixedPrograms adds mixed dispatch/TCP programs to an existing collection.
 // Reusing every named map preserves configuration, flow state and tail calls.
 func LoadMixedPrograms(objs *BpfObjects, spec *ebpf.CollectionSpec) error {
+	return LoadMixedProgramsWithFeatures(objs, spec, MixedProgramFeatures{Lengths: 8, OuterIPs: 4, UDPs: 4, LCO: true})
+}
+
+// MixedProgramFeatures bounds the TX fixups across all validated TCP templates.
+// LCO enables checksummed outer UDP headers. RX parsing is deliberately not specialized, since
+// return packets need not use the outgoing encapsulation.
+type MixedProgramFeatures struct {
+	Lengths, OuterIPs, UDPs uint32
+	LCO                     bool
+	Timestamps, Payload     bool
+	TemplateEntries         uint32
+}
+
+// LoadMixedProgramsWithFeatures specializes builders before verification. The
+// caller must include every template used for TX and RX replies, and must not
+// widen their requirements after loading. The first successful load wins.
+func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, features MixedProgramFeatures) error {
 	if objs.XdpTxMixed != nil {
 		return nil
+	}
+	if features.Lengths > 8 || features.OuterIPs > 4 || features.UDPs > 4 {
+		return fmt.Errorf("mixed program features exceed template limits: %+v", features)
+	}
+	// Copy before changing constants: base programs and later callers retain
+	// their original spec, and the mixed rodata is loaded with these values.
+	spec = spec.Copy()
+	if err := PrepareMixedRXDiagnostics(spec); err != nil {
+		return err
+	}
+	if features.TemplateEntries > 16 {
+		m := spec.Maps["tcp_template_map"]
+		if uint64(features.TemplateEntries)*uint64(m.ValueSize) > 64<<20 {
+			return fmt.Errorf("TCP templates exceed 64 MiB")
+		}
+		m.MaxEntries = features.TemplateEntries
+		replacement, err := ebpf.NewMap(m)
+		if err != nil {
+			return fmt.Errorf("expand TCP templates: %w", err)
+		}
+		old := objs.TcpTemplateMap
+		objs.TcpTemplateMap = replacement
+		old.Close()
+	}
+	lco := uint32(0)
+	if features.LCO {
+		lco = 1
+	}
+	flag := func(v bool) uint32 {
+		if v {
+			return 1
+		}
+		return 0
+	}
+	for name, value := range map[string]uint32{
+		"mixed_has_timestamps": flag(features.Timestamps),
+		"mixed_has_payload":    flag(features.Payload),
+		"mixed_max_lengths":    features.Lengths,
+		"mixed_max_outer_ips":  features.OuterIPs,
+		"mixed_max_udps":       features.UDPs,
+		"mixed_has_lco":        lco,
+	} {
+		v, ok := spec.Variables[name]
+		if !ok {
+			return fmt.Errorf("mixed constant %s not found", name)
+		}
+		if err := v.Set(value); err != nil {
+			return fmt.Errorf("set %s: %w", name, err)
+		}
 	}
 	replacements := make(map[string]*ebpf.Map)
 	maps := reflect.ValueOf(objs.BpfMaps)
@@ -240,6 +323,10 @@ func LoadMixedPrograms(objs *BpfObjects, spec *ebpf.CollectionSpec) error {
 		if m, ok := maps.Field(i).Interface().(*ebpf.Map); ok && m != nil {
 			replacements[name] = m
 		}
+	}
+	if features.Timestamps || features.Payload {
+		spec.Programs["xdp_tx_tcp_mixed"] = spec.Programs["xdp_tx_tcp_mixed_ext"]
+		spec.Programs["xdp_rx_tcp_mixed"] = spec.Programs["xdp_rx_tcp_mixed_ext"]
 	}
 	var mixed struct {
 		XdpRxMixed    *ebpf.Program `ebpf:"xdp_rx_mixed"`

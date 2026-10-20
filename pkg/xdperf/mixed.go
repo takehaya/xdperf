@@ -42,12 +42,14 @@ func decimalUint64(s string) (uint64, error) {
 
 type mixedGroup struct {
 	weight, first, count uint32
+	templateFirst        uint32
 	variant              guest.PacketVariant
 }
 type mixedPlan struct {
 	packets                   guest.GeneratorProcessResponse
 	groups                    []mixedGroup
 	packetWeight, totalWeight uint32
+	features                  coreelf.MixedProgramFeatures
 }
 
 // prepareMixed validates the entire union before committing host configuration.
@@ -86,6 +88,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	var targets []uint64
 	var destination string
 	var total uint64
+	nextTemplate := uint32(16)
 	for i, v := range set.Variants {
 		if v.Weight == 0 {
 			return fmt.Errorf("mixed variant %d requires positive weight", i)
@@ -100,11 +103,34 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 			continue
 		}
 		f := v.TCPFlow
-		if f == nil || len(f.Flows) == 0 || len(v.Params) != 0 || len(v.Checksums) != 0 {
-			return fmt.Errorf("TCP variant %d requires flows and cannot contain variable_params or checksums", i)
+		if f == nil || len(f.Flows) == 0 || len(v.Checksums) != 0 {
+			return fmt.Errorf("TCP variant %d requires flows and cannot contain checksums", i)
 		}
+		if err := validateTCPFlowParams(v); err != nil {
+			return fmt.Errorf("TCP variant %d: %w", i, err)
+		}
+		payload, err := tcpPayload(f.PayloadPattern)
+		if err != nil {
+			return err
+		}
+		plan.features.Payload = plan.features.Payload || payload.Period != 0
+		plan.features.Timestamps = plan.features.Timestamps || f.Timestamps
 		if f.Encapsulation != nil && len(v.Base.Data) == 0 {
 			return fmt.Errorf("encapsulation requires base_packet")
+		}
+		if f.Encapsulation != nil {
+			p, err := parseTCPEncapsulation(v.Base, f.Encapsulation)
+			if err != nil {
+				return fmt.Errorf("TCP variant %d: %w", i, err)
+			}
+			plan.features.Lengths = max(plan.features.Lengths, uint32(len(p.lengths)))
+			plan.features.OuterIPs = max(plan.features.OuterIPs, uint32(len(p.ips)))
+			plan.features.UDPs = max(plan.features.UDPs, uint32(len(p.udps)))
+			for j := range p.udps {
+				if f.Encapsulation.UDPChecksums[j].Mode == "lco" {
+					plan.features.LCO = true
+				}
+			}
 		}
 		dest := f.Destination
 		if len(v.Base.Data) != 0 || v.Base.Length != 0 {
@@ -126,10 +152,10 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 				}
 			}
 		}
-		if _, err := tcpStaticOptions(f.SynOptions, true); err != nil {
+		if _, err := tcpFlowOptions(f, true); err != nil {
 			return err
 		}
-		if _, err := tcpStaticOptions(f.DataOptions, false); err != nil {
+		if _, err := tcpFlowOptions(f, false); err != nil {
 			return err
 		}
 		host, port, err := net.SplitHostPort(dest)
@@ -144,7 +170,13 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		if x.cfg.TCPPortBase < 1 || x.cfg.TCPPortBase > 65535 || len(f.Flows) > 65536-x.cfg.TCPPortBase-len(targets) {
 			return fmt.Errorf("TCP flows exceed source port capacity")
 		}
-		plan.groups = append(plan.groups, mixedGroup{weight: v.Weight, first: uint32(len(targets)), count: uint32(len(f.Flows)), variant: v})
+		group := mixedGroup{weight: v.Weight, first: uint32(len(targets)), count: uint32(len(f.Flows)), variant: v}
+		if len(v.Params) != 0 {
+			group.templateFirst = nextTemplate
+			nextTemplate += group.count
+			plan.features.TemplateEntries = nextTemplate
+		}
+		plan.groups = append(plan.groups, group)
 		for _, flow := range f.Flows {
 			b, err := decimalUint64(flow.Bytes)
 			if err != nil {
@@ -251,7 +283,18 @@ func (x *Xdperf) showMixedStats() error {
 	if pn+tn > 0 {
 		ratio = float64(tn) / float64(pn+tn)
 	}
-	x.Logger.Info("mixed final statistics", zap.Uint64("packet_opportunities", po), zap.Uint64("tcp_opportunities", to), zap.Uint64("packet_tx", pn), zap.Uint64("tcp_tx", tn), zap.Uint64("tcp_rx_replies", replies), zap.Float64("tcp_tx_ratio", ratio), zap.Uint64("dispatch_errors", dispatchErrors), zap.Uint64("packet_bytes", packetBytes), zap.Uint64("packet_errors", packetErrors), zap.Uint64("packet_rx", rxPackets), zap.String("packet_rx_scope", "outer_udp"), zap.Uint64("drain_opportunities", drain))
+	rx, err := x.readMixedRXStats()
+	if err != nil {
+		return err
+	}
+	fields := []zap.Field{}
+	for i, reason := range mixedRXReasons {
+		fields = append(fields, zap.Uint64("rx_"+reason, rx[i]))
+	}
+	if rx[2] != 0 {
+		x.Logger.Warn("mixed RX packets in flow port range did not match a template; check peer addresses, ports and NAT", zap.Uint64("rx_tuple_mismatch", rx[2]))
+	}
+	x.Logger.With(fields...).Info("mixed final statistics", zap.Uint64("packet_opportunities", po), zap.Uint64("tcp_opportunities", to), zap.Uint64("packet_tx", pn), zap.Uint64("tcp_tx", tn), zap.Uint64("tcp_rx_replies", replies), zap.Float64("tcp_tx_ratio", ratio), zap.Uint64("dispatch_errors", dispatchErrors), zap.Uint64("packet_bytes", packetBytes), zap.Uint64("packet_errors", packetErrors), zap.Uint64("packet_rx", rxPackets), zap.String("packet_rx_scope", "outer_udp"), zap.Uint64("drain_opportunities", drain))
 	if packetErrors != 0 {
 		return fmt.Errorf("packet generation errors: %d", packetErrors)
 	}
@@ -259,4 +302,23 @@ func (x *Xdperf) showMixedStats() error {
 		return fmt.Errorf("mixed dispatch errors: %d", dispatchErrors)
 	}
 	return nil
+}
+
+// Keep the order in sync with enum mixed_rx_reason in xdp_mixed_rx_stats.h.
+var mixedRXReasons = [...]string{"parse_failed", "port_outside", "tuple_mismatch", "neighbor", "other", "invalid_tcp"}
+
+type mixedRXTotals [6]uint64
+
+func (x *Xdperf) readMixedRXStats() (mixedRXTotals, error) {
+	recs := make([]coreelf.BpfMixedRxStats, ebpf.MustPossibleCPU())
+	if err := x.bpfobjs.MixedRxStatsMap.Lookup(uint32(0), &recs); err != nil {
+		return mixedRXTotals{}, err
+	}
+	var totals mixedRXTotals
+	for _, rec := range recs {
+		for i, value := range rec.Counts {
+			totals[i] += value
+		}
+	}
+	return totals, nil
 }

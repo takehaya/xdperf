@@ -21,6 +21,7 @@ import (
 	"github.com/takehaya/xdperf/pkg/numa"
 	"github.com/takehaya/xdperf/pkg/plugin"
 	"github.com/takehaya/xdperf/pkg/telemetry"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 )
@@ -37,6 +38,7 @@ type Xdperf struct {
 	bpfSpec         *ebpf.CollectionSpec
 	tcpVariantBytes []uint64 // validated per-flow targets, nil for the legacy CLI mode
 	mixed           *mixedPlan
+	otlpMeter       metric.Meter
 	cpus            []int // resolved CPU list for workers
 }
 
@@ -239,6 +241,7 @@ func (x *Xdperf) setupOTLPMetrics() error {
 	if err := x.registerMetrics(meter, ty); err != nil {
 		return err
 	}
+	x.otlpMeter = meter
 	x.Logger.Info("otlp metrics exporter initialized",
 		zap.String("endpoint", x.cfg.OTLPEndpoint),
 		zap.Duration("interval", x.cfg.OTLPInterval),
@@ -265,8 +268,13 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 		return err
 	}
 	if x.mixed != nil {
-		if err := coreelf.LoadMixedPrograms(x.bpfobjs, x.bpfSpec); err != nil {
+		if err := coreelf.LoadMixedProgramsWithFeatures(x.bpfobjs, x.bpfSpec, x.mixed.features); err != nil {
 			return err
+		}
+		if x.otlpMeter != nil {
+			if err := x.registerMixedRXMetrics(x.otlpMeter); err != nil {
+				return err
+			}
 		}
 		return x.runTCP(ctx)
 	}
