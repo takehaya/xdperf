@@ -39,8 +39,13 @@ sudo xdperf run --device eth0 --duration 60s --pps 1m \
 | `xdperf.packets` | `{packet}` | `network.io.direction` = `transmit` / `receive` | eBPF TX/RX 統計マップ |
 | `xdperf.bytes` | `By` | 同上 | 同上 |
 | `xdperf.errors` | `{error}` | `error.type` = `diff` / `checksum` | eBPF TX 統計マップ |
+| `xdperf.mixed.rx` | `{packet}` | `reason` = `parse_failed` / `port_outside` / `tuple_mismatch` / `neighbor` / `other` / `invalid_tcp` | 混合 RX の診断マップ。混合モード選択後だけ登録 |
 | `xdperf.nic.packets` | `{packet}` | `network.io.direction` = `transmit` | `/sys/class/net/<dev>/statistics/tx_packets` |
 | `xdperf.nic.dropped` | `{packet}` | 同上 | `/sys/class/net/<dev>/statistics/tx_dropped` |
+
+`xdperf.packets`、`xdperf.bytes`、`xdperf.errors` はパケット側のマップを読み、TCP の送信フレームや ACK 済みバイト数は含みません。
+混合 RX の reason は [TCP ガイドの診断表](tcp_stream.md#混合モードの-rx-診断) を参照してください。
+正常応答は診断カウンターに含まれず、これらの値だけで対象フローの損失とは判断できません。
 
 NIC 系メトリクスは同一インターフェイス上の他トラフィックも含む点に注意してください (`--show-nic-stats` と同じ制約)。
 

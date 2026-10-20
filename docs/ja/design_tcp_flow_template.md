@@ -4,7 +4,10 @@
 
 `PacketVariantSet` の `kind: "tcp_flow"` に、プラグインが生成する Ethernet フレームを渡せるようにする。
 [混合バリアント](design_mixed_variants.md)の配分、終了条件、ポート割り当て、送信記録を維持し、[TCP エンジン](design_xdp_tcp.md)の状態機械を共用する。
-この文書の API は段階ごとに実装するものであり、後続段階のフィールドを先行して受理しない。
+段階 1〜4 は #120、#125、#126 で実装済みである。
+以下の段階別計画と測定記録は、その時点の設計と結果として残す。
+現在の指定方法と制限は [混合送信ガイド](mixed_variants.md) と後半の段階 4 の実装仕様を参照する。
+例えば段階 1 の variable_params 拒否は段階 4 で内側送信元 IP に限って緩和済みである。
 
 | 段階 | 実装範囲 | ブランチ |
 |---|---|---|
@@ -84,7 +87,8 @@ SYN の全長も独立に検証する。
 ## BPF マップと送信
 
 既存の `tcp_cfg_map` は全体の flow_count、port_base、drain/abort と従来モードの設定を保持する。
-`tcp_template_map` (ARRAY、最大 16) にグループ別の不変設定を格納する。
+`tcp_template_map` は初期実装では ARRAY 16 エントリでグループ別の不変設定を格納した。
+現在はフロー別 variable_params を使う場合に必要数へ拡張する。
 `tcp_flow` に template_id を追加し、フロー選択後の 1 lookup でグループを得る。
 状態機械にはグループ別 MSS と従来の制御設定を渡す。
 終了制御を書き換える際はグループ側にも drain/abort を伝える。
@@ -209,14 +213,15 @@ Timestamps の合意と非合意、SYN 再送、PAWS、timestamp のラップ、
 性能は既存 mixbench と同じ veth、CPU 配置、MSS、window、batch を用い、未使用の既存混合 TCP と packet 専用を比較する。
 6 ブロックで条件順と base/head 順を無作為化し、各対は隣接実行する。
 スループットと起動時間について対応差の平均と両側 95% CI（t 分布）を報告し、CI が広い場合は同等と断定しない。
-生データとビルド物は `out/job-c/`、`out/mixbench/` と既存 scratchpad の `mixbench/tcp-flow-payload/` に保存し、Git には結果表、小さな summary CSV、検算スクリプトだけを残す。
+この計画に基づく結果表、[集計 CSV](benchmarks/tcp-flow-payload/summary.csv)、[検算スクリプト](benchmarks/tcp-flow-payload/verify.py) を Git に残した。
+生ログ、試行ごとの CSV、ビルド物は保存しておらず、集計値だけからの再検算はできない。
 
 `tcp_flow.timestamps: true` はエンジン生成の TSval/TSecr を有効にする。
 SYN でネゴシエーションし、未対応の相手には送らない。
 TSval は単調クロックから作り、TSecr は受信した timestamp をフロー状態に保持する。
 再送時刻、PAWS、32 bit ラップ、SYN 再送中の値をテストし、オプション長を MSS とチェックサムに反映する。
 
-`tcp_flow.payload_pattern` は最大 256 バイトの base64 列を指定する予定である。
+`tcp_flow.payload_pattern` は最大 256 バイトの base64 列を指定する。
 ストリーム開始からの 64 bit オフセットで pattern[index % length] を選ぶ。
 再送位置は bytes_acked と seq の差から復元し、4 GiB 超と seq ラップでも同じ中身を生成する。
 ゼロパターンには従来の定数時間チェックサムを使い、一般パターンは周期の部分和を事前計算する。
@@ -338,7 +343,8 @@ TCP の追加 SYN/data オプションは指定せず、対向の Linux VXLAN/GE
 最終 ACK 済みバイト数には drain 開始時に送信中だった最大 4 ウィンドウ（128 KiB）が含まれ、FIN と linger の時間は分母に含めていない。
 packet のみは 2^20 回の送信バッチの終了時刻が worker 間でずれるため、主表では毎秒カウンタの第 1〜7 サンプル間（約 6 秒）の差を実経過時間で割った定常区間の pps を使う。
 この集計規則は 1 ブロック目の停止処理の影響を確認した後、2 ブロック目の途中で全 packet 試行に共通と定めた。
-最終カウンタを全 worker 終了までの時間で割る値も併記し、生データを保持した。
+最終カウンタを全 worker 終了までの時間で割る値も併記した。
+この #121/#123 比較の生データはリポジトリには収録していない。
 
 表の対応差は同じブロックの `#123 − #121` の平均、百分率は各対の `100 × (#123 / #121 − 1)` の平均である。
 95% 信頼区間は対応差の標本標準偏差 `s` に対して `平均 ± 2.57058 × s / √6`（両側 t 分布、自由度 5）で求めた。
@@ -488,23 +494,10 @@ TX は packet、TCP、送信を行わない機会の混合平均なので、TCP 
 この結果は 4 フロー、上記 MSS/ウィンドウと veth/Linux TCP の組み合わせに限る。
 実 NIC、多数フロー、異なるペイロードやトンネル階層について同じ性能を保証しない。
 
-生データとスクリプトは測定ホストの次のディレクトリに保存した（Git 管理外）。
-
-```text
-/tmp/claude-1000/-home-ubuntu-private-xdperf/925f4640-ff78-496d-acec-28904e958eb9/scratchpad/mixbench/
-```
-
-- `README.md`、`bench.py`：設定、測定手順、専用 netns の準備と片付け。
-- `builds.json`、`bin/`：比較したコミット、バイナリと WASM の SHA-256、実行ファイル。
-- `main/schedule.json`、`main/bench-used.py`：実行順と本測定時点のスクリプト。
-- `main/raw.csv`、`main/derived.csv`、`main/summary.csv`：108 試行の値、packet 定常区間の値、対応差と信頼区間。
-- `main/b*/`：コマンド、設定、送受信ログ、フロー CSV、ログ到着時刻、BPF 情報、前後の環境情報。
-- `analyze.py`、`report.py`、`validate.py`：再集計、表の生成、108 試行の網羅性とバイト数の整合検証。
-- `pilot5/`、`profile-w1/`、`startup-trace/`、`trace_startup.py`：BPF 実行時間とロード syscall の補助計測。
-
-全 108 試行の整合検証と、比較バイナリのハッシュ検証を通過した。
-測定専用 netns は削除し、`kernel.bpf_stats_enabled` は元の 0 に戻した。
-比較元の detached worktree は `/tmp/claude-1000/xdperf-bench-base` に残している。
+この #121/#123 比較は本文の集計表を残すが、生ログ、108 試行の CSV、測定スクリプト、バイナリはリポジトリには保存していない。
+リポジトリ外の一時保存先は永続的な参照先として案内しない。
+後述の [起動時間](benchmarks/mixed-startup/README.md)、[受信トンネル](benchmarks/tcp-rx-tunnels/README.md)、[ペイロード](benchmarks/tcp-flow-payload/README.md) の CSV は別の比較であり、この 108 試行の代わりにはならない。
+当時は全 108 試行の整合検証と比較バイナリのハッシュ検証を通過したが、本文の集計だけからの再検算はできない。
 
 ## 段階 3 の実装前計画
 
@@ -541,7 +534,8 @@ Linux 対向の ip6tnl/seg6、gre/gretap/ip6gre、MPLS router/lwtunnel、利用�
 
 性能は既存 mixbench と同じ対応比較の方式を使う。
 起動時間と既存の非カプセル化／VXLAN／GENEVE の性能を 6 対以上で測定し、対応差の平均と t 分布による両側 95% CI を記録する。
-生データと再集計手順を残し、差が不明確な場合は同等性を断定しない。
+測定時は試行ごとの値から再集計し、差が不明確な場合は同等性を断定しない。
+現在残る資料と再検算の限界は段階 3 の測定記録に記す。
 
 ### 段階 3 の実装時の判断
 
@@ -566,7 +560,8 @@ GTP-U の IPv6 PDP はカーネルが要求する /64 prefix を登録し、実�
 最終構成は bare/VXLAN/GENEVE の従来の走査を一つの global サブプログラムとして保ち、新しい形式を検出した場合だけ汎用の層別走査へ進む。
 既知の送信テンプレートから RX を削除せず、受信ヘッダによる分岐で既存経路の呼び出し数を維持する。
 二つの走査器が共通に受理する形式は既存の最大 GENEVE 長と混在入れ子のテストで検証する。
-全機能を層別走査だけで扱った版の予備データは `out/mixbench/pilot/`、最終構成の予備データは `out/mixbench/pilot-fast/` に残し、正式測定には混ぜない。
+全機能を層別走査だけで扱った版と最終構成の予備実行は、正式測定には混ぜなかった。
+予備実行の生データは保存していない。
 
 Linux 6.1/6.6 の CI では、従来の走査器から拡張走査器を直接呼ぶ構成が合計 544 バイトのスタックを使い、512 バイト上限で拒否された。
 新形式を検出したら従来の走査器から呼び出し元へ戻し、そのフレームを解放してから拡張走査器を呼ぶ構成に変更した。
@@ -634,17 +629,11 @@ Linux 対向は内側 IPv4/IPv6 の gre、gre-key、gretap、ip6gre、ipip/SIT�
 
 ### 生データと再計算
 
-Git に残すのは [summary.csv](benchmarks/tcp-rx-tunnels/summary.csv) と検算スクリプトである。
-生ログ、試行行、実行順、環境、ビルド情報、測定スクリプトは作業ディレクトリの `out/mixbench/` と次の scratchpad に保存した。
-
-```text
-/tmp/claude-1000/-home-ubuntu-private-xdperf/925f4640-ff78-496d-acec-28904e958eb9/scratchpad/mixbench/tcp-rx-tunnels/
-```
-
-保存先の `analyze.py main` でログから再集計できる。
-リポジトリのルートで `python3 docs/ja/benchmarks/tcp-rx-tunnels/verify.py out/mixbench/main` を実行すると、96 試行の網羅性、エラー数、バイト数、対応差と CI を検算する。
-`report.py` は summary から上の表を生成する。
-実行手順と保存内容は [測定 README](benchmarks/tcp-rx-tunnels/README.md) に記載した。
+Git に残すのは [summary.csv](benchmarks/tcp-rx-tunnels/summary.csv)、[verify.py](benchmarks/tcp-rx-tunnels/verify.py)、[report.py](benchmarks/tcp-rx-tunnels/report.py) である。
+生ログ、試行行、実行順、環境、ビルド情報、測定スクリプトは保存していない。
+元の作業ディレクトリは削除済みであり、verify.py が必要とする raw.csv、derived.csv、schedule.json からの再検算は現在できない。
+report.py はコミット済み summary.csv から表を生成できるが、生データとの整合性を再確認するものではない。
+残る資料とスクリプトの入力は [測定 README](benchmarks/tcp-rx-tunnels/README.md) に記載する。
 
 
 ## 段階 4 の実装仕様
@@ -731,7 +720,8 @@ Timestamps とパターン用の値を従来の action、RX 入力、RX 応答�
 拡張 builder の外側修正も呼び出し元へ戻してから実行し、共有 IPv4 ID は builder が採番した値を別の状態に渡して保持する。
 通常 packet、通常 TCP、従来の混合 TCP の入口は、ELF 関数の命令数が比較元と同じになった。
 
-この CI 失敗により、最初の性能測定は途中で中断し、`out/mixbench/pilot-pre-stack-fix/` に保存して正式集計から除外した。
+この CI 失敗により、最初の性能測定は途中で中断し、正式集計から除外した。
+中断した予備測定の生データは保存していない。
 性能指標を見て打ち切ったものではなく、修正後に同じ事前指定の 6 ブロックを最初から実行する。
 
 同じ旧カーネルの次の検査では、helper の呼び出し後に l4 の上限情報が失われ、オプションの直接書き込みも拒否された。
@@ -799,21 +789,10 @@ packet/dispatch error は全試行で 0 だった。
 追加 E2E を全 examples と同時に起動した際は共通 PID 保存先が干渉し、1 条件で失敗したため、保存先を分離して単独再実行した。
 
 小さな集計値は [summary.csv](benchmarks/tcp-flow-payload/summary.csv)、検算用コードは [verify.py](benchmarks/tcp-flow-payload/verify.py) に置いた。
-検算は 120 試行の網羅性と実行順、フロー完了とバイト数、最終エラー、対応差と CI を確認する。
-生ログ、raw/derived CSV、実行スクリプト、バイナリ、ハッシュ記録、中断した予備測定は、この worktree の `out/mixbench/` に保存した。
-テストと examples のログは `out/job-c/` に置いた。
-測定データの控えは次の scratchpad に保存した。
-
-```text
-/tmp/claude-1000/-home-ubuntu-private-xdperf/925f4640-ff78-496d-acec-28904e958eb9/scratchpad/mixbench/tcp-flow-payload/
-```
-
-保存先の README に再実行・集計手順を記録した。
-リポジトリのルートで次を実行すると、対応差と両側 t(5) 95% CI を検算できる。
-
-```bash
-python3 docs/ja/benchmarks/tcp-flow-payload/verify.py out/mixbench/main
-```
+当時の検算は 120 試行の網羅性と実行順、フロー完了とバイト数、最終エラー、対応差と CI を確認した。
+生ログ、raw/derived CSV、実行スクリプト、バイナリ、ハッシュ記録、中断した予備測定、テストと examples のログは保存していない。
+元の作業ディレクトリは削除済みであり、集計 CSV だけから対応差と CI を再検算することはできない。
+検算コードに必要な入力と残る資料は [測定 README](benchmarks/tcp-flow-payload/README.md) を参照する。
 
 ## 混合 RX の照合失敗を数える (ジョブ E、実装前計画)
 
@@ -849,7 +828,9 @@ Go は全 CPU 分を合算し、mixed final statistics と `xdperf.mixed.rx` Obs
 変更前後の BPF オブジェクトを同じコンパイラで比較し、通常モードの全プログラムと正常 RX 経路 (分岐先の再配置を除く) の命令を検算する。
 全 sudo race テスト、examples、lint、複数レビュアーによる OCR を実行してから #125 を push する。
 #126 へ merge した後も取り込み差分の OCR と検証を行い、両 PR の Copilot と CI を完了させる。PR 自体はマージしない。
-性能測定は行わない。検証ログと比較用オブジェクトは `out/rx-diagnostics/` に保存し、Git には検算スクリプトと文書だけを残す。
+性能測定は行わない。
+Git には [正常命令列の検算スクリプト](../../scripts/check_mixed_rx_bytecode.go) と文書を残す。
+当時の検証ログと比較用オブジェクトは保存していない。
 
 ### 実装方針の補足: 不正 TCP の cold 分岐
 
@@ -885,7 +866,8 @@ LLVM 22 の変更前オブジェクト (`9117909`) と変更後オブジェク�
 OTLP は全 reason の属性と累積値、単調増加性、読み込み失敗時の観測省略、値の飽和を検査する。
 終了ログの各値と `tuple_mismatch` の警告も実際の BPF カウンタに対して照合した。
 
-検算の入力オブジェクト、命令ダンプ、各検証ログはこの worktree の `out/rx-diagnostics/` に保存している。
+検算の入力オブジェクト、命令ダンプ、各検証ログは保存していない。
+検算手順のコードは `scripts/check_mixed_rx_bytecode.go` に残るが、当時の入力はリポジトリにない。
 性能測定は行っていない。
 
 ### #126 への取り込み計画
@@ -921,7 +903,7 @@ OCR は principal 2 名と quality 2 名で実行し、不正長とタプル不�
 取り込み差分にも principal 2 名と quality 2 名で OCR を実施した。
 Timestamp の診断理由の説明不足を両文書で補い、構造変更の拒否テストを追加した。
 後続の MPLS 分類修正も全レビュアーが両ブランチで確認し、未解決の指摘はない。
-保存先はこの worktree の `out/rx-diagnostics/` であり、取り込み前のオブジェクトもここに置く。
+取り込み前のオブジェクトを含む当時の検証資料は保存していない。
 
 Copilot の追加指摘に対応し、末端の MPLS ラベルを読み飛ばして通常の UDP/ICMP を `other` に分類するよう修正した。
 既存の上限付き MPLS パーサーを再利用し、MPLS と GRE/MPLS の UDP/ICMP、および MPLS 内の ND を回帰テストに追加した。

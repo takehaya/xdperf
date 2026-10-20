@@ -21,7 +21,9 @@ xdperf <command> [options]
 
 ### Run Command - Operating Modes
 
-xdperf run has two primary operating modes:
+For packet traffic, `xdperf run` uses the modes below. Standalone `--tcp`,
+`--tcp-server`, and plugin-driven mixed traffic have additional rules described
+in [TCP and mixed modes](#tcp-and-mixed-modes).
 
 | Mode | Flags | Description |
 |------|-------|-------------|
@@ -46,6 +48,9 @@ xdperf run has two primary operating modes:
 | Option | Short | Required | Default | Description |
 |--------|-------|----------|---------|-------------|
 | `--device` | `-d` | **Yes** | - | Network interface name (e.g., `eth0`, `ens4`) |
+| `--rx-device` | - | No | same as TX | Packet client only: count on another device; implies `--recv` |
+| `--xdp-mode` | - | No | `auto` | Attach mode: `auto` (fallback to generic), `native`, or `generic` |
+| `--wasm-cache-dir` | - | No | user cache + `xdperf/wasm` | WASM compilation cache directory |
 | `--count` | `-c` | *Conditional* | - | Number of packets to send (e.g., `1000`, `100k`, `1m`) |
 | `--duration` | `-t` | *Conditional* | - | Duration to send packets (e.g., `10s`, `1m`, `500ms`) |
 | `--pps` | - | No | unlimited | Target packets per second (e.g., `100k`, `1m`) |
@@ -57,7 +62,7 @@ xdperf run has two primary operating modes:
 | `--show-nic-stats` | - | No | `false` | Show NIC-level statistics |
 | `--plugin` | `-p` | No | `simpleudp.tinygo` | Plugin name in format `<name>.<language>` |
 | `--plugin-path` | `-P` | No | `/usr/local/share/xdperf/plugins` | Directory containing plugin files |
-| `--plugin-language` | `-L` | No | (auto-detected) | Plugin language (`go` or `tinygo`) |
+| `--plugin-language` | `-L` | No | (auto-detected) | Plugin language (`go`, `tinygo`, or `c`) |
 | `--plugin-config` | `--cfg` | No | - | Plugin configuration in JSON format |
 | `--plugin-config-path` | `--cfgpath` | No | - | Path to JSON configuration file |
 | `--debugmode` | `-D` | No | `0` | Debug level (0: off, 1: on, 2: verbose) |
@@ -68,7 +73,63 @@ xdperf run has two primary operating modes:
 | `--otlp-insecure` | - | No | `false` | Use insecure (plaintext) gRPC connection for OTLP export |
 | `--otlp-attributes` | - | No | - | Additional OTLP resource attributes (`key=value,key=value`) |
 
+### TCP and Mixed Modes
+
+`--tcp` uses CLI settings and no plugin. `--tcp-server` receives without a
+plugin or TX workers. A plugin response containing `kind: "tcp_flow"` selects
+mixed mode without `--tcp`; at least one `packet` variant is also required.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `--tcp` | `false` | Standalone TCP sender; implies `--send` |
+| `--tcp-dst` | required for `--tcp` | Destination IP literal and port (`[v6]:port` for IPv6) |
+| `--tcp-src-ip` | route preferred source | Source IP on the device |
+| `--tcp-dst-mac` | ARP/NDP | Next-hop MAC override |
+| `--tcp-flows` | `1` | Concurrent flows; 1..65536, within source-port capacity |
+| `--tcp-port-base` | `10000` | First source port; base + flow count must be <= 65536 |
+| `--tcp-window` | `32` | Maximum in-flight segments per flow, 1..65535 |
+| `--tcp-mss` | MTU-sized, 1448 IPv4 / 1428 IPv6 | Payload size, minimum 64; extra headers/options reduce the default |
+| `--tcp-bytes` | `0` | Bytes per flow (`k`/`m`/`g`); zero requires duration |
+| `--tcp-rto` | `200ms` | Retransmission timeout |
+| `--tcp-vlan-id` / `--tcp-vlan-pcp` | `0` / `0` | VLAN ID (0 = no tag) and priority |
+| `--tcp-ip-id` | `flow` | Per-flow IPv4 ID, or `shared` per TX CPU |
+| `--tcp-flow-report` | disabled | CSV path for each TCP flow’s final ledger in standalone or mixed mode |
+| `--tcp-server` | `false` | XDP responder; implies receive-only mode |
+| `--tcp-listen` | `:5201` | Responder address; omitted IP = any IPv4, `[::]:port` = any IPv6 |
+| `--tcp-max-conns` | `262144` | Responder LRU flow-table size |
+| `--tcp-sweep-after` | `max(65*rto, 2s)` | Retire idle SYN_RCVD/LAST_ACK entries |
+| `--tcp-ack-every` | `1` | ACK every N in-order data segments (1..255); PSH/FIN/out-of-order get immediate ACKs |
+
+Standalone TCP needs `--tcp-bytes` and/or `--duration`, accepts duration without
+PPS, and rejects `--plugin`, `--recv`, `--count`, `--infinite`, and `--rx-device`.
+The responder accepts duration without PPS and rejects `--tcp`, `--swap-resp`,
+`--rx-device`, `--count`, and `--infinite`.
+
+Mixed mode retains the plugin CLI rule: choose count, or duration with PPS.
+Here count sizes the packet diff pool; it does not limit transmitted frames.
+PPS limits TX iterations, including TCP iterations that send nothing.
+Mixed mode rejects `--infinite`, `--rx-device`, and `--swap-resp`.
+The plugin supplies destinations, flow counts, and byte targets; do not set
+`--tcp-dst`, `--tcp-flows`, or `--tcp-bytes` for mixed traffic.
+Use `--recv` to count packet replies; TCP replies are always processed.
+
+The CSV columns are `flow,src_port,state,tx_pkts,tx_data,tx_rtx,rx_pkts,rx_replies,bytes_acked`.
+`tx_pkts + rx_replies` counts frames handed to XDP_TX, before any downstream
+loss; `tx_data + tx_rtx` counts data segments including retransmissions.
+UDP is absent from this ledger. See the [TCP guide](ja/tcp_stream.md) for details.
+
+See the [mixed-traffic guide](ja/mixed_variants.md) for `base_packet`,
+encapsulation, timestamps, payload patterns, and per-flow variable parameters.
+It also describes deferred BPF loading and startup costs.
+The [RX diagnostic table](ja/tcp_stream.md#混合モードの-rx-診断) explains the
+`rx_parse_failed`, `rx_port_outside`, `rx_tuple_mismatch`, `rx_neighbor`,
+`rx_other`, and `rx_invalid_tcp` counters; these are classifications, not a
+measurement of lost replies.
+
 ### Option Details
+
+The count/duration/PPS constraints below apply to the plugin packet and mixed
+sender modes. Receive-only and standalone TCP modes use the rules above.
 
 #### `--device`, `-d` (Required)
 
@@ -240,6 +301,8 @@ Plugin name must follow the format `<name>.<language>`.
 |--------|-------------|
 | `simpleudp.tinygo` | TinyGo-based plugin (default, smaller binary) |
 | `simpleudp.go` | Standard Go-based plugin |
+| `mixed.go` | Go plugin mixing packet and TCP flow variants |
+| `vxlan.c` | Freestanding C plugin using the TinyGo-style buffer ABI |
 
 ```shell
 # Using TinyGo plugin (default)
@@ -253,7 +316,9 @@ sudo xdperf run --device eth0 --count 1000 --plugin simpleudp.go
 
 Explicitly specify the plugin language. If omitted, it is automatically detected from the plugin name suffix.
 
-This option is required because the host runtime handles Go and TinyGo plugins differently (e.g., memory management, initialization sequences). Specifying the correct language ensures proper interaction between the host and the WASM module.
+The host uses the Go adapter for `go` and the buffer ABI for other languages,
+including `tinygo` and `c`. An explicit flag is only needed when the name does
+not identify the language or when overriding it.
 
 ```shell
 # Explicit language specification
@@ -264,7 +329,7 @@ sudo xdperf run --device eth0 --count 1000 --plugin myplug --plugin-language go
 
 Pass plugin configuration as a JSON string. The available parameters depend on the plugin.
 
-For plugin-specific configuration options, see [Plugin Development Guide](./plugins/README.md#simpleudp-plugin-configuration).
+For plugin-specific configuration options, see [Plugin Development Guide](../plugins/README.md#simpleudp-plugin-configuration).
 
 #### `--plugin-config-path`, `--cfgpath`
 
@@ -352,8 +417,12 @@ backend, e.g. with PromQL `rate()`):
 | `xdperf.packets` | `{packet}` | `network.io.direction` = `transmit` / `receive` | XDP TX/RX stats maps |
 | `xdperf.bytes` | `By` | `network.io.direction` = `transmit` / `receive` | XDP TX/RX stats maps |
 | `xdperf.errors` | `{error}` | `error.type` = `diff` / `checksum` | XDP TX stats map |
+| `xdperf.mixed.rx` | `{packet}` | `reason` = `parse_failed`, `port_outside`, `tuple_mismatch`, `neighbor`, `other`, `invalid_tcp` | Mixed RX diagnostics; registered only after mixed mode is selected |
 | `xdperf.nic.packets` | `{packet}` | `network.io.direction` = `transmit` | `/sys/class/net/<dev>/statistics/tx_packets` |
 | `xdperf.nic.dropped` | `{packet}` | `network.io.direction` = `transmit` | `/sys/class/net/<dev>/statistics/tx_dropped` |
+
+`xdperf.packets`, `xdperf.bytes`, and `xdperf.errors` read the packet-engine
+maps; they do not include the TCP engine’s frames or ACKed bytes.
 
 NIC metrics may include other traffic on the same interface (same caveat as
 `--show-nic-stats`). Resource attributes include `service.name=xdperf`,
@@ -421,6 +490,9 @@ See the [xdp-ninja README](https://github.com/takehaya/xdp-ninja) for the full
 DSL filter syntax and capture modes.
 
 ### Option Constraints Summary
+
+These are plugin-sender constraints; TCP and responder exceptions are listed
+in [TCP and mixed modes](#tcp-and-mixed-modes).
 
 | Constraint | Description |
 |------------|-------------|

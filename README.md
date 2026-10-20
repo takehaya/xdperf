@@ -105,6 +105,27 @@ sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.100.2:5201 --tcp-vlan-id 100 
 sudo xdperf run --tcp-server --device eth0 --tcp-listen 10.0.0.2:5201
 ```
 
+### Mixed Packet and TCP Variants
+
+Use `--plugin mixed.go` without `--tcp` to combine packet templates and TCP flows.
+Weights allocate TX iterations; TCP waits can make the actual frame ratio differ.
+`--count` sizes the packet diff pool, and the run ends when all TCP flows finish,
+when the duration expires, or on a signal.
+
+```bash
+sudo xdperf run --device eth0 --plugin mixed.go --count 128 --pps 2000 \
+    --cfg '{"src_ip":"192.0.2.1","dst_ip":"192.0.2.2","dst_mac":"02:00:00:00:00:02"}' \
+    --tcp-flow-report flows.csv
+```
+
+The peer must provide a TCP sink at port 5201.
+See the [sample plugin](plugins/mixed.go/README.md) and
+[Japanese mixed-traffic guide](docs/ja/mixed_variants.md) for TCP templates,
+tunnels, timestamps, payload patterns, per-flow parameters, RX diagnostics,
+and startup behavior. `--tcp-flow-report` also works with standalone `--tcp`.
+For veth tests with several workers, set `VETH_QUEUES` when creating the pair;
+see [examples](examples/README.md#veth-queues).
+
 ### Server Mode (Receive Only)
 
 ```shell
@@ -198,7 +219,7 @@ lefthook install
 # Development build (includes xdperf binary and plugins)
 make build
 
-# Build plugins only
+# Build Go, TinyGo, and available C plugins
 make build-plugins
 
 # Build a specific plugin
@@ -219,6 +240,21 @@ make bpf-gen
 # debug pattern
 # CEXTRA_FLAGS="-DXDPERF_DEBUG" make bpf-gen
 ```
+
+### Shared C Packet Definitions
+
+The Go VXLAN plugin uses definitions generated from
+[`vxlan_shared.h`](plugins/vxlan.c/vxlan_shared.h). Normal builds use committed
+Go files and need no generator toolchain. To update or verify them with LLVM 22:
+
+```shell
+make packetdefs-gen
+make packetdefs-check
+make packetdefs-test
+```
+
+See the [generation design](docs/ja/design_c_to_go_shared_defs.md) for the
+manifest, fixed Docker environment, and ABI checks.
 
 ### Multi kernel version test
 ```shell

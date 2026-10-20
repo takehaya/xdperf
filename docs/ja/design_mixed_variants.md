@@ -1,5 +1,9 @@
 # パケットと TCP フローの混合バリアント
 
+この文書は混合配分の設計を示す。
+現在の SDK の使い方は [混合送信ガイド](mixed_variants.md)、ひな型とトンネルの詳細は [TCP フローひな型](design_tcp_flow_template.md) を参照する。
+ひな型、複数宛先、Timestamps、ペイロードパターン、フロー別 variable_params は実装済みである。
+
 ## JSON と互換性
 
 `template_type: "variable"` の `PacketVariantSet` に種類を追加する。
@@ -11,26 +15,28 @@ TCP バリアントを複数指定した場合はバリアント順に連結す�
 
 weight は送信 worker の TX イテレーションを配分する正の整数である。
 TCP の待機中も機会を消費し、パケット側に振り替えない。
-第 1 段階の混合集合は pattern=mixed を要求し、TCP バリアント間とパケット全体の選択には整数の重み付き乱数を使う。
+TCP を含む混合集合は pattern=mixed を要求し、TCP バリアント間とパケット全体の選択には整数の重み付き乱数を使う。
 パケット側の内部選択は既存の重み付き diff プールを使うため、有限プールによる丸めがある。
 既存のパケット専用 JSON と raw テンプレートは引き続き使用でき、従来の未知フィールドも許容する。
 TCP フローを含む応答では未知フィールドと重複キーを拒否し、32 MiB の応答上限とフロー配列の要素数を SDK 型へのデコード前に検査する。
 旧ホストでの新 TCP バリアントの実行はサポートしない。
-独立した tcp_scenario テンプレート、専用リクエスト、--tcp とプラグインの併用は削除する。
+独立した TCP シナリオのテンプレートと専用リクエストは使用できない。
+--tcp とプラグインの併用も受け付けない。
 
-## 第 1 段階の範囲
+## 現在の対応範囲
 
 混合送信は --plugin だけで選択し、--tcp は従来の CLI 指定による TCP 専用送信として残す。
-TCP 宛先は全 TCP バリアント共通の IP リテラルとポートに限定する。
-TCP ヘッダは既存の Go の生成処理を使い、経路、送信インターフェース、MAC、MSS、VLAN を検証する。
-この初期実装では TCP バリアントの base_packet、variable_params、checksums は受け付けない。
-後続の [TCP フローひな型](design_tcp_flow_template.md)では、base_packet とグループ別宛先、固定オプションを追加する。
-将来 base_packet の L2〜L4 を解析する際にも、seq、ack、flags、window、長さ、IP ID、チェックサムはエンジンが所有する。
+TCP 宛先はグループごとに IP リテラルとポートを指定できる。
+base_packet を省略したグループは Go が経路と近隣情報を解決してヘッダを作る。
+指定したグループはプラグインの Ethernet から TCP 固定ヘッダまでを使い、destination は省略できる。
+ひな型の構造、送信デバイスの MTU、MSS、固定オプション、カプセル化の修正表を検証する。
+variable_params は内側送信元 IP のフロー別変更だけを許し、checksums は受け付けない。
+seq、ack、flags、window、送信元ポート、長さ、チェックサムはエンジンが所有し、IPv4 ID は --tcp-ip-id に従う。
 
 混合集合にはパケットと TCP をそれぞれ 1 種類以上含める。
 バリアント数は最大 16、フロー総数は送信元ポート範囲内、重み合計は uint32 の範囲内とする。
 --count はパケットの diff プールサイズとして扱い、終了は全 TCP フローの完了、--duration、シグナルで決める。
---infinite と --rx-device は第 1 段階では拒否する。
+--infinite、--rx-device、--swap-resp は拒否する。
 --recv を指定するとパケット側の応答も統計に含める。
 
 ## BPF の送信構成
@@ -58,11 +64,15 @@ TCP 側では固定ヘッダまで縮小してから拡張し、パケット側�
 
 ## 受信構成
 
-混合 RX の入口で外側 IP のプロトコルを識別し、TCP と UDP をそれぞれ既存の TCP RX とパケット RX に tail call する。
+混合 RX の入口は TCP と既知のトンネル候補を混合 TCP RX に tail call し、内側 TCP を解析して照合する。
+VXLAN、GENEVE、SRv6、GTP-U、GRE、IPIP、MPLS とカプセル化なしの応答を扱う。
+ACK/RST は送信テンプレートから再構築し、外側経路やカプセル化の対称性は要求しない。
 TCP のフロー照合と ACK 処理を優先し、対象外の TCP は既存どおりカーネルへ渡す。
 ARP と ND の既存処理を妨げない。
 パケット応答の計測は --recv 時だけ有効にする。
-第 1 段階の混合 RX 計測は外側 IPv4/IPv6 の直下にある UDP に限定し、ICMP や IPv6 拡張ヘッダ配下の UDP はカーネルへ渡す。
+TCP に照合しなかった外側 UDP は --recv 時のパケット RX に渡す。
+トンネル内の ARP/ND はホストへ PASS し、UDP 計測から除く。
+RX の未照合理由と不正 TCP は [診断カウンター](tcp_stream.md#混合モードの-rx-診断) に分類する。
 パケット専用モードの既存 RX は変更しない。
 
 ## 統計と送信記録
@@ -82,7 +92,9 @@ TCP は既存の tcp_stats_map とフローの ledger を使う。
 4. JSON 境界値、配分比率、マップ初期化、veth での TCP 完了と UDP 受信数を検証する。
 5. 既存の全テスト、OCR、Copilot レビュー、CI を通す。
 
-後続段階では TCP の base_packet 入力、複数宛先、バリアント別の詳細統計を追加する。
+上記は初期実装の手順である。
+base_packet、複数宛先、固定オプション、トンネル RX、Timestamps、ペイロードパターン、フロー別 variable_params は実装済みである。
+バリアント別の詳細統計は未実装であり、現在の送信統計は packet/TCP の集計と TCP フロー記録を使う。
 
 ## 実行例
 

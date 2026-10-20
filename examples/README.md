@@ -45,9 +45,34 @@ sudo ./setup.sh && sudo ./test.sh && sudo ./teardown.sh
 | [simpleudp-split-rx](simpleudp-split-rx/) | One process with `--rx-device`: TX on one veth, forwarded by a middle "DUT" netns, counted by `xdp_rx` on a second veth |
 | [srv6](srv6/) | SRv6 (RFC 8754) traffic via the srv6.go plugin, all three encapsulation modes (`l3vpn_ipv4`/`l2vpn_eth`/`ipv6`). Verifies rx counter == packets sent per mode |
 | [tcpstream](tcpstream/) | `xdperf run --tcp` (XDP-implemented TCP client) streaming into `xdperf-sink` (kernel TCP) and into `xdperf run --tcp-server` (XDP responder) over IPv4, IPv6 and both with an 802.1Q tag, plus `socat` (kernel TCP) into the XDP responder. Verifies sender `bytes_acked` == receiver bytes and connection counts |
+| [mixed](mixed/test.sh) | Weighted DNS-style UDP packets and unequal TCP byte targets, with TCP flow CSV and UDP echo verification |
+| [tcp-template](tcp-template/README.md) | TCP base frames, IPv4/IPv6, VLAN/QinQ, and static options |
+| [tcp-vxlan](tcp-vxlan/README.md) | TCP through Linux VXLAN with IPv4/IPv6 and outer UDP zero/LCO checksums |
+| [tcp-tunnels](tcp-tunnels/README.md) | GRE, IPIP, SRv6, MPLS, GTP-U, and asymmetric replies |
+| [tcp-payload](tcp-payload/README.md) | Timestamps, payload patterns, per-flow source IPs, and ACK loss |
 | [otlp-metrics](otlp-metrics/) | OTLP metrics push (`--otlp-endpoint`) to an OTel Collector in docker. Verifies the exported counters via the prometheus exporter. SKIPs without docker |
 
+## Veth queues
+
+The common veth helper uses one RX/TX queue by default. Set `VETH_QUEUES`
+when running setup, for example:
+
+```bash
+sudo env VETH_QUEUES=8 ./examples/tcpstream/setup.sh
+```
+
+Workers sharing a peer receive ring can overflow it at high rates. Queue
+selection depends on the sending CPU modulo the peer RX queue count, so
+choose CPU IDs as well as enough queues to avoid collisions. xdperf warns
+when workers exceed its own veth’s active RX queue count, used as an estimate
+for the peer; it does not inspect the peer across namespaces.
+See the [veth tuning notes](../docs/ja/tips.md) for `ethtool -L` and active
+versus allocated queue counts.
+
 ## How it works
+
+The following describes the basic UDP scenarios. TCP and mixed scenarios
+attach their own receive programs and use sinks or Linux tunnel devices.
 
 ```mermaid
 flowchart LR

@@ -1,4 +1,8 @@
 # tips
+
+前半の性能値とログは当時の実装の検討記録であり、現在の性能を保証するものではない。
+現在の単独 TCP は [TCP ガイド](tcp_stream.md)、混合モードは [混合送信ガイド](mixed_variants.md) を参照する。
+
 ## なぜかpacketが飛んでいかない
 ### Dummy XDP ProgをAttachしていない
 何も気にしないで実行するとこんな感じで失敗してしまってるのがわかる。以下`trace-cmd`の様子です。
@@ -380,7 +384,8 @@ sudo perf report --sort=symbol --no-children | head -30
 パケットバッファや BPF マップへのアクセスがクロスノードのメモリアクセスになるからね。
 なので worker を NIC ローカルなノードの CPU に寄せてやると効く。`--cpu-mode` でこれを制御する(デフォルト `auto`)。
 
-シングルソケット機や VM だとそもそもノードが1個なので、何を指定しても先頭 N コアに固定されるだけ。気にしなくていい。
+シングル NUMA ノードの環境でも、明示した CPU リストはそのまま使う。
+NIC の NUMA affinity がない場合、`auto` と `local` は先頭 N CPU へフォールバックする。
 
 ### まず自分の構成を見る
 ```shell
@@ -482,11 +487,13 @@ worker 数は --parallelism で指定する。
 
 この症状は、次の点で見分けられる。
 
-- 対向の `ethtool -S` で `tx_queue_N_xdp_xmit_errors` が増える
+- 送信側の `ethtool -S` で `tx_queue_N_xdp_xmit_errors` が増える
 - xdperf の 1 秒ごとの表示で `rtx` が増え、worker 数を増やしても速度が上がらない
 - worker 数が veth の使用中の受信キュー数を超えると、xdperf が起動時に警告を出す。使用中のキュー数は `/sys/class/net/<dev>/queues/rx-*` の数で確認できる。送信レートが低ければリングは溢れないので、警告が出てもフレームが落ちていない場合はある
 
 対策として、veth は worker 数以上のキューを持つように作成する。
+キューの選択は送信 CPU 番号を対向の RX キュー数で割った余りによるため、CPU 番号の選び方によってはキュー数が足りていても競合する。
+起動時の警告は送信側 veth の使用中 RX キュー数を対向の代用としており、別 netns の対向キュー数までは検査しない。
 examples の veth のキュー数は、`VETH_QUEUES` で指定できる。
 
 ```shell
