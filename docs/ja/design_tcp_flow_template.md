@@ -703,3 +703,12 @@ OTLP は全 reason の属性と累積値、単調増加性、読み込み失敗�
 ロード前処理は両 entry point に適用し、オプション版がない #125 でも動作する構成にする。
 C の未照合カウントは共通本体へ取り込み、オプション状態や payload の処理順序を維持する。
 取り込み前の #126 のオブジェクトも保存し、通常版とオプション版それぞれの正常経路を比較する。
+
+#125 の最終コードで `make test` (sudo race)、`make examples` (13 シナリオ、失敗とスキップなし)、`make test-runnable`、`make lint` が成功した。
+混合とトンネルの E2E では `rx_tuple_mismatch == 0` と `rx_invalid_tcp == 0` を検査した。
+OCR は principal 2 名と quality 2 名で実行し、不正長とタプル不一致の複合入力による誤分類を修正した。
+修正後の独立した BPF_PROG_RUN 再現でも `tuple_mismatch` から `parse_failed` への変更と PASS の維持を確認した。
+終了ログと dispatcher の構造変更拒否テストも補い、未解決の指摘はない。
+
+#126 では、Timestamp オプションの解析不正による既存 DROP も `invalid_tcp` に含める。
+この失敗分岐もロード時に計装し、正常なオプション処理には命令を追加しない。
