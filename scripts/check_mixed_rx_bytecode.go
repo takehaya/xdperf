@@ -88,7 +88,7 @@ func compareNormal(a, b *ebpf.ProgramSpec, dispatch bool) {
 				panic(fmt.Sprintf("%s normal instruction differs: %d:%v -> %d:%v", a.Name, i, x, j, y))
 			}
 			ta, tb := ga.target(i), gb.target(j)
-			invalid := ga.source[i] == "if (hl < 20 || ip_end < l4 + hl || ip_end > inner.limit)"
+			invalid := ga.source[i] == "if (hl < 20 || ip_end < l4 + hl || ip_end > inner.limit)" || (strings.Contains(ga.source[i], "tcp_parse_timestamp(ctx") && x.OpCode.JumpOp() == asm.JSGT)
 			if ta == ca {
 				if tb != cb {
 					panic("cold target mismatch")
@@ -180,4 +180,20 @@ func main() {
 	}
 	compareNormal(a.Programs["xdp_rx_tcp_mixed"], b.Programs["xdp_rx_tcp_mixed"], false)
 	compareNormal(a.Programs["xdp_rx_mixed"], b.Programs["xdp_rx_mixed"], true)
+	if a.Programs["xdp_rx_tcp_mixed_ext"] != nil {
+		compareNormal(a.Programs["xdp_rx_tcp_mixed_ext"], b.Programs["xdp_rx_tcp_mixed_ext"], false)
+	}
+	if a.Programs["xdp_tx_tcp_mixed_ext"] != nil {
+		var x, y bytes.Buffer
+		if err := a.Programs["xdp_tx_tcp_mixed_ext"].Instructions.Marshal(&x, binary.LittleEndian); err != nil {
+			panic(err)
+		}
+		if err := b.Programs["xdp_tx_tcp_mixed_ext"].Instructions.Marshal(&y, binary.LittleEndian); err != nil {
+			panic(err)
+		}
+		if !bytes.Equal(x.Bytes(), y.Bytes()) {
+			panic("changed extended mixed TX")
+		}
+		fmt.Println("xdp_tx_tcp_mixed_ext: identical")
+	}
 }

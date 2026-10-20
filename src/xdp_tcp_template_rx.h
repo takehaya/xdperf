@@ -4,8 +4,7 @@
 #include "xdp_tcp_decap.h"
 #include "xdp_mixed_rx_stats.h"
 
-SEC("xdp")
-int xdp_rx_tcp_mixed(struct xdp_md *ctx)
+static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extended)
 {
     __u32 zero = 0;
     struct tcp_cfg *global = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
@@ -56,21 +55,36 @@ int xdp_rx_tcp_mixed(struct xdp_md *ctx)
                              .doff = th->doff,
                              .flags = ((__u8 *)th)[13],
                              .wscale = 0xff};
+    struct tcp_rx_timestamp ts = {0};
+    struct tcp_tx_extra extra = {0};
+    if (extended && mixed_has_timestamps && t->timestamps && tcp_parse_timestamp(ctx, l4, in.doff, &ts) < 0)
+        return XDP_DROP;
     if ((in.flags & (TCPF_SYN | TCPF_ACK)) == (TCPF_SYN | TCPF_ACK) && in.doff > 5) {
         tcp_parse_syn_opts(ctx, l4, in.doff, &in.wscale, &in.mss);
+        __u32 option_bytes = t->data_len;
+        if (extended && mixed_has_timestamps && t->timestamps && ts.has_timestamp)
+            option_bytes += 12;
         if (in.mss)
-            in.mss = in.mss > t->data_len ? in.mss - t->data_len : 1;
+            in.mss = in.mss > option_bytes ? in.mss - option_bytes : 1;
     }
     __sync_fetch_and_add(&f->rx_pkts, 1);
     struct tcp_rx_resp resp = {0};
-    tcp_rx_update(f, st, &in, t->cfg.mss, bpf_ktime_get_ns(), &resp);
+    tcp_rx_update(f, st, &in, t->cfg.mss, bpf_ktime_get_ns(), &resp, &ts, &extra,
+                  extended && mixed_has_timestamps && t->timestamps);
     if (!resp.flags)
         return XDP_DROP;
     struct tcp_tx_action act = {.seq = resp.seq, .ack = resp.ack, .flags = resp.flags, .src_port = dport};
     bpf_spin_lock(&f->lock);
     act.ip_id = f->ip_id++;
     bpf_spin_unlock(&f->lock);
-    if (tcp_template_build(ctx, t, cs, &act) < 0) {
+    int built;
+    if (extended)
+        built = tcp_template_build_ext(ctx, t, cs, &act, &extra);
+    else
+        built = tcp_template_build(ctx, t, cs, &act);
+    if (built >= 0 && extended)
+        built = tcp_template_finish(ctx, t, &act, &extra);
+    if (built < 0) {
         st->build_errors++;
         return XDP_DROP;
     }
@@ -79,7 +93,8 @@ int xdp_rx_tcp_mixed(struct xdp_md *ctx)
     __sync_fetch_and_add(&f->rx_replies, 1);
     return XDP_TX;
 unmatched:
-    mixed_rx_unmatched(ctx);
+    if (!extended)
+        mixed_rx_unmatched(ctx);
     if (inner.neighbor)
         return XDP_PASS;
     if (inner.outer_udp) {
@@ -88,5 +103,15 @@ unmatched:
             bpf_tail_call(ctx, &mixed_progs, 3);
     }
     return XDP_PASS;
+}
+SEC("xdp")
+int xdp_rx_tcp_mixed(struct xdp_md *ctx)
+{
+    return tcp_rx_mixed_run(ctx, 0);
+}
+SEC("xdp")
+int xdp_rx_tcp_mixed_ext(struct xdp_md *ctx)
+{
+    return tcp_rx_mixed_run(ctx, 1);
 }
 #endif

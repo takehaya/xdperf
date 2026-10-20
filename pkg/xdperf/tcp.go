@@ -343,7 +343,7 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 				}
 			}
 			for i := g.first; i < g.first+g.count; i++ {
-				vals[i].TemplateId = uint32(j)
+				vals[i].TemplateId = g.templateID(i, j)
 				vals[i].IpId = id
 			}
 		}
@@ -411,13 +411,13 @@ func (x *Xdperf) updateTCPCfg(fn func(*coreelf.BpfTcpCfg)) error {
 	}
 	fn(&cfg)
 	if x.mixed != nil {
-		for i := range x.mixed.groups {
+		for _, id := range x.mixed.templateIDs() {
 			var v coreelf.BpfTcpTemplate
-			if err := x.bpfobjs.TcpTemplateMap.Lookup(uint32(i), &v); err != nil {
+			if err := x.bpfobjs.TcpTemplateMap.Lookup(id, &v); err != nil {
 				return err
 			}
 			fn(&v.Cfg)
-			if err := x.bpfobjs.TcpTemplateMap.Put(uint32(i), v); err != nil {
+			if err := x.bpfobjs.TcpTemplateMap.Put(id, v); err != nil {
 				return err
 			}
 		}
@@ -548,12 +548,15 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	}
 
 	if x.mixed != nil {
-		for i := range x.mixed.groups {
+		for _, id := range x.mixed.templateIDs() {
 			var v coreelf.BpfTcpTemplate
-			if err := x.bpfobjs.TcpTemplateMap.Lookup(uint32(i), &v); err != nil {
+			if err := x.bpfobjs.TcpTemplateMap.Lookup(id, &v); err != nil {
 				return err
 			}
 			n := int(v.Cfg.HdrLen) + max(int(v.DataLen)+int(v.Cfg.Mss), int(v.SynLen))
+			if v.Timestamps != 0 {
+				n += 12
+			}
 			if n > len(template) {
 				template = append(template, make([]byte, n-len(template))...)
 			}

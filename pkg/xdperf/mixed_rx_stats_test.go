@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
 	"testing"
 
@@ -12,20 +13,24 @@ import (
 )
 
 func TestMixedRXDiagnostics(t *testing.T) {
-	objs, spec, err := coreelf.ReadBaseCollectionWithSizes(map[string]any{"swap_resp": uint32(0)}, map[string]uint32{"diff_map": 1})
+	for _, extended := range []bool{false, true} {
+		t.Run(fmt.Sprintf("extended=%v", extended), func(t *testing.T) { testMixedRXDiagnostics(t, extended) })
+	}
+}
+func testMixedRXDiagnostics(t *testing.T, extended bool) {
+	spec, err := coreelf.LoadBpf()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer objs.Close()
-	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfobjs: objs, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
+	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
 	r := mixedResponse()
 	r.VariablePacketTemplate.Variants[1].Base = tcpTestBase(false, 0)
+	r.VariablePacketTemplate.Variants[1].TCPFlow.Timestamps = extended
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
 	}
-	if err := coreelf.LoadMixedProgramsWithFeatures(objs, spec, x.mixed.features); err != nil {
-		t.Fatal(err)
-	}
+	objs := loadMixedTestObjects(t, x.mixed.features)
+	x.bpfobjs = objs
 	target, err := parseTCPVariant(x.mixed.groups[0].variant)
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +116,20 @@ func TestMixedRXDiagnostics(t *testing.T) {
 		{"mpls_nd", rxTunnel("mpls-one", nd), 3, 2},
 		{"tunnel_udp", rxTunnel("gre-key", rxIP(false, 17, udp)), 4, 2},
 		{"icmp", rxEther(0x800, rxIP(false, 1, make([]byte, 8))), 4, 2},
+	}
+	if extended {
+		for _, opts := range [][]byte{{8, 2, 0, 0}, append(timestampOption(1), timestampOption(2)...)} {
+			b := append([]byte(nil), ip...)
+			b = append(b, opts...)
+			b[3] = byte(len(b))
+			b[32] = byte((20+len(opts))/4) << 4
+			cases = append(cases, struct {
+				name   string
+				frame  []byte
+				reason int
+				action uint32
+			}{fmt.Sprintf("invalid_timestamp_%d", len(opts)), rxTunnel("bare", b), 5, 1})
+		}
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

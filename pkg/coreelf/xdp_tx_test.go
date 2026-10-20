@@ -12,18 +12,18 @@ import (
 
 const (
 	xdpTx               = 3          // XDP_TX return code
-	lastBaseIdxSentinel  = 0xFFFFFFFF // Must match pkt_state initial value
+	lastBaseIdxSentinel = 0xFFFFFFFF // Must match pkt_state initial value
 )
 
 func loadWithDiffMap(t *testing.T, diffMapSize uint32) *BpfObjects {
 	t.Helper()
-	objs, _, err := ReadCollection(defaultConsts(), diffMapSize)
+	objs, _, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": diffMapSize})
 	if err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
-			t.Fatalf("ReadCollection failed: %+v", ve)
+			t.Fatalf("ReadBaseCollectionWithSizes failed: %+v", ve)
 		}
-		t.Fatalf("ReadCollection failed: %v", err)
+		t.Fatalf("ReadBaseCollectionWithSizes failed: %v", err)
 	}
 	t.Cleanup(func() { objs.Close() })
 	return objs
@@ -335,8 +335,8 @@ func TestXdpTxCopyOnBaseChange(t *testing.T) {
 	objs := loadWithDiffMap(t, 2)
 
 	// Build two different base packets
-	basePkt0 := buildUDPPacket(t, 80)   // base 0: port 80
-	basePkt1 := buildUDPPacket(t, 443)  // base 1: port 443
+	basePkt0 := buildUDPPacket(t, 80)  // base 0: port 80
+	basePkt1 := buildUDPPacket(t, 443) // base 1: port 443
 	pktLen := len(basePkt0)
 
 	numCPUs := ebpf.MustPossibleCPU()
@@ -559,7 +559,7 @@ func TestXdpTxLenChanged(t *testing.T) {
 	objs := loadWithDiffMap(t, 1)
 
 	basePkt := buildUDPPacketSized(t, 80, 128) // base is 128B
-	targetLen := 192                            // target is 192B (len_changed=1)
+	targetLen := 192                           // target is 192B (len_changed=1)
 
 	entry := makeDiffEntry(basePkt, uint16(targetLen), 8080, true)
 	setupSingleBase(t, objs, basePkt, []BpfDiffEntry{entry})

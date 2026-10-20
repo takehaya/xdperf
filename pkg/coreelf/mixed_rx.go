@@ -6,6 +6,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 )
 
 // PrepareMixedRXDiagnostics redirects only the existing invalid-header edges.
@@ -13,20 +14,39 @@ import (
 // Call this before manually loading mixed programs obtained from LoadBpf; the
 // collection readers and LoadMixedProgramsWithFeatures already do so.
 func PrepareMixedRXDiagnostics(spec *ebpf.CollectionSpec) error {
-	p := spec.Programs["xdp_rx_tcp_mixed"]
+	for _, name := range []string{"xdp_rx_tcp_mixed", "xdp_rx_tcp_mixed_ext"} {
+		p, ok := spec.Programs[name]
+		if !ok && name == "xdp_rx_tcp_mixed_ext" {
+			continue
+		}
+		if name == "xdp_rx_tcp_mixed_ext" && p != nil {
+			if err := prepareExtendedRXUnmatched(p, spec.Programs["xdp_rx_tcp_mixed"]); err != nil {
+				return err
+			}
+		}
+		if err := prepareMixedRXProgram(p); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return prepareMixedRXDispatcher(spec)
+}
+
+func prepareMixedRXProgram(p *ebpf.ProgramSpec) error {
 	if p == nil {
 		return fmt.Errorf("mixed RX program missing")
 	}
 	const label = "mixed_rx_invalid_count"
 	for _, ins := range p.Instructions {
 		if ins.Symbol() == label {
-			return prepareMixedRXDispatcher(spec)
+			return nil
 		}
 	}
 	// BTF source lines survive bpf2go's debug stripping. Fail closed if compiler
 	// changes invalidate this shape, rather than silently leaving drops uncounted.
 	const condition = "if (hl < 20 || ip_end < l4 + hl || ip_end > inner.limit)"
 	var edges []int
+	timestampEdges := 0
+	timestampCall := false
 	source := ""
 	mainEnd, mainSlots := 0, 0
 	offset := 0
@@ -38,7 +58,7 @@ func PrepareMixedRXDiagnostics(spec *ebpf.CollectionSpec) error {
 		if ins.Symbol() == "mixed_rx_count" {
 			countFound = true
 		}
-		if i > 0 && mainEnd == 0 && ins.Symbol() != "" {
+		if i > 0 && mainEnd == 0 && btf.FuncMetadata(&ins) != nil {
 			mainEnd = i
 			mainSlots = offset
 		}
@@ -56,9 +76,19 @@ func PrepareMixedRXDiagnostics(spec *ebpf.CollectionSpec) error {
 			target = dest
 			edges = append(edges, i)
 		}
+		if mainEnd == 0 && ins.IsFunctionCall() && ins.Reference() == "tcp_parse_timestamp" {
+			timestampCall = true
+		}
+		if mainEnd == 0 && strings.Contains(source, "tcp_parse_timestamp(ctx") && ins.OpCode == asm.JSGT.Op(asm.RegSource) && ins.Dst == asm.R1 && ins.Src == asm.R0 {
+			if target != offset+1+int(ins.Offset) {
+				return fmt.Errorf("mixed RX timestamp return changed")
+			}
+			edges = append(edges, i)
+			timestampEdges++
+		}
 		offset += int(ins.Size() / asm.InstructionSize)
 	}
-	if len(edges) != 3 || mainEnd == 0 || !countFound {
+	if len(edges)-timestampEdges != 3 || mainEnd == 0 || !countFound || (timestampCall && timestampEdges != 1) || (!timestampCall && timestampEdges != 0) {
 		return fmt.Errorf("mixed RX diagnostic shape changed: branches=%d main=%d counter=%v", len(edges), mainEnd, countFound)
 	}
 	// The old shared return must copy the preselected verdict to r0 and exit.
@@ -97,7 +127,7 @@ func PrepareMixedRXDiagnostics(spec *ebpf.CollectionSpec) error {
 		updated[i].Offset = int16(distance)
 	}
 	p.Instructions = updated
-	return prepareMixedRXDispatcher(spec)
+	return nil
 }
 
 // Dispatcher PASS edges share an exit with the tail-call failure (ABORTED)
@@ -165,6 +195,108 @@ func prepareMixedRXDispatcher(spec *ebpf.CollectionSpec) error {
 	}
 	updated = append(updated, asm.Call.Label("mixed_rx_outer").WithSymbol(label), asm.Mov.Imm(asm.R0, 2), asm.Return())
 	updated = append(updated, account.Instructions[firstSub:]...)
+	p.Instructions = updated
+	return nil
+}
+
+// The extended entry point keeps its original C instructions. Recover ctx from
+// its existing UDP tail-call argument, then return to the original unmatched
+// block after diagnostics. No normal-path instruction or stack slot is added.
+func prepareExtendedRXUnmatched(p, legacy *ebpf.ProgramSpec) error {
+	const label = "mixed_rx_unmatched_count"
+	for _, ins := range p.Instructions {
+		if ins.Symbol() == label {
+			return nil
+		}
+	}
+	offset, mainEnd, mainSlots, target := 0, 0, 0, -1
+	source := ""
+	offsets := make([]int, len(p.Instructions))
+	var context asm.Instruction
+	tailCalls := 0
+	for i, ins := range p.Instructions {
+		offsets[i] = offset
+		if i > 0 && mainEnd == 0 && btf.FuncMetadata(&ins) != nil {
+			mainEnd = i
+			mainSlots = offset
+		}
+		if ins.Source() != nil {
+			source = strings.TrimSpace(ins.Source().String())
+		}
+		if mainEnd == 0 && source == "if (!parsed)" && ins.OpCode == asm.JEq.Op(asm.ImmSource) && ins.Constant == 0 {
+			target = offset + 1 + int(ins.Offset)
+		}
+		if mainEnd == 0 && ins.OpCode == asm.Call.Op(asm.ImmSource) && ins.Constant == int64(asm.FnTailCall) {
+			tailCalls++
+			for j := i - 1; j >= 0; j-- {
+				if p.Instructions[j].Dst == asm.R1 {
+					context = p.Instructions[j]
+					break
+				}
+			}
+		}
+		offset += int(ins.Size() / asm.InstructionSize)
+	}
+	validContext := context.OpCode == asm.LoadMemOp(asm.DWord) && context.Dst == asm.R1 && context.Src == asm.RFP
+	validContext = validContext || (context.OpCode == asm.Mov.Op(asm.RegSource) && context.Dst == asm.R1 && context.Src >= asm.R6 && context.Src <= asm.R9)
+	if target < 0 || mainEnd == 0 || tailCalls != 1 || !validContext {
+		return fmt.Errorf("extended RX unmatched/context shape changed")
+	}
+	targetIndex := -1
+	for i, off := range offsets[:mainEnd] {
+		if off == target {
+			targetIndex = i
+			break
+		}
+	}
+	if targetIndex < 0 {
+		return fmt.Errorf("extended RX unmatched target missing")
+	}
+	neighborCheck := false
+	for i := targetIndex; i < targetIndex+3 && i < mainEnd; i++ {
+		if p.Instructions[i].Source() != nil && strings.TrimSpace(p.Instructions[i].Source().String()) == "if (inner.neighbor)" {
+			neighborCheck = true
+		}
+	}
+	if !neighborCheck {
+		return fmt.Errorf("extended RX unmatched neighbor check changed")
+	}
+	context.Metadata = asm.Metadata{}
+	updated := append(asm.Instructions(nil), p.Instructions[:mainEnd]...)
+	updated[targetIndex] = updated[targetIndex].WithSymbol("mixed_rx_original_unmatched")
+	edges := 0
+	for i, ins := range updated {
+		if ins.OpCode.Class().IsJump() && ins.OpCode.JumpOp() != asm.Call && ins.OpCode.JumpOp() != asm.Exit && offsets[i]+1+int(ins.Offset) == target {
+			distance := mainSlots - offsets[i] - 1
+			if distance < 0 || distance > 32767 {
+				return fmt.Errorf("extended RX unmatched branch out of range")
+			}
+			updated[i].Offset = int16(distance)
+			edges++
+		}
+	}
+	if edges == 0 {
+		return fmt.Errorf("extended RX unmatched edges missing")
+	}
+	updated = append(updated, context.WithSymbol(label), asm.Call.Label("mixed_rx_unmatched"), asm.Ja.Label("mixed_rx_original_unmatched"))
+	updated = append(updated, p.Instructions[mainEnd:]...)
+	for _, name := range []string{"mixed_rx_unmatched", "mixed_rx_terminal", "mixed_rx_count"} {
+		first, last := -1, len(legacy.Instructions)
+		for i, ins := range legacy.Instructions {
+			if ins.Symbol() == name {
+				first = i
+				continue
+			}
+			if first >= 0 && i > first && btf.FuncMetadata(&ins) != nil {
+				last = i
+				break
+			}
+		}
+		if first < 0 {
+			return fmt.Errorf("legacy RX diagnostic function %s missing", name)
+		}
+		updated = append(updated, legacy.Instructions[first:last]...)
+	}
 	p.Instructions = updated
 	return nil
 }

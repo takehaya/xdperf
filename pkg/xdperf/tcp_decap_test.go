@@ -188,12 +188,11 @@ func rxTunnel(name string, inner []byte) []byte {
 }
 
 func TestTCPReceiveTunnels(t *testing.T) {
-	objs, spec, err := coreelf.ReadBaseCollectionWithSizes(map[string]any{"swap_resp": uint32(0)}, map[string]uint32{"diff_map": 100})
+	spec, err := coreelf.LoadBpf()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer objs.Close()
-	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfobjs: objs, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
+	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
 	r := mixedResponse()
 	r.VariablePacketTemplate.Variants = r.VariablePacketTemplate.Variants[:1]
 	for _, v6 := range []bool{false, true} {
@@ -202,9 +201,8 @@ func TestTCPReceiveTunnels(t *testing.T) {
 	if err = x.prepareMixed(r); err != nil {
 		t.Fatal(err)
 	}
-	if err = coreelf.LoadMixedProgramsWithFeatures(objs, spec, x.mixed.features); err != nil {
-		t.Fatal(err)
-	}
+	objs := loadMixedTestObjects(t, x.mixed.features)
+	x.bpfobjs = objs
 	target, err := parseTCPVariant(x.mixed.groups[0].variant)
 	if err != nil {
 		t.Fatal(err)

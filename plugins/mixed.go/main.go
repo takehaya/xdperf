@@ -29,6 +29,9 @@ func plugin_process(_, _, _, _ uint32) int32 {
 		LargeBytes       string                  `json:"large_bytes" default:"67108864"`
 		PacketWeight     uint32                  `json:"packet_weight" default:"3"`
 		TCPWeight        uint32                  `json:"tcp_weight" default:"1"`
+		Timestamps       bool                    `json:"timestamps"`
+		PayloadPattern   []byte                  `json:"payload_pattern"`
+		FlowParams       []guest.VariableParams  `json:"flow_variable_params"`
 		TCPBase          guest.BasePacket        `json:"tcp_base"`
 		SynOptions       []byte                  `json:"syn_options"`
 		DataOptions      []byte                  `json:"data_options"`
@@ -53,7 +56,7 @@ func plugin_process(_, _, _, _ uint32) int32 {
 		TemplateType: guest.GeneratorTemplateTypeVariable,
 		VariablePacketTemplate: guest.PacketVariantSet{Pattern: guest.VariantSelectionModeMixed, Variants: []guest.PacketVariant{
 			{Kind: "packet", Weight: req.PacketWeight, Base: guest.BasePacket{Data: packet, Length: uint16(len(packet))}, Checksums: guest.IPv4UDPChecksumSpecs(uint16(off) - guest.IPv4HeaderLen)},
-			{Kind: "tcp_flow", Weight: req.TCPWeight, Base: req.TCPBase, TCPFlow: &guest.TCPFlowVariant{Destination: destination, SynOptions: req.SynOptions, DataOptions: req.DataOptions, Encapsulation: req.TCPEncapsulation, Flows: flows}},
+			{Kind: "tcp_flow", Weight: req.TCPWeight, Base: req.TCPBase, Params: req.FlowParams, TCPFlow: &guest.TCPFlowVariant{Timestamps: req.Timestamps, PayloadPattern: req.PayloadPattern, Destination: destination, SynOptions: req.SynOptions, DataOptions: req.DataOptions, Encapsulation: req.TCPEncapsulation, Flows: flows}},
 		}},
 	})
 	return 1

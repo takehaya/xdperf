@@ -180,7 +180,7 @@ sudo examples/tcpstream/teardown.sh
 | `rx_tuple_mismatch` | 宛先ポートはフロー範囲内だが IP の版、アドレス、送信元ポート等がひな型と一致しない。終了時に警告する |
 | `rx_neighbor` | 外側・内側の ARP または IPv6 ND (ICMPv6 type 133–137) を PASS した数 |
 | `rx_other` | 通常の UDP や ICMP 等、TCP 以外の通信 |
-| `rx_invalid_tcp` | フローと照合後、TCP ヘッダ長と IP 長の検査で DROP した数 |
+| `rx_invalid_tcp` | フローと照合後、TCP ヘッダ長、IP 長、Timestamp オプションの形式検査で DROP した数 |
 
 `rx_tuple_mismatch` が増えた場合は、まずフローレポートと対照し、対向の待ち受けポート、IPv4/IPv6、送受信アドレス、NAT による書き換え、同じ宛先ポートを使う別通信を確認する。
 応答が不足している場合は `rx_parse_failed` と `rx_invalid_tcp` も確認し、未対応トンネルやヘッダ形式、MTU による断片化、対向のトンネル設定を調べる。

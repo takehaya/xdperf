@@ -59,13 +59,13 @@ var (
 
 func loadTCPObjs(t *testing.T) *BpfObjects {
 	t.Helper()
-	objs, _, err := ReadCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1, "tcp_srv_flow_map": 1024})
+	objs, _, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1, "tcp_srv_flow_map": 1024})
 	if err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
-			t.Fatalf("ReadCollection failed: %+v", ve)
+			t.Fatalf("ReadBaseCollectionWithSizes failed: %+v", ve)
 		}
-		t.Fatalf("ReadCollection failed: %v", err)
+		t.Fatalf("ReadBaseCollectionWithSizes failed: %v", err)
 	}
 	t.Cleanup(func() { objs.Close() })
 	return objs

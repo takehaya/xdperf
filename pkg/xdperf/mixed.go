@@ -42,6 +42,7 @@ func decimalUint64(s string) (uint64, error) {
 
 type mixedGroup struct {
 	weight, first, count uint32
+	templateFirst        uint32
 	variant              guest.PacketVariant
 }
 type mixedPlan struct {
@@ -87,6 +88,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	var targets []uint64
 	var destination string
 	var total uint64
+	nextTemplate := uint32(16)
 	for i, v := range set.Variants {
 		if v.Weight == 0 {
 			return fmt.Errorf("mixed variant %d requires positive weight", i)
@@ -101,9 +103,18 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 			continue
 		}
 		f := v.TCPFlow
-		if f == nil || len(f.Flows) == 0 || len(v.Params) != 0 || len(v.Checksums) != 0 {
-			return fmt.Errorf("TCP variant %d requires flows and cannot contain variable_params or checksums", i)
+		if f == nil || len(f.Flows) == 0 || len(v.Checksums) != 0 {
+			return fmt.Errorf("TCP variant %d requires flows and cannot contain checksums", i)
 		}
+		if err := validateTCPFlowParams(v); err != nil {
+			return fmt.Errorf("TCP variant %d: %w", i, err)
+		}
+		payload, err := tcpPayload(f.PayloadPattern)
+		if err != nil {
+			return err
+		}
+		plan.features.Payload = plan.features.Payload || payload.Period != 0
+		plan.features.Timestamps = plan.features.Timestamps || f.Timestamps
 		if f.Encapsulation != nil && len(v.Base.Data) == 0 {
 			return fmt.Errorf("encapsulation requires base_packet")
 		}
@@ -141,10 +152,10 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 				}
 			}
 		}
-		if _, err := tcpStaticOptions(f.SynOptions, true); err != nil {
+		if _, err := tcpFlowOptions(f, true); err != nil {
 			return err
 		}
-		if _, err := tcpStaticOptions(f.DataOptions, false); err != nil {
+		if _, err := tcpFlowOptions(f, false); err != nil {
 			return err
 		}
 		host, port, err := net.SplitHostPort(dest)
@@ -159,7 +170,13 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		if x.cfg.TCPPortBase < 1 || x.cfg.TCPPortBase > 65535 || len(f.Flows) > 65536-x.cfg.TCPPortBase-len(targets) {
 			return fmt.Errorf("TCP flows exceed source port capacity")
 		}
-		plan.groups = append(plan.groups, mixedGroup{weight: v.Weight, first: uint32(len(targets)), count: uint32(len(f.Flows)), variant: v})
+		group := mixedGroup{weight: v.Weight, first: uint32(len(targets)), count: uint32(len(f.Flows)), variant: v}
+		if len(v.Params) != 0 {
+			group.templateFirst = nextTemplate
+			nextTemplate += group.count
+			plan.features.TemplateEntries = nextTemplate
+		}
+		plan.groups = append(plan.groups, group)
 		for _, flow := range f.Flows {
 			b, err := decimalUint64(flow.Bytes)
 			if err != nil {

@@ -196,12 +196,11 @@ func TestTCPZeroUDPEncapBPF(t *testing.T) { testTCPEncapBPF(t, "zero") }
 func TestTCPMPLSOnlyBPF(t *testing.T)     { testTCPEncapBPF(t, "mpls") }
 
 func testTCPEncapBPF(t *testing.T, profile string) {
-	objs, spec, err := coreelf.ReadBaseCollectionWithSizes(map[string]any{"swap_resp": uint32(0)}, map[string]uint32{"diff_map": 100})
+	spec, err := coreelf.LoadBpf()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer objs.Close()
-	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfobjs: objs, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
+	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
 	x.cfg.TCPIPID = "shared"
 	r := mixedResponse()
 	r.VariablePacketTemplate.Variants = r.VariablePacketTemplate.Variants[:1]
@@ -233,9 +232,8 @@ func testTCPEncapBPF(t *testing.T, profile string) {
 	if profile == "mpls" && x.mixed.features != (coreelf.MixedProgramFeatures{}) {
 		t.Fatalf("MPLS-only template must not require envelope edits: %+v", x.mixed.features)
 	}
-	if err := coreelf.LoadMixedProgramsWithFeatures(objs, spec, x.mixed.features); err != nil {
-		t.Fatal(err)
-	}
+	objs := loadMixedTestObjects(t, x.mixed.features)
+	x.bpfobjs = objs
 	target, err := parseTCPVariant(x.mixed.groups[0].variant)
 	if err != nil {
 		t.Fatal(err)
@@ -389,11 +387,7 @@ func TestTCPKnownTunnelParsers(t *testing.T) {
 }
 
 func TestMixedUDPOptionsAccounting(t *testing.T) {
-	objs, _, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer objs.Close()
+	objs := loadMixedTestObjects(t, coreelf.MixedProgramFeatures{Lengths: 8, OuterIPs: 4, UDPs: 4, LCO: true})
 	if err := objs.MixedCfgMap.Put(uint32(0), coreelf.BpfMixedCfg{Receive: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -491,11 +485,7 @@ func TestTCPGTPSequenceRejected(t *testing.T) {
 }
 
 func TestMixedTunnelNeighborPass(t *testing.T) {
-	objs, _, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer objs.Close()
+	objs := loadMixedTestObjects(t, coreelf.MixedProgramFeatures{Lengths: 8, OuterIPs: 4, UDPs: 4, LCO: true})
 	if err := objs.MixedCfgMap.Put(uint32(0), coreelf.BpfMixedCfg{Receive: 1}); err != nil {
 		t.Fatal(err)
 	}

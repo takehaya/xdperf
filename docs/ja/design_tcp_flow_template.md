@@ -11,7 +11,7 @@
 | 1 | グループ別 base_packet、Ethernet、VLAN 最大 2 段、IPv4/IPv6、固定 TCP オプション | feat/tcp-flow-template |
 | 2 | 256 バイトのひな型、汎用 TX 修正表、VXLAN/GENEVE RX、VXLAN E2E | feat/tcp-flow-encap |
 | 3 | SRv6、GTP-U、GRE、IPIP、MPLS の RX | feat/tcp-flow-rx-tunnels |
-| 4 | Timestamps、ペイロードパターン、フロー別 variable_params | 設計のみ |
+| 4 | Timestamps、ペイロードパターン、フロー別 variable_params | feat/tcp-flow-payload |
 
 `--tcp-server` のトンネル対応は対象外とする。
 `--tcp` と packet 専用の TX/RX は従来の入口を維持する。
@@ -187,6 +187,29 @@ helper を呼ぶときは bpf_spin_lock を保持しない。
 拒否された場合は verifier ログから可変スタックアクセスと状態数を調べる。
 
 ## 段階 4 の設計
+
+### 段階 4 の実装計画（ジョブ C）
+
+段階 4 は `feat/tcp-flow-payload` で実装し、PR の base を `feat/tcp-flow-rx-tunnels` とする。
+以下の三機能を同じテンプレート生成経路に追加する。
+未使用時は起動時に設定する BPF 定数で分岐と補助関数を検証対象から除き、通常 TCP と packet 専用の入口に処理を追加しない。
+
+- **Timestamps**：`tcp_flow.timestamps` だけをプラグインの指定とする。SYN と通常セグメントのオプション先頭に 12 バイト（NOP、NOP、kind=8、length=10、TSval、TSecr）をエンジンが生成する。SYN-ACK で合意しなければ以後は付けない。TSval は単調時計のミリ秒を 32 bit に切り詰め、フローロック内で非減少にする。TSecr と PAWS 用の TS.Recent をフロー状態に保持する。[RFC 7323](https://www.rfc-editor.org/rfc/rfc7323.html) に従い、古い timestamp と合意後の timestamp 欠落は状態更新から除き、RST は timestamp の有無で排除しない。24 日を超える TS.Recent は失効させる。オプションの合計は 40 バイト以下に制限し、EOL より前にエンジンのオプションを置く。
+- **ペイロードパターン**：`tcp_flow.payload_pattern` を最大 256 バイトの base64 列とする。未指定と全ゼロは既存のゼロ生成へ正規化する。送信決定と同じフローロック内で `bytes_acked + uint32(seq - snd_una)` を求め、64 bit のストリーム位置から繰り返しパターンを選ぶ。再送、短い末尾、4 GiB 超、seq ラップで同じ内容を生成する。パターンの繰り返しを最大 512 バイトの偶数周期へ拡張し、16 bit 語の部分和を起動時に用意する。チェックサムは周期和と端数の差分で求め、送信時の書き込みだけをペイロード長に比例させる。外側 UDP の LCO は既存の内側 TCP チェックサムを使う。
+- **フロー別 variable_params**：明示的な base_packet を必須とし、起動時に sequential または mixed を一度だけ評価する。まず安全な許可範囲として内側送信元 IP のバイト部分範囲を扱う。宛先、ヘッダ構造、長さ、ポート、オプション、チェックサムなどのエンジン所有領域は拒否する。各フローの確定済みテンプレートと擬似ヘッダ和を既存テンプレートマップに展開し、RX も同じ値で照合する。追加 lookup は不要とする。マップは必要なエントリ数にだけ拡張し、値領域を 64 MiB 以下に制限する。drain/abort と再送も展開済みテンプレートを使う。
+
+variable_params の任意オフセットを一括で許可すると、カプセル化識別子と受信照合、外側 UDP 擬似ヘッダ和の所有権が曖昧になる。
+このため段階 4 の初期 API は内側送信元 IP に限定し、未対応範囲は明示的なエラーにする。
+全フロー分のペイロード部分和を複製するとメモリが増えるため、パターンは最大 16 個のグループ別マップに分離する。
+
+検証は Go の入力検査、BPF_PROG_RUN による生成バイト列と独立チェックサム照合、Linux TCP 対向の veth E2E を組み合わせる。
+Timestamps の合意と非合意、SYN 再送、PAWS、timestamp のラップ、再送時の同一ペイロード、フロー別 IP による RX の正負照合を含める。
+全 sudo race テスト、全 examples、lint、OCR を完了して PR を作成し、Copilot と CI を確認する。
+
+性能は既存 mixbench と同じ veth、CPU 配置、MSS、window、batch を用い、未使用の既存混合 TCP と packet 専用を比較する。
+6 ブロックで条件順と base/head 順を無作為化し、各対は隣接実行する。
+スループットと起動時間について対応差の平均と両側 95% CI（t 分布）を報告し、CI が広い場合は同等と断定しない。
+生データとビルド物は `out/job-c/`、`out/mixbench/` と既存 scratchpad の `mixbench/tcp-flow-payload/` に保存し、Git には結果表、小さな summary CSV、検算スクリプトだけを残す。
 
 `tcp_flow.timestamps: true` はエンジン生成の TSval/TSecr を有効にする。
 SYN でネゴシエーションし、未対応の相手には送らない。
@@ -623,6 +646,175 @@ Git に残すのは [summary.csv](benchmarks/tcp-rx-tunnels/summary.csv) と検�
 `report.py` は summary から上の表を生成する。
 実行手順と保存内容は [測定 README](benchmarks/tcp-rx-tunnels/README.md) に記載した。
 
+
+## 段階 4 の実装仕様
+
+### 専用入口とフロー別テンプレート
+
+`timestamps` または非ゼロの `payload_pattern` を含む集合だけが、拡張用の混合 TCP TX/RX 入口をロードする。
+指定しない集合と全ゼロのパターンは従来の入口を使う。
+通常 TCP と packet 専用の入口から、拡張 builder とペイロード生成器を呼ばない。
+variable_params だけを使う場合も従来の混合入口で処理できる。
+
+グループ用のテンプレート番号 0〜15 を残し、variable_params を持つグループのフローには 16 以降を割り当てる。
+展開された値は既存マップに置くため、TX と RX の lookup 数は増えない。
+必要なエントリ数のマップはプラグイン検査後、worker と RX の起動前に作り直す。
+値領域の上限は 64 MiB で、パターンは 16 エントリの別マップに置き、テンプレートの payload_id から共有する。
+終了時の drain/abort も展開された全テンプレートへ伝える。
+
+### プラグインの指定と制限
+
+次は TCP バリアントの追加フィールドの例であり、base_packet の内側 IPv4 ヘッダが Ethernet 直後にある場合を示す。
+variable_params は tcp_flow の内側ではなくバリアント直下に置く。
+
+```json
+{
+  "variable_params": [
+    {
+      "byte_start": 26,
+      "byte_size": 4,
+      "byte_range": {"start": 3221225995, "end": 3221225998},
+      "pattern_type": "sequential"
+    }
+  ],
+  "tcp_flow": {
+    "timestamps": true,
+    "payload_pattern": "ASP+",
+    "flows": [{"bytes": "4097"}, {"bytes": "65539"}]
+  }
+}
+```
+
+内側送信元 IP の部分範囲を、既存 SDK と同じネットワークバイト順で指定する。
+byte_size は 1、2、4、6、8 に対応し、範囲外の値、重なり、未定義の pattern_type を拒否する。
+sequential はフロー順に進めて範囲末尾で戻り、mixed は起動時にフローごとに抽選する。
+実際に生成されたアドレスが unspecified または multicast になった場合も起動を拒否する。
+変更できる範囲が送信元アドレスだけなので、base_packet から指定した destination は変化しない。
+
+Timestamps の 12 バイトは SYN/通常オプションの先頭に追加する。
+MSS/WS の 8 バイトと合わせ、ユーザーの SYN オプションは最大 20 バイト、通常オプションは最大 28 バイトとなる。
+相手が Timestamps を拒否した場合、以後のオプションには追加しないが、ローカル MSS で予約した 12 バイトは戻さない。
+RTT による RTO の動的推定は追加せず、既存の再送タイマーを使う。
+
+ペイロードは stream_offset に対応する繰り返し列であり、TCP シーケンス番号の下位 32 bit をパターン位置に流用しない。
+奇数長のパターンは 2 周分へ拡張して偶数周期とし、部分和を使うときに開始位置のバイト位相を補正する。
+TCP builder が戻った後、外側 IP/UDP の修正、16 バイト単位の bpf_loop によるペイロード書き込みを順に実行する。
+これにより builder、カプセル化修正、書き込み、callback の各フレームを必要以上に同時に積まず、512 バイト制限を守る。
+`bpf_loop` は既存の packet チェックサム経路でも使用している helper であり、新しいカーネル最低要件を加えない。
+
+[追加 E2E](../../examples/tcp-payload/README.md) は、Linux TCP 相手に IPv4/IPv6 のそれぞれで合意、非合意、パターン、フロー別 IP、併用、ACK 損失下の併用を実行する。
+受信側は recv の分割位置とは独立に全バイトを検査し、4 フローの完了と 77,830 バイトを照合する。
+トンネル内のパターン、Timestamps、LCO、go-back-N と RTO の再送は BPF_PROG_RUN で検査する。
+
+PAWS の古い timestamp 拒否と timestamp 欠落、peer と送信側の 32 bit ラップ、古い時刻観測の抑制、FIN と最終 ACK、非合意時の data/FIN を BPF_PROG_RUN で検査した。
+24 日経過した TS.Recent の失効境界は、このホストで時刻を制御して直接実行しておらず、未検証の範囲として残す。
+
+
+### 段階 4 のローカル検証
+
+Go 1.25.5 による `make test`（sudo、race）は全パッケージで成功した。
+全 14 examples、初期化テスト、lint も成功した。
+追加した Timestamps の境界テストは、全体実行に加えて sudo race で再実行した。
+OCR は principal 2 名と quality 2 名の独立レビューを実施し、実装不具合の指摘は 0 件だった。
+時計の検証不足に対して FIN、最終 ACK、非合意時の data/FIN、古い観測のクランプ、送信 TSval のラップを追加し、24 日失効の直接検証は上記のとおり未実施としている。
+
+フロー値のサイズは 120 から 136 バイトへ増え、65,536 エントリの値領域が 1,048,576 バイト増える。
+グループ別パターンマップの値領域は 1,544 × 16 = 24,704 バイトである。
+これらは未使用モードでも確保される領域であり、起動時間の比較に含まれる。
+フロー別テンプレートの値は 632 バイトで、variable_params を使う場合だけ既定の 16 エントリから必要数へ拡張する。
+
+
+### Linux 6.1/6.6 のスタック修正
+
+初回の先行 CI では、従来の混合 RX と多段のカプセル化修正を組み合わせると、累積スタックが 544 バイトとなり、古いカーネルの 512 バイト上限で拒否された。
+Timestamps とパターン用の値を従来の action、RX 入力、RX 応答から独立させ、未使用時にはそのスタックを確保しない構成へ変更した。
+拡張 builder の外側修正も呼び出し元へ戻してから実行し、共有 IPv4 ID は builder が採番した値を別の状態に渡して保持する。
+通常 packet、通常 TCP、従来の混合 TCP の入口は、ELF 関数の命令数が比較元と同じになった。
+
+この CI 失敗により、最初の性能測定は途中で中断し、`out/mixbench/pilot-pre-stack-fix/` に保存して正式集計から除外した。
+性能指標を見て打ち切ったものではなく、修正後に同じ事前指定の 6 ブロックを最初から実行する。
+
+同じ旧カーネルの次の検査では、helper の呼び出し後に l4 の上限情報が失われ、オプションの直接書き込みも拒否された。
+有効値が最大 268 のオプション位置と最大 216 の内側 IP 位置に、値を変えない明示的な範囲制約を加えた。
+拡張 RX のトンネル ACK についても長さ、TSecr、LCO、共有/フロー別 IPv4 ID を追加検証した。
+
+
+## 段階 4 の測定記録
+
+### 環境と対応比較
+
+比較元は `9117909`（`feat/tcp-flow-rx-tunnels`）、変更後は `9e9e9d2` であり、Go 1.25.5 でビルドした。
+Linux `7.0.0-38-generic`、AMD EPYC 7713P を公開する 32 vCPU の KVM VM 上で Linux veth を使用した。
+packet 専用、既存の混合 packet:TCP=3:1（mixed31）、非カプセル化ひな型、VXLAN、GENEVE の 5 条件を、1/4 worker で各 8 秒測った。
+追加機能を使わない既存トラフィックを比較し、TCP は 4 フロー、MSS 1024、window 32、batch 64、pool 128、外側 UDP チェックサムは LCO とした。
+worker CPU は 4 または 4〜7、送信プロセスの他スレッドは 4〜11、sink は 12〜15 に固定した。
+seed 121123 で各ブロックの条件順と base/head 順を無作為化し、対応する 2 試行を隣接実行した。
+事前指定の 6 ブロック、計 120 試行を完了し、外れ値は除外していない。
+測定中にローカルのビルドやテストは並行実行せず、BPF runtime counters は無効にした。
+
+表の対応差はブロックごとの `head - base`、対応変化率は `100 * (head / base - 1)` の平均である。
+両側 95% CI は 6 対の標本標準偏差と t 分布（自由度 5、係数 2.570581835636305）から求め、多重比較補正はしていない。
+起動時間はプロセス起動から送信開始ログの到着までを monotonic clock で測った。
+packet 定常 Mpps は統計ログの最初の 6 区間、TCP goodput は最終 ACK 済みバイトと送信開始から drain 開始までの時間から求めた。
+起動時間には前述のフロー状態とパターンマップの増加も含む。
+
+| 条件 | worker | 指標 | base 平均 | head 平均 | 対応差平均 [95% CI] | 対応変化率 % [95% CI] |
+|---|---:|---|---:|---:|---|---|
+| geneve | 1 | TCP Mbps | 843.240 | 843.941 | 0.701 [-15.482, 16.884] | 0.10 [-1.81, 2.01] |
+| geneve | 1 | 起動 ms | 4226.845 | 4225.248 | -1.597 [-46.533, 43.338] | -0.04 [-1.10, 1.03] |
+| geneve | 4 | TCP Mbps | 4092.193 | 4114.038 | 21.845 [-2.540, 46.230] | 0.53 [-0.06, 1.13] |
+| geneve | 4 | 起動 ms | 4211.937 | 4230.249 | 18.311 [-45.344, 81.967] | 0.44 [-1.07, 1.95] |
+| mixed31 | 1 | TCP Mbps | 676.637 | 674.416 | -2.220 [-36.220, 31.780] | -0.21 [-5.16, 4.75] |
+| mixed31 | 1 | 起動 ms | 3654.892 | 3678.055 | 23.163 [-74.415, 120.741] | 0.64 [-2.02, 3.30] |
+| mixed31 | 4 | TCP Mbps | 3777.208 | 3784.927 | 7.719 [-18.251, 33.688] | 0.21 [-0.48, 0.90] |
+| mixed31 | 4 | 起動 ms | 3638.759 | 3654.165 | 15.406 [-52.992, 83.803] | 0.43 [-1.42, 2.29] |
+| packet | 1 | 定常 Mpps | 0.751 | 0.744 | -0.007 [-0.015, 0.002] | -0.86 [-2.01, 0.28] |
+| packet | 1 | 起動 ms | 2577.000 | 2564.686 | -12.314 [-80.541, 55.912] | -0.43 [-3.04, 2.17] |
+| packet | 4 | 定常 Mpps | 3.029 | 3.027 | -0.002 [-0.027, 0.023] | -0.07 [-0.90, 0.76] |
+| packet | 4 | 起動 ms | 2534.995 | 2534.404 | -0.591 [-25.264, 24.082] | -0.01 [-0.99, 0.97] |
+| template | 1 | TCP Mbps | 682.929 | 683.376 | 0.447 [-27.384, 28.277] | 0.11 [-3.93, 4.16] |
+| template | 1 | 起動 ms | 3649.746 | 3629.353 | -20.393 [-103.270, 62.483] | -0.52 [-2.80, 1.75] |
+| template | 4 | TCP Mbps | 3809.390 | 3774.557 | -34.833 [-110.013, 40.347] | -0.89 [-2.81, 1.03] |
+| template | 4 | 起動 ms | 3651.928 | 3621.929 | -29.999 [-81.397, 21.398] | -0.81 [-2.21, 0.58] |
+| vxlan | 1 | TCP Mbps | 840.129 | 836.836 | -3.292 [-14.960, 8.375] | -0.38 [-1.79, 1.02] |
+| vxlan | 1 | 起動 ms | 4216.407 | 4249.918 | 33.510 [-26.644, 93.664] | 0.80 [-0.64, 2.23] |
+| vxlan | 4 | TCP Mbps | 4130.950 | 4109.050 | -21.900 [-45.997, 2.196] | -0.53 [-1.11, 0.05] |
+| vxlan | 4 | 起動 ms | 4191.425 | 4231.433 | 40.008 [-6.719, 86.735] | 0.96 [-0.16, 2.08] |
+
+全 10 条件のスループットと起動時間で、対応差の CI は 0 を含み、有意な低下・増加は検出しなかった。
+一方、mixed31 の 1 worker の TCP goodput は変化率の CI が -5.16〜4.75% と広く、同等性を証明したものではない。
+テンプレート 4 worker の goodput と VXLAN 4 worker の起動時間にも負・正方向の点推定があるが、対応差の CI はそれぞれ 0 を含む。
+機能を有効にした場合のスループットと実 NIC の性能は、この比較では測定していない。
+
+packet/dispatch error は全試行で 0 だった。
+混合 96 試行では、それぞれ 4 フローが完了し、ACK 済みバイト、フロー CSV の合計、sink の受信バイトが一致した。
+生成失敗、異常終了、再送断念、FIN_WAIT2 timeout も 0 だった。
+
+### 検証と保存場所
+
+最終実装の [sudo race とビルド CI](https://github.com/takehaya/xdperf/actions/runs/39308590265)、[lint](https://github.com/takehaya/xdperf/actions/runs/39308590399)、[BPF 再生成](https://github.com/takehaya/xdperf/actions/runs/39308590294) は成功した。
+[BPF カーネル行列](https://github.com/takehaya/xdperf/actions/runs/39308590503) は Linux 6.1、6.6、6.12、6.18、7.0、7.1、7.2-rc2 の全条件で成功した。
+旧カーネルで先行 CI が 2 回失敗した理由と修正は上記に記録した。
+全 14 examples の成功に加え、最終バイナリの追加 E2E 12 条件も成功した。
+追加 E2E を全 examples と同時に起動した際は共通 PID 保存先が干渉し、1 条件で失敗したため、保存先を分離して単独再実行した。
+
+小さな集計値は [summary.csv](benchmarks/tcp-flow-payload/summary.csv)、検算用コードは [verify.py](benchmarks/tcp-flow-payload/verify.py) に置いた。
+検算は 120 試行の網羅性と実行順、フロー完了とバイト数、最終エラー、対応差と CI を確認する。
+生ログ、raw/derived CSV、実行スクリプト、バイナリ、ハッシュ記録、中断した予備測定は、この worktree の `out/mixbench/` に保存した。
+テストと examples のログは `out/job-c/` に置いた。
+測定データの控えは次の scratchpad に保存した。
+
+```text
+/tmp/claude-1000/-home-ubuntu-private-xdperf/925f4640-ff78-496d-acec-28904e958eb9/scratchpad/mixbench/tcp-flow-payload/
+```
+
+保存先の README に再実行・集計手順を記録した。
+リポジトリのルートで次を実行すると、対応差と両側 t(5) 95% CI を検算できる。
+
+```bash
+python3 docs/ja/benchmarks/tcp-flow-payload/verify.py out/mixbench/main
+```
+
 ## 混合 RX の照合失敗を数える (ジョブ E、実装前計画)
 
 通常応答の解析と照合に診断用の分岐や書き込みを追加しない。
@@ -639,7 +831,7 @@ Git に残すのは [summary.csv](benchmarks/tcp-rx-tunnels/summary.csv) と検�
 | `rx_tuple_mismatch` / `tuple_mismatch` | 宛先ポートはフロー範囲内だが版、アドレス、送信元ポート等が一致せず、フローと照合できない |
 | `rx_neighbor` / `neighbor` | 外側または内側の ARP / IPv6 ND (ICMPv6 type 133–137) |
 | `rx_other` / `other` | TCP 以外の通常通信 (通常 UDP、ICMP 等) |
-| `rx_invalid_tcp` / `invalid_tcp` | 照合後に TCP ヘッダ長・IP 長の検査で DROP |
+| `rx_invalid_tcp` / `invalid_tcp` | 照合後に TCP ヘッダ長、IP 長、Timestamp オプションの形式検査で DROP |
 
 `parse_failed` の詳細理由を既存パーサーから返すと、正常経路の戻り値処理・命令列にも影響する。
 今回はこの制約を優先し、詳細理由はまとめる。
@@ -713,6 +905,39 @@ OCR は principal 2 名と quality 2 名で実行し、不正長とタプル不�
 #126 では、Timestamp オプションの解析不正による既存 DROP も `invalid_tcp` に含める。
 この失敗分岐もロード時に計装し、正常なオプション処理には命令を追加しない。
 
+#126 のオプション版では、unmatched への C 呼び出しだけでも正常経路のレジスタ割り当てが変わった。
+通常版の C 呼び出しは維持し、オプション版は既存 unmatched 分岐をロード時に診断ブロックへ振り替える。
+診断後は元の unmatched 処理に戻るため、ARP/ND の PASS と外側 UDP の tail call を維持する。
+診断関数は通常版の spec から必要な三つだけを再利用し、元のパーサーはオプション版にある関数を使う。
+
+### #126 に取り込んだ診断の検証
+
+取り込み前の `76bba2b` と両 endian で比較し、通常 RX と dispatcher に加えてオプション版の正常経路も一致した。
+オプション版の正常 RX は little endian で 23,246 命令 (10 関数)、big endian で 23,220 命令 (10 関数) が一致し、オプション版 TX も全バイト一致した。
+分類テストは通常版 36 ケースとオプション版 38 ケースを、それぞれ直接 RX と dispatcher 経由で実行した。
+追加の 2 ケースは不正な Timestamp オプションの長さと重複であり、`invalid_tcp` に分類されることを確認した。
+オプション版の分岐、ctx 引数、tail call、neighbor 検査、診断関数の構造変更を拒否する 6 ケースも sudo race で成功した。
+
+取り込み差分にも principal 2 名と quality 2 名で OCR を実施した。
+Timestamp の診断理由の説明不足を両文書で補い、構造変更の拒否テストを追加した。
+後続の MPLS 分類修正も全レビュアーが両ブランチで確認し、未解決の指摘はない。
+保存先はこの worktree の `out/rx-diagnostics/` であり、取り込み前のオブジェクトもここに置く。
+
 Copilot の追加指摘に対応し、末端の MPLS ラベルを読み飛ばして通常の UDP/ICMP を `other` に分類するよう修正した。
 既存の上限付き MPLS パーサーを再利用し、MPLS と GRE/MPLS の UDP/ICMP、および MPLS 内の ND を回帰テストに追加した。
 追加分を含む 36 フレームの分類テストと正常命令列の検算が成功し、4 レビュアーの追加 OCR に未解決の指摘はない。
+
+#126 の全 sudo race は、このホストでは `pkg/coreelf` が 10 分の既定上限に 2 回達し、一時的に 20 分へ延長して完走を確認した。
+通常パケットと単独 TCP のテスト補助関数が `ReadCollection` 経由で不要な混合用プログラムまで毎回ロードし、そのたびに verifier の処理を繰り返していた。
+通常のテストは本番と同じ `ReadBaseCollectionWithSizes` に切り替え、マップはテストごとに個別に所有する。
+`pkg/xdperf` の混合テストは `MixedProgramFeatures` 全体をキーにロードを共有し、借用から cleanup まで mutex で排他する。
+各借用の最初に全データマップの全エントリと全 possible CPU の値をゼロに戻し、LRU_HASH は全削除する。
+ロード時に設定した tail call の program array は維持し、共有オブジェクトは `TestMain` で閉じる。
+`pkg/plugin` のテストには同じ BPF ロードの重複はない。
+定数の組み合わせと混合の特殊化をロードする専用テストは残し、テスト一覧の比較と `-shuffle=on` で検査内容と順序独立性を確認する。
+これにより `TEST_TIMEOUT` と CI の `-timeout 20m` を外し、Go の既定の 10 分へ戻す。
+変更前後のパッケージ別時間は、手元の対応差の平均と Student t 分布による 95% CI、および CI の実測値で比較する。
+
+診断取り込み時には全 14 examples、lint、初期化チェックも成功し、MPLS 修正後の最終バイナリでは mixed、payload (IPv4/IPv6 の各 6 条件)、全 22 トンネルを再確認した。
+正常時の `tuple_mismatch` と `invalid_tcp` はすべて 0 だった。
+一時的な時間上限変更には 4 レビュアーで OCR を実施した。
