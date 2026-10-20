@@ -141,10 +141,13 @@ for kind in ${TUNNEL_CASES:-gre gre-key gretap ip6gre ipip ip6tnl srv6 srv6-two 
             tail -n 40 "$TX_LOG"; exit 1
         fi
         stop_sink
-        python3 - "$report" "$SINK_LOG" <<'PY'
+        python3 - "$report" "$SINK_LOG" "$TX_LOG" <<'PY'
 import csv,json,sys
 rows=list(csv.DictReader(open(sys.argv[1])))
 sink=json.loads(open(sys.argv[2]).readlines()[-1])
+line=next(l for l in open(sys.argv[3]) if 'mixed final statistics' in l)
+stats=json.loads(line[line.index('{'):])
+assert stats['rx_tuple_mismatch']==stats['rx_invalid_tcp']==0,stats
 assert len(rows)==4 and all(r['state']=='done' for r in rows),rows
 assert [int(r['bytes_acked']) for r in rows]==[4097]*3+[65539],rows
 assert sink['accepted']==sink['closed']==4 and sink['bytes']==77830,sink

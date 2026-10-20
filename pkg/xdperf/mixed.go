@@ -266,7 +266,18 @@ func (x *Xdperf) showMixedStats() error {
 	if pn+tn > 0 {
 		ratio = float64(tn) / float64(pn+tn)
 	}
-	x.Logger.Info("mixed final statistics", zap.Uint64("packet_opportunities", po), zap.Uint64("tcp_opportunities", to), zap.Uint64("packet_tx", pn), zap.Uint64("tcp_tx", tn), zap.Uint64("tcp_rx_replies", replies), zap.Float64("tcp_tx_ratio", ratio), zap.Uint64("dispatch_errors", dispatchErrors), zap.Uint64("packet_bytes", packetBytes), zap.Uint64("packet_errors", packetErrors), zap.Uint64("packet_rx", rxPackets), zap.String("packet_rx_scope", "outer_udp"), zap.Uint64("drain_opportunities", drain))
+	rx, err := x.readMixedRXStats()
+	if err != nil {
+		return err
+	}
+	fields := []zap.Field{}
+	for i, reason := range mixedRXReasons {
+		fields = append(fields, zap.Uint64("rx_"+reason, rx[i]))
+	}
+	if rx[2] != 0 {
+		x.Logger.Warn("mixed RX packets in flow port range did not match a template; check peer addresses, ports and NAT", zap.Uint64("rx_tuple_mismatch", rx[2]))
+	}
+	x.Logger.With(fields...).Info("mixed final statistics", zap.Uint64("packet_opportunities", po), zap.Uint64("tcp_opportunities", to), zap.Uint64("packet_tx", pn), zap.Uint64("tcp_tx", tn), zap.Uint64("tcp_rx_replies", replies), zap.Float64("tcp_tx_ratio", ratio), zap.Uint64("dispatch_errors", dispatchErrors), zap.Uint64("packet_bytes", packetBytes), zap.Uint64("packet_errors", packetErrors), zap.Uint64("packet_rx", rxPackets), zap.String("packet_rx_scope", "outer_udp"), zap.Uint64("drain_opportunities", drain))
 	if packetErrors != 0 {
 		return fmt.Errorf("packet generation errors: %d", packetErrors)
 	}
@@ -274,4 +285,23 @@ func (x *Xdperf) showMixedStats() error {
 		return fmt.Errorf("mixed dispatch errors: %d", dispatchErrors)
 	}
 	return nil
+}
+
+// Keep the order in sync with enum mixed_rx_reason in xdp_mixed_rx_stats.h.
+var mixedRXReasons = [...]string{"parse_failed", "port_outside", "tuple_mismatch", "neighbor", "other", "invalid_tcp"}
+
+type mixedRXTotals [6]uint64
+
+func (x *Xdperf) readMixedRXStats() (mixedRXTotals, error) {
+	recs := make([]coreelf.BpfMixedRxStats, ebpf.MustPossibleCPU())
+	if err := x.bpfobjs.MixedRxStatsMap.Lookup(uint32(0), &recs); err != nil {
+		return mixedRXTotals{}, err
+	}
+	var totals mixedRXTotals
+	for _, rec := range recs {
+		for i, value := range rec.Counts {
+			totals[i] += value
+		}
+	}
+	return totals, nil
 }

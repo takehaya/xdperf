@@ -84,6 +84,7 @@ stats = json.loads(line[line.index('{'):])
 assert stats['packet_tx'] == udp > 0, (stats, udp)
 assert stats['packet_rx'] == udp, stats
 assert stats['tcp_tx'] == sum(int(r['tx_pkts']) for r in rows), stats
+assert stats['rx_tuple_mismatch'] == stats['rx_invalid_tcp'] == 0, stats
 assert stats['packet_errors'] == stats['dispatch_errors'] == 0, stats
 assert stats['drain_opportunities'] > 0, stats
 opportunities = stats['tcp_opportunities'] + stats['packet_opportunities']

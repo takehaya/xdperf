@@ -154,3 +154,28 @@ func clampToInt64(v uint64) int64 {
 	}
 	return int64(v)
 }
+
+// Registered after plugin validation selects mixed mode, before RX is attached.
+func (x *Xdperf) registerMixedRXMetrics(meter metric.Meter) error {
+	return registerMixedRXMetricsSource(meter, x.readMixedRXStats, x.Logger)
+}
+
+func registerMixedRXMetricsSource(meter metric.Meter, read func() (mixedRXTotals, error), log *zap.Logger) error {
+	counter, err := meter.Int64ObservableCounter("xdperf.mixed.rx", metric.WithUnit("{packet}"),
+		metric.WithDescription("Mixed TCP RX diagnostics by reason"))
+	if err != nil {
+		return err
+	}
+	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		totals, err := read()
+		if err != nil {
+			log.Warn("failed to read mixed RX stats for otlp metrics", zap.Error(err))
+			return nil
+		}
+		for i, reason := range mixedRXReasons {
+			o.ObserveInt64(counter, clampToInt64(totals[i]), metric.WithAttributes(attribute.String("reason", reason)))
+		}
+		return nil
+	}, counter)
+	return err
+}

@@ -1470,3 +1470,12 @@ int xdp_rx_mixed(struct xdp_md *ctx)
     }
     return XDP_PASS;
 }
+
+// Instruction source for the dispatcher's cold PASS block and its subprograms.
+// The loader splices this path in without changing normal dispatch instructions.
+SEC("xdp")
+int xdp_mixed_rx_account(struct xdp_md *ctx)
+{
+    mixed_rx_outer(ctx);
+    return XDP_PASS;
+}
