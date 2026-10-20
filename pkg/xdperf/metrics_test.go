@@ -3,6 +3,7 @@ package xdperf
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 
@@ -208,5 +209,60 @@ func TestRegisterMetricsSourceSkipsFailedReads(t *testing.T) {
 		if sum, ok := m.Data.(metricdata.Sum[int64]); ok && len(sum.DataPoints) > 0 {
 			t.Errorf("xdperf.nic.packets has %d data points, want 0 on read failure", len(sum.DataPoints))
 		}
+	}
+}
+
+func TestMixedRXMetrics(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+			reader := sdkmetric.NewManualReader()
+			provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+			defer func() { _ = provider.Shutdown(context.Background()) }()
+			if err := registerMixedRXMetricsSource(provider.Meter("test"), func() (mixedRXTotals, error) {
+				if fail {
+					return mixedRXTotals{}, errors.New("unavailable")
+				}
+				return mixedRXTotals{1, 2, 3, 4, 5, math.MaxUint64}, nil
+			}, zap.NewNop()); err != nil {
+				t.Fatal(err)
+			}
+			var rm metricdata.ResourceMetrics
+			if err := reader.Collect(context.Background(), &rm); err != nil {
+				t.Fatal(err)
+			}
+			if fail {
+				if len(rm.ScopeMetrics) != 0 {
+					t.Fatalf("failed reads exported values: %+v", rm)
+				}
+				return
+			}
+			m, ok := findMetric(t, rm.ScopeMetrics[0], "xdperf.mixed.rx")
+			if !ok {
+				t.Fatal("mixed RX metric missing")
+			}
+			sum := m.Data.(metricdata.Sum[int64])
+			if !sum.IsMonotonic || sum.Temporality != metricdata.CumulativeTemporality || len(sum.DataPoints) != 6 {
+				t.Fatalf("unexpected sum: %+v", sum)
+			}
+			for _, p := range sum.DataPoints {
+				reason, _ := p.Attributes.Value("reason")
+				found := false
+				for i, name := range mixedRXReasons {
+					if reason.AsString() == name {
+						found = true
+						want := int64(i + 1)
+						if i == 5 {
+							want = maxObservable
+						}
+						if p.Value != want {
+							t.Errorf("%s=%d want=%d", name, p.Value, want)
+						}
+					}
+				}
+				if !found {
+					t.Errorf("unknown reason: %s", reason.AsString())
+				}
+			}
+		})
 	}
 }

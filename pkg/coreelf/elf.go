@@ -89,6 +89,11 @@ func readCollection(constants map[string]any, sizes map[string]uint32, mixed boo
 			return nil, nil, err
 		}
 	}
+	if mixed {
+		if err := PrepareMixedRXDiagnostics(spec); err != nil {
+			return nil, nil, err
+		}
+	}
 	var target any = objs
 	var base baseObjects
 	if !mixed {
@@ -268,6 +273,9 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 	// Copy before changing constants: base programs and later callers retain
 	// their original spec, and the mixed rodata is loaded with these values.
 	spec = spec.Copy()
+	if err := PrepareMixedRXDiagnostics(spec); err != nil {
+		return err
+	}
 	if features.TemplateEntries > 16 {
 		m := spec.Maps["tcp_template_map"]
 		if uint64(features.TemplateEntries)*uint64(m.ValueSize) > 64<<20 {

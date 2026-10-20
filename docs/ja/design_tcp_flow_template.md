@@ -814,3 +814,111 @@ packet/dispatch error は全試行で 0 だった。
 ```bash
 python3 docs/ja/benchmarks/tcp-flow-payload/verify.py out/mixbench/main
 ```
+
+## 混合 RX の照合失敗を数える (ジョブ E、実装前計画)
+
+通常応答の解析と照合に診断用の分岐や書き込みを追加しない。
+`xdp_rx_tcp_mixed` の既存の unmatched 経路からのみ cold な別関数を呼び、パケットを再解析して分類する。
+照合後の不正 TCP ヘッダによる DROP も、その失敗分岐だけで数える。
+既存の packet、単独 `--tcp`、TCP server、混合 TX の命令列は維持する。
+
+分類は独立した 1 要素の PERCPU_ARRAY (`mixed_rx_stats_map`) の配列とし、1 フレームにつき次のいずれかを 1 回加算する。
+
+| ログ名 / OTLP の reason | 意味 |
+| --- | --- |
+| `rx_parse_failed` / `parse_failed` | TCP に到達できない。未対応形式、解析深度やオフセット上限、長さ不整合、IPv4 オプションや断片などを含む |
+| `rx_port_outside` / `port_outside` | TCP に到達したが宛先ポートが設定フロー範囲外 |
+| `rx_tuple_mismatch` / `tuple_mismatch` | 宛先ポートはフロー範囲内だが版、アドレス、送信元ポート等が一致せず、フローと照合できない |
+| `rx_neighbor` / `neighbor` | 外側または内側の ARP / IPv6 ND (ICMPv6 type 133–137) |
+| `rx_other` / `other` | TCP 以外の通常通信 (通常 UDP、ICMP 等) |
+| `rx_invalid_tcp` / `invalid_tcp` | 照合後に TCP ヘッダ長、IP 長、Timestamp オプションの形式検査で DROP |
+
+`parse_failed` の詳細理由を既存パーサーから返すと、正常経路の戻り値処理・命令列にも影響する。
+今回はこの制約を優先し、詳細理由はまとめる。
+失敗経路の再解析は既存の層パーサーを再利用し、末端の ARP/ND や通常の非 TCP を補助的に識別する。
+不正なパケットと未対応形式の判別には限界があり、これらの値だけで xdperf 応答の取りこぼしとは断定できない。
+通常 UDP を受信する既存 tail call と PASS/DROP/TX の挙動は維持する。
+
+Go は全 CPU 分を合算し、mixed final statistics と `xdperf.mixed.rx` ObservableCounter (`reason` 属性、単位 `{packet}`) に出す。
+混合モード以外ではこのメトリクスを登録しない。
+終了時の `tuple_mismatch > 0` は警告とし、計測自体はエラー終了させない。
+利用者向け文書に各分類、ポート衝突、アドレス/NAT、対向設定、未対応トンネルや MTU の確認順序を記す。
+
+検証では BPF_PROG_RUN で全分類と正常照合、内外の ARP/ND、IPv4/IPv6、各照合要素と不正長を確認する。
+既存 examples の正常 E2E に `tuple_mismatch == 0` の検査を追加する。
+変更前後の BPF オブジェクトを同じコンパイラで比較し、通常モードの全プログラムと正常 RX 経路 (分岐先の再配置を除く) の命令を検算する。
+全 sudo race テスト、examples、lint、複数レビュアーによる OCR を実行してから #125 を push する。
+#126 へ merge した後も取り込み差分の OCR と検証を行い、両 PR の Copilot と CI を完了させる。PR 自体はマージしない。
+性能測定は行わない。検証ログと比較用オブジェクトは `out/rx-diagnostics/` に保存し、Git には検算スクリプトと文書だけを残す。
+
+### 実装方針の補足: 不正 TCP の cold 分岐
+
+LLVM 22 では不正 TCP の return に C のカウンタ呼び出しを加えるだけでも、関数全体のレジスタ割り当てと spill が変わった。
+固定レジスタや空の asm による誘導も正常経路の完全一致を保証できず、保守性が低いため採用しない。
+一方、unmatched への void 関数呼び出しだけなら正常経路は分岐先の再配置を除いて完全一致した。
+そこで不正 TCP の既存 C 分岐は変更せず、混合プログラムのロード時にその三つの長さ検査の分岐先だけを専用ブロックへ差し替える。
+専用ブロックは既存の PERCPU 加算関数を呼び DROP する。正常経路に命令は挿入しない。
+BTF の元ソース行、分岐命令の種類と数、共通の旧分岐先を検査し、コンパイラ更新等で構造が変わった場合は明示的なエラーにする。
+既存の混合プログラムのロード前処理 (機能別定数の設定) と同じ箇所に限定し、実行用の collection 読み込みと混合プログラムの読み込みで適用する。
+生の `LoadBpf()` spec を手動で読み込む場合は `PrepareMixedRXDiagnostics` を明示的に呼ぶ。
+変更前のオブジェクトとの検算では、このロード時処理後も比較する。
+
+外側 ARP/ND 等は dispatcher の PASS からも分類関数に入れる。
+通常 TCP を dispatcher から振り分ける既存の命令列は維持し、tail call 先での二重加算はしない。
+
+
+### ジョブ E の検証結果
+
+LLVM 22 の変更前オブジェクト (`9117909`) と変更後オブジェクトを比較した。
+`scripts/check_mixed_rx_bytecode.go` はロード時の計装後の spec に対し、正常経路の制御フローと命令オペランドを照合する。
+分岐先の再配置だけを許し、レジスタ番号、スタック位置、マップ参照、呼び出し先を含めて比較する。
+
+| 比較対象 | little endian | big endian |
+| --- | --- | --- |
+| packet、単独 TCP、TCP server、混合 TX (11 プログラム) | 全バイト一致 | 全バイト一致 |
+| 混合 TCP RX の正常経路と全呼び出し先 | 22,864 命令一致 (9 関数) | 22,840 命令一致 (9 関数) |
+| dispatcher の正常経路 | 70 命令一致 | 70 命令一致 |
+
+分類テストは 36 フレームを直接 RX と dispatcher 経由の両方で実行し、各カウンタの差分と既存の action を検査する。
+不正長とタプル不一致が重なる場合は、cold 分類で長さを先に検査して `parse_failed` に入れる。
+照合済みの不正 TCP は専用の `invalid_tcp` に入る。
+OTLP は全 reason の属性と累積値、単調増加性、読み込み失敗時の観測省略、値の飽和を検査する。
+終了ログの各値と `tuple_mismatch` の警告も実際の BPF カウンタに対して照合した。
+
+検算の入力オブジェクト、命令ダンプ、各検証ログはこの worktree の `out/rx-diagnostics/` に保存している。
+性能測定は行っていない。
+
+### #126 への取り込み計画
+
+#126 は RX 本体を共通の inline 関数にし、通常版とオプション版 (`xdp_rx_tcp_mixed_ext`) の二つの entry point を持つ。
+取り込み時に通常版だけを計装すると、Timestamp 等を選択したフローの不正 TCP が数えられない。
+ロード前処理は両 entry point に適用し、オプション版がない #125 でも動作する構成にする。
+C の未照合カウントは共通本体へ取り込み、オプション状態や payload の処理順序を維持する。
+取り込み前の #126 のオブジェクトも保存し、通常版とオプション版それぞれの正常経路を比較する。
+
+#125 の最終コードで `make test` (sudo race)、`make examples` (13 シナリオ、失敗とスキップなし)、`make test-runnable`、`make lint` が成功した。
+混合とトンネルの E2E では `rx_tuple_mismatch == 0` と `rx_invalid_tcp == 0` を検査した。
+OCR は principal 2 名と quality 2 名で実行し、不正長とタプル不一致の複合入力による誤分類を修正した。
+修正後の独立した BPF_PROG_RUN 再現でも `tuple_mismatch` から `parse_failed` への変更と PASS の維持を確認した。
+終了ログと dispatcher の構造変更拒否テストも補い、未解決の指摘はない。
+
+#126 では、Timestamp オプションの解析不正による既存 DROP も `invalid_tcp` に含める。
+この失敗分岐もロード時に計装し、正常なオプション処理には命令を追加しない。
+
+#126 のオプション版では、unmatched への C 呼び出しだけでも正常経路のレジスタ割り当てが変わった。
+通常版の C 呼び出しは維持し、オプション版は既存 unmatched 分岐をロード時に診断ブロックへ振り替える。
+診断後は元の unmatched 処理に戻るため、ARP/ND の PASS と外側 UDP の tail call を維持する。
+診断関数は通常版の spec から必要な三つだけを再利用し、元のパーサーはオプション版にある関数を使う。
+
+### #126 に取り込んだ診断の検証
+
+取り込み前の `76bba2b` と両 endian で比較し、通常 RX と dispatcher に加えてオプション版の正常経路も一致した。
+オプション版の正常 RX は little endian で 23,246 命令 (10 関数)、big endian で 23,220 命令 (10 関数) が一致し、オプション版 TX も全バイト一致した。
+分類テストは通常版 36 ケースとオプション版 38 ケースを、それぞれ直接 RX と dispatcher 経由で実行した。
+追加の 2 ケースは不正な Timestamp オプションの長さと重複であり、`invalid_tcp` に分類されることを確認した。
+オプション版の分岐、ctx 引数、tail call、neighbor 検査、診断関数の構造変更を拒否する 6 ケースも sudo race で成功した。
+
+取り込み差分にも principal 2 名と quality 2 名で OCR を実施した。
+Timestamp の診断理由の説明不足を両文書で補い、構造変更の拒否テストを追加した。
+後続の MPLS 分類修正も全レビュアーが両ブランチで確認し、未解決の指摘はない。
+保存先はこの worktree の `out/rx-diagnostics/` であり、取り込み前のオブジェクトもここに置く。

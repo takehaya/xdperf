@@ -71,11 +71,14 @@ PY
         verifier_pid=""
         if [ "$feature" = loss ]; then ip netns exec "$NS_RX" tc qdisc del dev "$VETH_RX" root; fi
         stop_sink
-        python3 - "$report" <<'PY'
-import csv,sys
+        python3 - "$report" "$TX_LOG" <<'PY'
+import csv,json,sys
 rows=list(csv.DictReader(open(sys.argv[1])))
 assert len(rows)==4 and all(r['state']=='done' for r in rows),rows
 assert sum(int(r['bytes_acked']) for r in rows)==77830,rows
+line=next(l for l in open(sys.argv[2]) if 'mixed final statistics' in l)
+stats=json.loads(line[line.index('{'):])
+assert stats['rx_tuple_mismatch']==stats['rx_invalid_tcp']==0,stats
 PY
         print_success "TCP payload IPv${version} ${feature}: four streams and 77830 bytes verified"
     done

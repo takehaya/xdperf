@@ -2,6 +2,7 @@
 #define XDP_TCP_TEMPLATE_RX_H
 
 #include "xdp_tcp_decap.h"
+#include "xdp_mixed_rx_stats.h"
 
 static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extended)
 {
@@ -92,6 +93,8 @@ static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extend
     __sync_fetch_and_add(&f->rx_replies, 1);
     return XDP_TX;
 unmatched:
+    if (!extended)
+        mixed_rx_unmatched(ctx);
     if (inner.neighbor)
         return XDP_PASS;
     if (inner.outer_udp) {
