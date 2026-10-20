@@ -51,6 +51,13 @@ static __noinline int mixed_rx_terminal(struct xdp_md *ctx, const struct tcp_dec
             }
         }
     }
+    if (proto == ETH_P_MPLS_UC || proto == ETH_P_MPLS_MC) {
+        int mpls_end = tcp_mpls_end(ctx, off, limit);
+        if (!mpls_end)
+            return MIXED_RX_PARSE_FAILED;
+        off = mpls_end;
+        proto = tcp_raw_ip_proto(ctx, off, limit);
+    }
     if (proto == ETH_P_ARP)
         return MIXED_RX_NEIGHBOR;
     __u8 next;

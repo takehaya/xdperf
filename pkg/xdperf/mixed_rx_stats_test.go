@@ -104,6 +104,11 @@ func TestMixedRXDiagnostics(t *testing.T) {
 		{"nd", rxTunnel("bare", nd), 3, 2},
 		{"tunnel_nd", rxTunnel("ipip6", nd), 3, 2},
 		{"udp", rxEther(0x800, rxIP(false, 17, udp)), 4, 1},
+		{"mpls_udp", rxTunnel("mpls-one", rxIP(false, 17, udp)), 4, 2},
+		{"mpls_icmp", rxTunnel("mpls-one", rxIP(false, 1, make([]byte, 8))), 4, 2},
+		{"gre_mpls_udp", rxTunnel("gre-mpls", rxIP(false, 17, udp)), 4, 2},
+		{"gre_mpls_icmp", rxTunnel("gre-mpls", rxIP(false, 1, make([]byte, 8))), 4, 2},
+		{"mpls_nd", rxTunnel("mpls-one", nd), 3, 2},
 		{"tunnel_udp", rxTunnel("gre-key", rxIP(false, 17, udp)), 4, 2},
 		{"icmp", rxEther(0x800, rxIP(false, 1, make([]byte, 8))), 4, 2},
 	}
