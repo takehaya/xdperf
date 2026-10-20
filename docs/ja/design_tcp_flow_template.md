@@ -926,3 +926,8 @@ Timestamp の診断理由の説明不足を両文書で補い、構造変更の�
 Copilot の追加指摘に対応し、末端の MPLS ラベルを読み飛ばして通常の UDP/ICMP を `other` に分類するよう修正した。
 既存の上限付き MPLS パーサーを再利用し、MPLS と GRE/MPLS の UDP/ICMP、および MPLS 内の ND を回帰テストに追加した。
 追加分を含む 36 フレームの分類テストと正常命令列の検算が成功し、4 レビュアーの追加 OCR に未解決の指摘はない。
+
+#126 の全 sudo race は、このホストでは 10 分の既定上限に 2 回達した。
+いずれも `pkg/coreelf` の最後の既存 IMIX テスト中で、個別の分類テスト、構造検査、全 14 examples は成功している。
+テストを省略せず完了させるため、`make test` と CI の全テストに 20 分の上限を明示する。
+`make test` は `TEST_TIMEOUT` で上書き可能にし、CI の race と coverage は維持する。
