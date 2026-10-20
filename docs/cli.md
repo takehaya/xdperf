@@ -186,6 +186,9 @@ Specify how many packets to send. You must use **either** `--count` **or** `--du
 
 **Note**: When `--infinite` is set, `--count` specifies the number of packet pools (packet templates) instead of total packets to send.
 
+For finite packet mode, the total is preserved across workers and PPS batches, including any remainder in the final batch.
+Mixed TCP mode uses count as the packet diff pool size instead (see above).
+
 ```shell
 # Send 100,000 packets
 sudo xdperf run --device eth0 --count 100k
@@ -200,6 +203,9 @@ sudo xdperf run --device eth0 --count 10k --infinite
 **`--duration`**: Duration to send packets. Uses Go duration format (e.g., `10s`, `1m`, `500ms`).
 
 **Note**: `--duration` requires `--pps` to be specified.
+
+In packet mode, the send budget is `floor(PPS × duration in seconds)` packets.
+This budget is preserved when it is split across workers and batches.
 
 ```shell
 # Send packets at 100k pps for 10 seconds

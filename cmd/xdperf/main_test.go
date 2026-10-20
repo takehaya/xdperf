@@ -53,6 +53,17 @@ func TestTCPPluginSelection(t *testing.T) {
 	}
 }
 
+func TestDurationPacketBudget(t *testing.T) {
+	clearConfigEnv(t)
+	cfg, err := parseRunArgs("--device", "lo", "--duration", "1.28005s", "--pps", "20k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Count != 25601 {
+		t.Fatalf("duration budget = %d, want 25601", cfg.Count)
+	}
+}
+
 // Isolate parsing tests from the caller's configuration, including logger settings.
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
