@@ -2,7 +2,7 @@ package main
 
 import (
 	"strings"
-	
+
 	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/takehaya/xdperf/plugins/test_e2e_variety/packets"
 )

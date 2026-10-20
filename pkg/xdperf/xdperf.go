@@ -265,7 +265,7 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 		return err
 	}
 	if x.mixed != nil {
-		if err := coreelf.LoadMixedPrograms(x.bpfobjs, x.bpfSpec); err != nil {
+		if err := coreelf.LoadMixedProgramsWithFeatures(x.bpfobjs, x.bpfSpec, x.mixed.features); err != nil {
 			return err
 		}
 		return x.runTCP(ctx)

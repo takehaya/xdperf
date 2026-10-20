@@ -139,7 +139,7 @@ func checksumValid(sum uint32) bool {
 }
 
 func TestTCPTemplateBPF(t *testing.T) {
-	objs, spec, err := coreelf.ReadCollection(map[string]any{"swap_resp": uint32(0)}, 100)
+	objs, spec, err := coreelf.ReadBaseCollectionWithSizes(map[string]any{"swap_resp": uint32(0)}, map[string]uint32{"diff_map": 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +155,9 @@ func TestTCPTemplateBPF(t *testing.T) {
 		}
 	}
 	if err := x.prepareMixed(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := coreelf.LoadMixedProgramsWithFeatures(objs, spec, x.mixed.features); err != nil {
 		t.Fatal(err)
 	}
 	base := r.VariablePacketTemplate.Variants[1].Base
