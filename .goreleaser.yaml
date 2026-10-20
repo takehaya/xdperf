@@ -6,6 +6,7 @@ env:
 before:
   hooks:
     - go mod tidy
+    - make -C plugins/vxlan.c OUT=../../out/bin/vxlan.c.wasm
 builds:
   - id: xdperf
     binary: xdperf
@@ -83,6 +84,17 @@ builds:
       - -X main.version={{ .Version }}
       - -X main.commit={{ .Commit }}
       - -X main.date={{ .Date }}
+  - id: plugin-mixed.go
+    dir: ./plugins/mixed.go
+    main: .
+    binary: mixed.go
+    goos: [wasip1]
+    goarch: [wasm]
+    buildmode: c-shared
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
   - id: plugin-srv6.go
     dir: ./plugins/srv6.go
     main: .
@@ -130,6 +142,11 @@ archives:
       - 'binary'
     ids:
       - plugin-vxlan.go
+  - id: plugin-mixed.go
+    formats:
+      - 'binary'
+    ids:
+      - plugin-mixed.go
   - id: plugin-srv6.go
     formats:
       - 'binary'
@@ -137,6 +154,9 @@ archives:
       - plugin-srv6.go
 checksum:
   name_template: 'checksums.txt'
+  extra_files:
+    - glob: out/bin/vxlan.c.wasm
+      name_template: 'vxlan.c_{{ .Version }}_wasip1_wasm.wasm'
 snapshot:
   version_template: "{{ incpatch .Version }}-{{ replace .Branch \"/\" \"-\" }}-next"
 changelog:
@@ -153,6 +173,9 @@ release:
   draft: false
   disable: false
   prerelease: auto
+  extra_files:
+    - glob: out/bin/vxlan.c.wasm
+      name_template: 'vxlan.c_{{ .Version }}_wasip1_wasm.wasm'
     # this name template makes the OS and Arch compatible with the results of uname.
     # name_template: >-
     #   {{ .ProjectName }}_
