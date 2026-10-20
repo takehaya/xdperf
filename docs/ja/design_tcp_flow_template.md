@@ -932,3 +932,8 @@ Copilot の追加指摘に対応し、末端の MPLS ラベルを読み飛ばし
 個別の分類テスト、構造検査、全 14 examples は成功している。
 テストを省略せず完了させるため、`make test` と CI の全テストに 20 分の上限を明示する。
 `make test` は `TEST_TIMEOUT` で上書き可能にし、CI の race と coverage は維持する。
+
+20 分上限で全 sudo race テストが完走した。
+全 14 examples、lint、初期化チェックも成功し、MPLS 修正後の最終バイナリでは mixed、payload (IPv4/IPv6 の各 6 条件)、全 22 トンネルを再確認した。
+正常時の `tuple_mismatch` と `invalid_tcp` はすべて 0 だった。
+時間上限変更も 4 レビュアーで追加 OCR を行い、検査内容を維持していることを確認した。
