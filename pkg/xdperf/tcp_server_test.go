@@ -73,7 +73,7 @@ func TestTCPServerSweepAfterDefault(t *testing.T) {
 // The sweeper retires only idle LAST_ACK / SYN_RCVD entries, counts each one
 // once, and with stale = 0 (shutdown) retires every such entry.
 func TestSweepTCPServerFlows(t *testing.T) {
-	objs, _, err := coreelf.ReadCollectionWithSizes(map[string]any{"swap_resp": uint32(0)},
+	objs, _, err := coreelf.ReadBaseCollectionWithSizes(map[string]any{"swap_resp": uint32(0)},
 		map[string]uint32{"diff_map": 1, "tcp_srv_flow_map": 64})
 	if err != nil {
 		t.Fatalf("load: %v", err)

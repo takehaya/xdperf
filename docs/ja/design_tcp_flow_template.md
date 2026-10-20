@@ -929,8 +929,11 @@ Copilot の追加指摘に対応し、末端の MPLS ラベルを読み飛ばし
 
 #126 の全 sudo race は、このホストでは `pkg/coreelf` が 10 分の既定上限に 2 回達し、一時的に 20 分へ延長して完走を確認した。
 通常パケットと単独 TCP のテスト補助関数が `ReadCollection` 経由で不要な混合用プログラムまで毎回ロードし、そのたびに verifier の処理を繰り返していた。
-通常のテストは本番と同じ `ReadBaseCollectionWithSizes` に切り替える。
-混合用プログラムを繰り返し使うテストでは、同じ特殊化のロードを共有し、使用前にマップを初期化してテスト間の状態漏れを防ぐ。
+通常のテストは本番と同じ `ReadBaseCollectionWithSizes` に切り替え、マップはテストごとに個別に所有する。
+`pkg/xdperf` の混合テストは `MixedProgramFeatures` 全体をキーにロードを共有し、借用から cleanup まで mutex で排他する。
+各借用の最初に全データマップの全エントリと全 possible CPU の値をゼロに戻し、LRU_HASH は全削除する。
+ロード時に設定した tail call の program array は維持し、共有オブジェクトは `TestMain` で閉じる。
+`pkg/plugin` のテストには同じ BPF ロードの重複はない。
 定数の組み合わせと混合の特殊化をロードする専用テストは残し、テスト一覧の比較と `-shuffle=on` で検査内容と順序独立性を確認する。
 これにより `TEST_TIMEOUT` と CI の `-timeout 20m` を外し、Go の既定の 10 分へ戻す。
 変更前後のパッケージ別時間は、手元の対応差の平均と Student t 分布による 95% CI、および CI の実測値で比較する。

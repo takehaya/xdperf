@@ -2,7 +2,6 @@
 GOCMD=go
 TINYGOCMD=tinygo
 GOTEST=$(GOCMD) test
-TEST_TIMEOUT ?= 20m
 GOVET=$(GOCMD) vet
 VERSION := 0.0.1
 GIT_HASH=$(git rev-parse --short HEAD)
@@ -77,7 +76,7 @@ test-runnable: ## check no panic at init()
 
 .PHONY: test
 test: ## Run the tests of the project
-	$(GOTEST) -v -exec sudo -race -timeout $(TEST_TIMEOUT) ./... $(OUTPUT_OPTIONS)
+	$(GOTEST) -v -exec sudo -race ./... $(OUTPUT_OPTIONS)
 
 .PHONY: test-bpf
 test-bpf: ## Run BPF program load tests (requires root/CAP_BPF)

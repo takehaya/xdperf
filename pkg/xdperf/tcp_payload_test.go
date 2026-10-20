@@ -3,7 +3,6 @@ package xdperf
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -17,24 +16,17 @@ import (
 
 func setupFlowExtensions(t *testing.T, variants ...guest.PacketVariant) *Xdperf {
 	t.Helper()
-	objs, spec, err := coreelf.ReadBaseCollectionWithSizes(map[string]any{"swap_resp": uint32(0)}, map[string]uint32{"diff_map": 100})
+	spec, err := coreelf.LoadBpf()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { objs.Close() })
-	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfobjs: objs, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
+	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
 	r := mixedResponse()
 	r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], variants...)
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
 	}
-	if err := coreelf.LoadMixedProgramsWithFeatures(objs, spec, x.mixed.features); err != nil {
-		var ve *ebpf.VerifierError
-		if errors.As(err, &ve) {
-			t.Fatalf("load extensions: %+v", ve)
-		}
-		t.Fatal(err)
-	}
+	x.bpfobjs = loadMixedTestObjects(t, x.mixed.features)
 	target, err := parseTCPVariant(variants[0])
 	if err != nil {
 		t.Fatal(err)

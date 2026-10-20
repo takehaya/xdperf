@@ -3,6 +3,7 @@ package xdperf
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"testing"
 
 	"github.com/takehaya/xdperf/pkg/coreelf"
@@ -167,51 +168,53 @@ func TestTCPTimestampsBPF(t *testing.T) {
 
 func TestTCPFlowParamsBPF(t *testing.T) {
 	for _, v6 := range []bool{false, true} {
-		v := extensionVariant(v6)
-		start := uint64(29)
-		if v6 {
-			start = 37
-		}
-		v.Params = []guest.VariableParams{{ByteStart: start, ByteSize: 1, ByteRange: guest.TemplateRange{Start: 11, End: 12}, PatternType: guest.ValuePatternTypeSequential}}
-		v.TCPFlow.Flows = append(v.TCPFlow.Flows, guest.TCPFlow{Bytes: "20000"})
-		v.TCPFlow.Timestamps = true
-		v.TCPFlow.PayloadPattern = []byte("abc")
-		x := setupFlowExtensions(t, v)
-		for i := uint32(0); i < 2; i++ {
-			f := lookupExtensionFlow(t, x, i)
-			if f.TemplateId != 16+i {
-				t.Fatal("wrong expanded template", f.TemplateId)
-			}
-			f.Iss = 100
-			selectExtensionFlow(t, x, i, f)
-			action, syn, err := x.bpfobjs.XdpTxTcpMixed.Test(bytes.Repeat([]byte{0xa5}, 2049))
-			if err != nil || action != 3 || syn[start] != byte(11+i) {
-				t.Fatal("flow source IP", action, err)
-			}
-			wrong := extensionReply(v, uint16(40000+i), 5000, 101, 0x12, timestampOption(7))
-			action, _, err = x.bpfobjs.XdpRxTcpMixed.Test(wrong)
-			if err != nil || action != 2 {
-				t.Fatal("accepted wrong flow IP", action, err)
-			}
-			dst := 33
+		t.Run(fmt.Sprintf("v6=%v", v6), func(t *testing.T) {
+			v := extensionVariant(v6)
+			start := uint64(29)
 			if v6 {
-				dst = 53
+				start = 37
 			}
-			wrong = extensionReply(v, uint16(40000+i), 5000, 101, 0x12, timestampOption(7))
-			wrong[dst] = byte(11 + i)
-			action, ack, err := x.bpfobjs.XdpRxTcpMixed.Test(wrong)
-			if err != nil || action != 3 || ack[start] != byte(11+i) {
-				t.Fatal("flow RX", action, err)
+			v.Params = []guest.VariableParams{{ByteStart: start, ByteSize: 1, ByteRange: guest.TemplateRange{Start: 11, End: 12}, PatternType: guest.ValuePatternTypeSequential}}
+			v.TCPFlow.Flows = append(v.TCPFlow.Flows, guest.TCPFlow{Bytes: "20000"})
+			v.TCPFlow.Timestamps = true
+			v.TCPFlow.PayloadPattern = []byte("abc")
+			x := setupFlowExtensions(t, v)
+			for i := uint32(0); i < 2; i++ {
+				f := lookupExtensionFlow(t, x, i)
+				if f.TemplateId != 16+i {
+					t.Fatal("wrong expanded template", f.TemplateId)
+				}
+				f.Iss = 100
+				selectExtensionFlow(t, x, i, f)
+				action, syn, err := x.bpfobjs.XdpTxTcpMixed.Test(bytes.Repeat([]byte{0xa5}, 2049))
+				if err != nil || action != 3 || syn[start] != byte(11+i) {
+					t.Fatal("flow source IP", action, err)
+				}
+				wrong := extensionReply(v, uint16(40000+i), 5000, 101, 0x12, timestampOption(7))
+				action, _, err = x.bpfobjs.XdpRxTcpMixed.Test(wrong)
+				if err != nil || action != 2 {
+					t.Fatal("accepted wrong flow IP", action, err)
+				}
+				dst := 33
+				if v6 {
+					dst = 53
+				}
+				wrong = extensionReply(v, uint16(40000+i), 5000, 101, 0x12, timestampOption(7))
+				wrong[dst] = byte(11 + i)
+				action, ack, err := x.bpfobjs.XdpRxTcpMixed.Test(wrong)
+				if err != nil || action != 3 || ack[start] != byte(11+i) {
+					t.Fatal("flow RX", action, err)
+				}
 			}
-		}
-		if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.Drain = 1 }); err != nil {
-			t.Fatal(err)
-		}
-		for _, id := range []uint32{16, 17} {
-			var tm coreelf.BpfTcpTemplate
-			if err := x.bpfobjs.TcpTemplateMap.Lookup(id, &tm); err != nil || tm.Cfg.Drain != 1 {
-				t.Fatal("expanded template drain", err)
+			if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.Drain = 1 }); err != nil {
+				t.Fatal(err)
 			}
-		}
+			for _, id := range []uint32{16, 17} {
+				var tm coreelf.BpfTcpTemplate
+				if err := x.bpfobjs.TcpTemplateMap.Lookup(id, &tm); err != nil || tm.Cfg.Drain != 1 {
+					t.Fatal("expanded template drain", err)
+				}
+			}
+		})
 	}
 }
