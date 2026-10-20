@@ -622,3 +622,39 @@ Git に残すのは [summary.csv](benchmarks/tcp-rx-tunnels/summary.csv) と検�
 リポジトリのルートで `python3 docs/ja/benchmarks/tcp-rx-tunnels/verify.py out/mixbench/main` を実行すると、96 試行の網羅性、エラー数、バイト数、対応差と CI を検算する。
 `report.py` は summary から上の表を生成する。
 実行手順と保存内容は [測定 README](benchmarks/tcp-rx-tunnels/README.md) に記載した。
+
+## 混合 RX の照合失敗を数える (ジョブ E、実装前計画)
+
+通常応答の解析・照合に診断用の分岐や書き込みを追加しない。
+`xdp_rx_tcp_mixed` の既存の unmatched 経路からのみ cold な別関数を呼び、パケットを再解析して分類する。
+照合後の不正 TCP ヘッダによる DROP も、その失敗分岐だけで数える。
+既存の packet、単独 `--tcp`、TCP server、混合 TX の命令列は維持する。
+
+分類は独立した 1 要素の PERCPU_ARRAY (`mixed_rx_stats_map`) の配列とし、1 フレームにつき次のいずれかを 1 回加算する。
+
+| ログ名 / OTLP の reason | 意味 |
+| --- | --- |
+| `rx_parse_failed` / `parse_failed` | TCP に到達できない。未対応形式、解析深度・オフセット上限、長さ不整合、IPv4 オプション・断片などを含む |
+| `rx_port_outside` / `port_outside` | TCP に到達したが宛先ポートが設定フロー範囲外 |
+| `rx_tuple_mismatch` / `tuple_mismatch` | 宛先ポートはフロー範囲内だが版・アドレス・送信元ポート等が一致せず、フローと照合できない |
+| `rx_neighbor` / `neighbor` | 外側または内側の ARP / IPv6 ND (ICMPv6 type 133–137) |
+| `rx_other` / `other` | TCP 以外の通常通信 (通常 UDP、ICMP 等) |
+| `rx_invalid_tcp` / `invalid_tcp` | 照合後に TCP ヘッダ長・IP 長の検査で DROP |
+
+`parse_failed` の詳細理由を既存パーサーから返すと、正常経路の戻り値処理・命令列にも影響する。
+今回はこの制約を優先し、詳細理由はまとめる。
+失敗経路の再解析は既存の層パーサーを再利用し、末端の ARP/ND・通常の非 TCP を補助的に識別する。
+不正なパケットと未対応形式の判別には限界があり、これらの値だけで xdperf 応答の取りこぼしとは断定できない。
+通常 UDP を受信する既存 tail call と PASS/DROP/TX の挙動は維持する。
+
+Go は全 CPU 分を合算し、mixed final statistics と `xdperf.mixed.rx` ObservableCounter (`reason` 属性、単位 `{packet}`) に出す。
+混合モード以外ではこのメトリクスを登録しない。
+終了時の `tuple_mismatch > 0` は警告とし、計測自体はエラー終了させない。
+利用者向け文書に各分類、ポート衝突、アドレス/NAT、対向設定、未対応トンネル・MTU の確認順序を記す。
+
+検証では BPF_PROG_RUN で全分類と正常照合、内外の ARP/ND、IPv4/IPv6、各照合要素と不正長を確認する。
+既存 examples の正常 E2E に `tuple_mismatch == 0` の検査を追加する。
+変更前後の BPF オブジェクトを同じコンパイラで比較し、通常モードの全プログラムと正常 RX 経路 (分岐先の再配置を除く) の命令を検算する。
+全 sudo race テスト、examples、lint、複数レビュアーによる OCR を実行してから #125 を push する。
+#126 へ merge した後も取り込み差分の OCR と検証を行い、両 PR の Copilot と CI を完了させる。PR 自体はマージしない。
+性能測定は行わない。検証ログと比較用オブジェクトは `out/rx-diagnostics/` に保存し、Git には検算スクリプトと文書だけを残す。
