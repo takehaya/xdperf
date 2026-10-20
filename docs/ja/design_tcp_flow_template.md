@@ -10,7 +10,7 @@
 |---|---|---|
 | 1 | グループ別 base_packet、Ethernet、VLAN 最大 2 段、IPv4/IPv6、固定 TCP オプション | feat/tcp-flow-template |
 | 2 | 256 バイトのひな型、汎用 TX 修正表、VXLAN/GENEVE RX、VXLAN E2E | feat/tcp-flow-encap |
-| 3 | SRv6、GTP-U、GRE、IPIP、MPLS の RX | 設計のみ |
+| 3 | SRv6、GTP-U、GRE、IPIP、MPLS の RX | feat/tcp-flow-rx-tunnels |
 | 4 | Timestamps、ペイロードパターン、フロー別 variable_params | 設計のみ |
 
 `--tcp-server` のトンネル対応は対象外とする。
@@ -482,3 +482,237 @@ TX は packet、TCP、送信を行わない機会の混合平均なので、TCP 
 全 108 試行の整合検証と、比較バイナリのハッシュ検証を通過した。
 測定専用 netns は削除し、`kernel.bpf_stats_enabled` は元の 0 に戻した。
 比較元の detached worktree は `/tmp/claude-1000/xdperf-bench-base` に残している。
+
+## 段階 3 の実装前計画
+
+比較元は `perf/mixed-startup` の `ad72a7f` とする。
+受信フレームの各層の申告長を検査し、SRv6、GTP-U、GRE、IPIP、MPLS を順に外して内側 TCP の 5 タプルを照合する。
+外側アドレス、GRE key、MPLS label、GTP-U TEID、SRH の segment list は照合に使わない。
+送信時と異なるカプセル化、異なる SRH 長、途中でカプセル化が外れた IPv4/IPv6 の応答も受理する。
+解析上限は既存の TCP オフセット 236 バイト、外側 IP 4 層を維持し、MPLS は最大 8 label、GTP-U の拡張ヘッダは最大 8 個とする。
+未対応の形式、境界違反、断片、上限超過ではフロー状態を変更しない。
+
+SRH は Routing Type 4、Hdr Ext Len、Last Entry、Segments Left の整合性を検査し、内側 IP または Ethernet を解析する。
+TCP 自身の IPv6 ヘッダに SRH が付く形式は従来どおり対象外とする。
+GRE は version 0 の key あり／なしを受理し、checksum、routing、sequence は対象外とする。
+MPLS は bottom-of-stack まで進み、その直後の IP version から IPv4/IPv6 を選ぶ。
+GTP-U は GTPv1-U の G-PDU と申告長を検査し、E/S/PN に伴う共通 optional fields と拡張ヘッダ列を読み飛ばす。
+受信の S/PN は内側 TCP の照合に使わず、送信とは別に受理する。
+構造の根拠は [RFC 8754](https://www.rfc-editor.org/rfc/rfc8754.html)、[RFC 2890](https://www.rfc-editor.org/info/rfc2890/)、[3GPP TS 29.281](https://www.etsi.org/deliver/etsi_TS/129200_129299/129281/16.02.00_60/ts_129281v160200p.pdf) とする。
+
+送信 GRE sequence と GTP-U S/PN の採番はこの変更に含めない。
+同じトンネルを共有する複数フローと CPU の TX、再送、RX 応答を通した採番が必要であり、現在のフロー別カウンタではトンネル全体の順序を表現できない。
+共有状態と同期を TX ホットパスへ追加する変更は受信解析の拡張から分離し、従来の設定拒否を維持する。
+
+ジョブ A の TX と RX 応答 builder の機能選択を維持する。
+送信テンプレートから受信トンネルを限定する案は、非対称経路の受理要件を破るため採用しない。
+代わりにプロトコル固有の処理を BPF サブプログラムへ分離し、該当する受信ヘッダを検出した場合にだけ呼ぶ。
+通常 packet と `--tcp` は混合 RX 自体をロードせず、従来の命令とロード順を保つ。
+混合 RX の verifier 負荷は実測し、展開による状態数増加があれば解析層の関数境界を見直す。
+
+検証では BPF_PROG_RUN で各形式の SYN/ACK、データ ACK、FIN を入力し、状態遷移、再カプセル化した応答、チェックサムを検査する。
+異なる SRH 長、GRE key の有無、MPLS の複数 label と IPv6、GTP-U の拡張ヘッダと S/PN、異種トンネルの入れ子、不正長と切り詰めも対象にする。
+Linux 対向の ip6tnl/seg6、gre/gretap/ip6gre、MPLS router/lwtunnel、利用可能なら gtp モジュールを使い、完了フロー数と sink の受信バイト数を照合する。
+利用できない機能は実行結果を記録し、BPF_PROG_RUN による代替範囲を PR に明記する。
+全 sudo race テスト、examples E2E、lint、OCR を完了してから PR を作成し、Copilot と CI を最後まで確認する。
+
+性能は既存 mixbench と同じ対応比較の方式を使う。
+起動時間と既存の非カプセル化／VXLAN／GENEVE の性能を 6 対以上で測定し、対応差の平均と t 分布による両側 95% CI を記録する。
+生データと再集計手順を残し、差が不明確な場合は同等性を断定しない。
+
+### 段階 3 の実装時の判断
+
+各 IP 層へ全分岐を展開する最初の実装は、verifier の 100 万検証命令上限を超えた。
+1 層の解析を独立検証される global BPF サブプログラム `tcp_parse_layer` に分離し、呼び出し側は最大 5 層を進む構成へ変更した。
+追加のマップや tail call は使わず、通常 packet と通常 TCP のロード対象も維持する。
+混合 RX の入口も新しい EtherType と IP protocol を解析器へ振り分ける。
+
+GTP-U の受信では spare bit と E=0 の未使用 Next Extension Header 値を無視する。
+送信ひな型の厳格な検査とは区別し、TS 29.281 の受信規則に合わせる。
+S/PN ありの受信、8 個の拡張ヘッダ、8 label、4 外側 IP 層、TCP オフセット 236 バイトの正例と、それぞれの上限超過を BPF_PROG_RUN で確認する。
+各正常フレームを全バイト境界で切り詰め、フロー構造体全体が不変であることも検査する。
+
+Linux 対向の SRv6 では、IPv4 を End.DX4、IPv6 を End.DT6 と local table 255 で終端する。
+main table を指定した初期設定では、IPv6 の内側宛先がローカル配送されず TCP が完了しなかったため、終端アドレスの local route を引く構成に修正した。
+返信は seg6 lwtunnel で 1 segment と 2 segments を生成し、bare IP の返信も別ケースで確認する。
+IPv6 GRE/IPIP は `encaplimit none` を指定し、今回の対象外である汎用 Destination Options を付けない。
+GTP-U の IPv6 PDP はカーネルが要求する /64 prefix を登録し、実際の TCP アドレスとの照合は通常の内側 5 タプルで行う。
+
+既存の全パケットを層ごとの global 関数へ渡した版では、正式測定前の短い予備実行で既存ケースの送信レートが低く出た。
+他テストと並行した 1 対だけの値なので性能差の推定には使わないが、既存経路へ追加した関数呼び出しを除く構成を検討した。
+最終構成は bare/VXLAN/GENEVE の従来の走査を一つの global サブプログラムとして保ち、新しい形式を検出した場合だけ汎用の層別走査へ進む。
+既知の送信テンプレートから RX を削除せず、受信ヘッダによる分岐で既存経路の呼び出し数を維持する。
+二つの走査器が共通に受理する形式は既存の最大 GENEVE 長と混在入れ子のテストで検証する。
+全機能を層別走査だけで扱った版の予備データは `out/mixbench/pilot/`、最終構成の予備データは `out/mixbench/pilot-fast/` に残し、正式測定には混ぜない。
+
+Linux 6.1/6.6 の CI では、従来の走査器から拡張走査器を直接呼ぶ構成が合計 544 バイトのスタックを使い、512 バイト上限で拒否された。
+新形式を検出したら従来の走査器から呼び出し元へ戻し、そのフレームを解放してから拡張走査器を呼ぶ構成に変更した。
+新しいカーネルだけでなく、既存 CI の全カーネルでロードと BPF_PROG_RUN を検証する。
+
+
+## 段階 3 の測定記録
+
+### 環境と対応比較
+
+比較元は `ad72a7f`、変更後は `9277b88` であり、Go 1.25.5 でビルドした。
+Linux `7.0.0-38-generic`、AMD EPYC 7713P を公開する 32 vCPU の KVM VM 上で Linux veth を使用した。
+packet 専用と、混合 packet:TCP=3:1 の非カプセル化ひな型、VXLAN、GENEVE を、1/4 worker で各 8 秒測った。
+TCP は 4 フロー、MSS 1024、window 32、外側 UDP チェックサムは LCO とした。
+送信 CPU は 4 または 4〜7、sink は 12〜15 に固定し、6 ブロック内で条件順と base/head の順を無作為化して隣接する対として実行した。
+全 96 試行が揃い、packet/dispatch error は 0、混合試行の ACK 済みバイトと sink 受信バイトは一致した。
+測定中の BPF runtime counters は無効にし、ビルドやテストは並行実行しなかった。
+
+表の対応差はブロックごとの `head - base`、対応変化率は `100 * (head / base - 1)` の平均である。
+両側 95% CI は 6 対の標本標準偏差と t 分布（自由度 5、係数 2.570581835636305）から求めた。
+外れ値は除かず、多重比較補正はしていない。
+起動時間はプロセス起動から送信開始ログの到着までを monotonic clock で測った。
+packet 定常 Mpps は統計ログの最初の 6 区間、TCP goodput は最終 ACK 済みバイトと送信開始から drain 開始までの時間から求めた。
+
+| 条件 | worker | 指標 | base 平均 | head 平均 | 対応差平均 [95% CI] | 対応変化率 % [95% CI] |
+|---|---:|---|---:|---:|---|---|
+| geneve | 1 | TCP Mbps | 844.944 | 823.569 | -21.376 [-57.450, 14.699] | -2.58 [-7.00, 1.84] |
+| geneve | 1 | 起動 ms | 5282.201 | 4228.057 | -1054.143 [-1096.970, -1011.317] | -19.95 [-20.64, -19.27] |
+| geneve | 4 | TCP Mbps | 3995.121 | 3951.304 | -43.816 [-203.086, 115.453] | -1.21 [-5.58, 3.15] |
+| geneve | 4 | 起動 ms | 5287.761 | 4242.626 | -1045.135 [-1117.943, -972.327] | -19.75 [-20.63, -18.87] |
+| packet | 1 | 定常 Mpps | 0.749 | 0.751 | 0.001 [-0.002, 0.005] | 0.18 [-0.30, 0.66] |
+| packet | 1 | 起動 ms | 2551.278 | 2972.224 | 420.946 [-692.960, 1534.852] | 16.67 [-27.38, 60.73] |
+| packet | 4 | 定常 Mpps | 3.019 | 3.028 | 0.009 [-0.031, 0.049] | 0.31 [-1.02, 1.64] |
+| packet | 4 | 起動 ms | 2572.550 | 2555.531 | -17.019 [-59.999, 25.962] | -0.65 [-2.31, 1.01] |
+| template | 1 | TCP Mbps | 674.724 | 675.993 | 1.269 [-25.738, 28.275] | 0.29 [-3.76, 4.34] |
+| template | 1 | 起動 ms | 4715.642 | 3665.244 | -1050.398 [-1165.103, -935.693] | -22.24 [-23.81, -20.66] |
+| template | 4 | TCP Mbps | 3662.303 | 3765.803 | 103.500 [-240.722, 447.721] | 3.71 [-7.77, 15.19] |
+| template | 4 | 起動 ms | 4692.362 | 3660.405 | -1031.957 [-1121.659, -942.256] | -21.97 [-23.36, -20.58] |
+| vxlan | 1 | TCP Mbps | 839.822 | 844.156 | 4.334 [-10.162, 18.829] | 0.53 [-1.20, 2.25] |
+| vxlan | 1 | 起動 ms | 5255.291 | 4248.467 | -1006.824 [-1078.096, -935.552] | -19.14 [-20.02, -18.27] |
+| vxlan | 4 | TCP Mbps | 4119.759 | 4089.073 | -30.685 [-44.334, -17.037] | -0.74 [-1.07, -0.42] |
+| vxlan | 4 | 起動 ms | 5284.011 | 4278.529 | -1005.482 [-1039.943, -971.022] | -19.04 [-19.80, -18.27] |
+
+### 解釈と検証範囲
+
+混合 TCP の起動は全条件で約 1.0〜1.1 秒短縮し、対応差の CI は 0 を含まなかった。
+混合 RX の静的命令数は 22,755 から 24,337 に増えたが、層別の global サブプログラムで検証する構成にした。
+この起動計測だけでは verifier の処理時間と他のロード処理を分離できないため、短縮の原因は断定しない。
+packet 専用の起動には 1 worker の head で 1 試行だけ約 5.1 秒の値があり、CI が広い。
+この値も除外せず集計した。
+
+VXLAN の 4 worker では TCP goodput が平均 −0.74%（95% CI [−1.07%, −0.42%]）、混合 packet pps が −0.69% [−1.25%, −0.12%] となった。
+同条件で小さな低下を検出したが、この veth 計測には Linux TCP と ACK の処理も含まれ、RX 解析器だけの影響を分離していない。
+その他の TCP goodput と packet 専用の定常 pps の CI は 0 を含んだ。
+GENEVE の両 worker と非カプセル化ひな型の 4 worker は CI 下限が −5% を下回り、この測定で性能の同等性は結論できない。
+実 NIC、多数フロー、新たに対応したトンネルのスループットは未測定である。
+通常 packet、通常 TCP、TCP server、混合 TX の静的 BPF 命令列は比較元と一致し、それらの経路に追加解析は入っていない。
+
+実装コミットに対する全 sudo race テスト、初期化テスト、lint が成功した。
+最終の既存走査保持とスタック修正を含む状態で全 examples 13 シナリオを再実行し、すべて成功した。
+Linux 対向は内側 IPv4/IPv6 の gre、gre-key、gretap、ip6gre、ipip/SIT、ip6tnl、SRv6 の 1 segment／2 segments／bare reply、MPLS、GTP-U の全 22 ケースで、各 4 フローの完了と 77,830 バイトの受信を確認した。
+このホストでは機能不足によるスキップも BPF_PROG_RUN のみへの代替もなかった。
+拡張ヘッダ、上限境界、不正長、全バイト境界の切詰めは BPF_PROG_RUN で追加検証した。
+スタック修正後の [BPF CI](https://github.com/takehaya/xdperf/actions/runs/39294979917) は Linux 6.1、6.6、6.12、6.18、7.0、7.1、7.2-rc2 の全対象で成功した。
+
+### 生データと再計算
+
+Git に残すのは [summary.csv](benchmarks/tcp-rx-tunnels/summary.csv) と検算スクリプトである。
+生ログ、試行行、実行順、環境、ビルド情報、測定スクリプトは作業ディレクトリの `out/mixbench/` と次の scratchpad に保存した。
+
+```text
+/tmp/claude-1000/-home-ubuntu-private-xdperf/925f4640-ff78-496d-acec-28904e958eb9/scratchpad/mixbench/tcp-rx-tunnels/
+```
+
+保存先の `analyze.py main` でログから再集計できる。
+リポジトリのルートで `python3 docs/ja/benchmarks/tcp-rx-tunnels/verify.py out/mixbench/main` を実行すると、96 試行の網羅性、エラー数、バイト数、対応差と CI を検算する。
+`report.py` は summary から上の表を生成する。
+実行手順と保存内容は [測定 README](benchmarks/tcp-rx-tunnels/README.md) に記載した。
+
+## 混合 RX の照合失敗を数える (ジョブ E、実装前計画)
+
+通常応答の解析と照合に診断用の分岐や書き込みを追加しない。
+`xdp_rx_tcp_mixed` の既存の unmatched 経路からのみ cold な別関数を呼び、パケットを再解析して分類する。
+照合後の不正 TCP ヘッダによる DROP も、その失敗分岐だけで数える。
+既存の packet、単独 `--tcp`、TCP server、混合 TX の命令列は維持する。
+
+分類は独立した 1 要素の PERCPU_ARRAY (`mixed_rx_stats_map`) の配列とし、1 フレームにつき次のいずれかを 1 回加算する。
+
+| ログ名 / OTLP の reason | 意味 |
+| --- | --- |
+| `rx_parse_failed` / `parse_failed` | TCP に到達できない。未対応形式、解析深度やオフセット上限、長さ不整合、IPv4 オプションや断片などを含む |
+| `rx_port_outside` / `port_outside` | TCP に到達したが宛先ポートが設定フロー範囲外 |
+| `rx_tuple_mismatch` / `tuple_mismatch` | 宛先ポートはフロー範囲内だが版、アドレス、送信元ポート等が一致せず、フローと照合できない |
+| `rx_neighbor` / `neighbor` | 外側または内側の ARP / IPv6 ND (ICMPv6 type 133–137) |
+| `rx_other` / `other` | TCP 以外の通常通信 (通常 UDP、ICMP 等) |
+| `rx_invalid_tcp` / `invalid_tcp` | 照合後に TCP ヘッダ長・IP 長の検査で DROP |
+
+`parse_failed` の詳細理由を既存パーサーから返すと、正常経路の戻り値処理・命令列にも影響する。
+今回はこの制約を優先し、詳細理由はまとめる。
+失敗経路の再解析は既存の層パーサーを再利用し、末端の ARP/ND や通常の非 TCP を補助的に識別する。
+不正なパケットと未対応形式の判別には限界があり、これらの値だけで xdperf 応答の取りこぼしとは断定できない。
+通常 UDP を受信する既存 tail call と PASS/DROP/TX の挙動は維持する。
+
+Go は全 CPU 分を合算し、mixed final statistics と `xdperf.mixed.rx` ObservableCounter (`reason` 属性、単位 `{packet}`) に出す。
+混合モード以外ではこのメトリクスを登録しない。
+終了時の `tuple_mismatch > 0` は警告とし、計測自体はエラー終了させない。
+利用者向け文書に各分類、ポート衝突、アドレス/NAT、対向設定、未対応トンネルや MTU の確認順序を記す。
+
+検証では BPF_PROG_RUN で全分類と正常照合、内外の ARP/ND、IPv4/IPv6、各照合要素と不正長を確認する。
+既存 examples の正常 E2E に `tuple_mismatch == 0` の検査を追加する。
+変更前後の BPF オブジェクトを同じコンパイラで比較し、通常モードの全プログラムと正常 RX 経路 (分岐先の再配置を除く) の命令を検算する。
+全 sudo race テスト、examples、lint、複数レビュアーによる OCR を実行してから #125 を push する。
+#126 へ merge した後も取り込み差分の OCR と検証を行い、両 PR の Copilot と CI を完了させる。PR 自体はマージしない。
+性能測定は行わない。検証ログと比較用オブジェクトは `out/rx-diagnostics/` に保存し、Git には検算スクリプトと文書だけを残す。
+
+### 実装方針の補足: 不正 TCP の cold 分岐
+
+LLVM 22 では不正 TCP の return に C のカウンタ呼び出しを加えるだけでも、関数全体のレジスタ割り当てと spill が変わった。
+固定レジスタや空の asm による誘導も正常経路の完全一致を保証できず、保守性が低いため採用しない。
+一方、unmatched への void 関数呼び出しだけなら正常経路は分岐先の再配置を除いて完全一致した。
+そこで不正 TCP の既存 C 分岐は変更せず、混合プログラムのロード時にその三つの長さ検査の分岐先だけを専用ブロックへ差し替える。
+専用ブロックは既存の PERCPU 加算関数を呼び DROP する。正常経路に命令は挿入しない。
+BTF の元ソース行、分岐命令の種類と数、共通の旧分岐先を検査し、コンパイラ更新等で構造が変わった場合は明示的なエラーにする。
+既存の混合プログラムのロード前処理 (機能別定数の設定) と同じ箇所に限定し、実行用の collection 読み込みと混合プログラムの読み込みで適用する。
+生の `LoadBpf()` spec を手動で読み込む場合は `PrepareMixedRXDiagnostics` を明示的に呼ぶ。
+変更前のオブジェクトとの検算では、このロード時処理後も比較する。
+
+外側 ARP/ND 等は dispatcher の PASS からも分類関数に入れる。
+通常 TCP を dispatcher から振り分ける既存の命令列は維持し、tail call 先での二重加算はしない。
+
+
+### ジョブ E の検証結果
+
+LLVM 22 の変更前オブジェクト (`9117909`) と変更後オブジェクトを比較した。
+`scripts/check_mixed_rx_bytecode.go` はロード時の計装後の spec に対し、正常経路の制御フローと命令オペランドを照合する。
+分岐先の再配置だけを許し、レジスタ番号、スタック位置、マップ参照、呼び出し先を含めて比較する。
+
+| 比較対象 | little endian | big endian |
+| --- | --- | --- |
+| packet、単独 TCP、TCP server、混合 TX (11 プログラム) | 全バイト一致 | 全バイト一致 |
+| 混合 TCP RX の正常経路と全呼び出し先 | 22,864 命令一致 (9 関数) | 22,840 命令一致 (9 関数) |
+| dispatcher の正常経路 | 70 命令一致 | 70 命令一致 |
+
+分類テストは 36 フレームを直接 RX と dispatcher 経由の両方で実行し、各カウンタの差分と既存の action を検査する。
+不正長とタプル不一致が重なる場合は、cold 分類で長さを先に検査して `parse_failed` に入れる。
+照合済みの不正 TCP は専用の `invalid_tcp` に入る。
+OTLP は全 reason の属性と累積値、単調増加性、読み込み失敗時の観測省略、値の飽和を検査する。
+終了ログの各値と `tuple_mismatch` の警告も実際の BPF カウンタに対して照合した。
+
+検算の入力オブジェクト、命令ダンプ、各検証ログはこの worktree の `out/rx-diagnostics/` に保存している。
+性能測定は行っていない。
+
+### #126 への取り込み計画
+
+#126 は RX 本体を共通の inline 関数にし、通常版とオプション版 (`xdp_rx_tcp_mixed_ext`) の二つの entry point を持つ。
+取り込み時に通常版だけを計装すると、Timestamp 等を選択したフローの不正 TCP が数えられない。
+ロード前処理は両 entry point に適用し、オプション版がない #125 でも動作する構成にする。
+C の未照合カウントは共通本体へ取り込み、オプション状態や payload の処理順序を維持する。
+取り込み前の #126 のオブジェクトも保存し、通常版とオプション版それぞれの正常経路を比較する。
+
+#125 の最終コードで `make test` (sudo race)、`make examples` (13 シナリオ、失敗とスキップなし)、`make test-runnable`、`make lint` が成功した。
+混合とトンネルの E2E では `rx_tuple_mismatch == 0` と `rx_invalid_tcp == 0` を検査した。
+OCR は principal 2 名と quality 2 名で実行し、不正長とタプル不一致の複合入力による誤分類を修正した。
+修正後の独立した BPF_PROG_RUN 再現でも `tuple_mismatch` から `parse_failed` への変更と PASS の維持を確認した。
+終了ログと dispatcher の構造変更拒否テストも補い、未解決の指摘はない。
+
+#126 では、Timestamp オプションの解析不正による既存 DROP も `invalid_tcp` に含める。
+この失敗分岐もロード時に計装し、正常なオプション処理には命令を追加しない。
+
+Copilot の追加指摘に対応し、末端の MPLS ラベルを読み飛ばして通常の UDP/ICMP を `other` に分類するよう修正した。
+既存の上限付き MPLS パーサーを再利用し、MPLS と GRE/MPLS の UDP/ICMP、および MPLS 内の ND を回帰テストに追加した。
+追加分を含む 36 フレームの分類テストと正常命令列の検算が成功し、4 レビュアーの追加 OCR に未解決の指摘はない。

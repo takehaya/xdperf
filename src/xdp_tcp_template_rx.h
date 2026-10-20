@@ -2,6 +2,7 @@
 #define XDP_TCP_TEMPLATE_RX_H
 
 #include "xdp_tcp_decap.h"
+#include "xdp_mixed_rx_stats.h"
 
 SEC("xdp")
 int xdp_rx_tcp_mixed(struct xdp_md *ctx)
@@ -15,7 +16,10 @@ int xdp_rx_tcp_mixed(struct xdp_md *ctx)
     void *data = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     struct tcp_inner_packet inner = {0};
-    if (!tcp_find_inner(ctx, &inner))
+    int parsed = tcp_find_inner(ctx, &inner);
+    if (parsed == 2)
+        parsed = tcp_find_inner_extended(ctx, &inner);
+    if (!parsed)
         goto unmatched;
     __u32 l4 = inner.l4, ip_end = inner.ip_end;
     if (l4 > 236)
@@ -75,6 +79,7 @@ int xdp_rx_tcp_mixed(struct xdp_md *ctx)
     __sync_fetch_and_add(&f->rx_replies, 1);
     return XDP_TX;
 unmatched:
+    mixed_rx_unmatched(ctx);
     if (inner.neighbor)
         return XDP_PASS;
     if (inner.outer_udp) {

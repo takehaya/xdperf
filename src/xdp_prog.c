@@ -1457,12 +1457,25 @@ int xdp_rx_mixed(struct xdp_md *ctx)
         if ((void *)(ip + 1) > end)
             return XDP_PASS;
         transport = ip->nexthdr;
+    } else if (proto == bpf_htons(ETH_P_MPLS_UC) || proto == bpf_htons(ETH_P_MPLS_MC)) {
+        bpf_tail_call(ctx, &mixed_progs, 2);
+        return XDP_ABORTED;
     } else {
         return XDP_PASS;
     }
-    if (transport == IPPROTO_TCP || transport == IPPROTO_UDP) {
+    if (transport == IPPROTO_TCP || transport == IPPROTO_UDP || transport == IPPROTO_IPIP || transport == IPPROTO_IPV6 ||
+        transport == IPPROTO_GRE || transport == IPPROTO_ROUTING || transport == 143) {
         bpf_tail_call(ctx, &mixed_progs, 2);
         return XDP_ABORTED;
     }
+    return XDP_PASS;
+}
+
+// Instruction source for the dispatcher's cold PASS block and its subprograms.
+// The loader splices this path in without changing normal dispatch instructions.
+SEC("xdp")
+int xdp_mixed_rx_account(struct xdp_md *ctx)
+{
+    mixed_rx_outer(ctx);
     return XDP_PASS;
 }
