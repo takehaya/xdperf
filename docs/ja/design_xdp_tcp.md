@@ -2,6 +2,9 @@
 
 ステータス: M1/M2 実装済み (veth で IPv4 / IPv6 / VLAN の各ケースが通る、`examples/tcpstream`)。XDP レスポンダ (`--tcp-server`、12 節) 実装済み。コードレビュー (OCR round 1) の指摘対応を 13 節に記載。実機 100G での検証 (M3) は未実施。
 使い方は [tcp_stream.md](tcp_stream.md)。
+1〜12 節は単独 `--tcp` / `--tcp-server` の設計であり、初期の状態機械は 13〜15 節の修正を反映して読む。
+混合モードでは QinQ、複数宛先、トンネル、Timestamps、ペイロードパターン、フロー別送信元 IP を別の入口で扱う。
+現在の混合 API は [利用ガイド](mixed_variants.md) と [ひな型設計](design_tcp_flow_template.md) を参照する。
 
 ## 1. 目的と範囲
 
@@ -24,7 +27,7 @@ iperf3 のように、**実在する Linux の TCP スタック (任意の TCP �
 | 方向 | クライアント→サーバの一方向データ。サーバからのデータは ACK するだけで捨てる |
 | 制御 | 固定ウィンドウ (飛行中セグメント数 N と相手の受信ウィンドウの小さい方)。輻輳制御なし |
 | 再送 | RTO タイムアウトと重複 ACK 3 回。再送は `snd_una` からの go-back-N |
-| オプション | SYN で MSS と Window Scale を送る。受信側は SYN-ACK の Window Scale だけ解釈する。SACK と Timestamps は使わない |
+| オプション | SYN で MSS と Window Scale を送る。受信側は SYN-ACK の MSS と Window Scale を解釈する。SACK と Timestamps は使わない |
 | ペイロード | 全ゼロ (チェックサム計算を O(1) にするため。後述) |
 | 相手 | 標準の Linux TCP スタック上の任意のシンク (`socat`, 付属の `xdperf-sink`, iperf3 ではない)、または XDP レスポンダ `xdperf run --tcp-server` (12 節) |
 | デバイス | `--device` 1 枚に TX (live frames) と RX (XDP attach) を同居させる。`--rx-device` 分離は対象外 |
@@ -34,7 +37,8 @@ iperf3 のように、**実在する Linux の TCP スタック (任意の TCP �
 
 QinQ、SACK、動的ウィンドウ/輻輳制御、双方向データ、keep-alive 上の複数リクエスト、
 iperf3 制御プロトコル互換、プラグイン (WASM) からの TCP パケットの直接定義、`--rx-device` 分離。
-Wasm による起動時の送信量指定は第16節に記載する。
+Wasm によるひな型と送信量の指定は混合モードとして実装済みであり、第16節に記載する。
+この非目標の範囲は単独 `--tcp` に限る。
 これらは後続で検討する。特に「クローズ後に新しいポートで再接続し続ける」モード (接続レート測定) は、
 本設計の状態機械にそのまま足せるので第 2 段階とする。
 
@@ -68,76 +72,22 @@ XDP
 
 ## 3. データ構造 (src/xdp_tcp.h)
 
-```c
-#define MAX_TCP_FLOWS 65536
+構造体とマップの正本は [src/xdp_tcp.h](../../src/xdp_tcp.h) である。
+初期設計の構造体抜粋は、現在の ABI と異なるため以下の対応表に置き換える。
 
-enum tcp_flow_state {
-    TF_CLOSED = 0,     // 未接続 (SYN 未送出)
-    TF_SYN_SENT,
-    TF_ESTABLISHED,
-    TF_FIN_WAIT_1,     // 自分の FIN 送出済み、ACK 待ち
-    TF_FIN_WAIT_2,     // 自分の FIN は ACK 済み、相手の FIN 待ち
-    TF_DONE,           // 正常終了 (相手 FIN を ACK した)
-    TF_FAILED,         // RST 受信、または SYN/FIN の再送上限超過
-};
+| 構造体またはマップ | 現在の役割 |
+| --- | --- |
+| `tcp_flow` / `tcp_flow_map` | ARRAY、最大 65,536 フロー。spin lock、状態、seq と 64 bit の送信量、フロー別 IPv4 ID、混合用 template_id、Timestamp 状態、送受信の記録を保持する |
+| `tcp_cfg` / `tcp_cfg_map` | ARRAY 1。アドレス、port_base、MSS、再送設定、drain/abort、vlan_id/vlan_pcp、pseudo_sum、L2/IP の hdr_tmpl を保持する |
+| `tcp_cpu_state` / `tcp_cpu_state_map` | PERCPU_ARRAY 1。first、stride、count、cursor と共有 IPv4 ID カウンターを保持する |
+| `tcp_stats` / `tcp_stats_map` | PERCPU_ARRAY 1。SYN、データ、ACK、再送、終了、失敗、生成エラー等の集計を保持する |
+| `tcp_template` / `tcp_template_map` | 混合用のグループ別またはフロー別ひな型。既定 16 エントリ、必要時に拡張する |
+| `tcp_payload` / `tcp_payload_map` | 混合用のグループ別パターンと部分和。16 エントリ |
 
-struct tcp_flow {
-    struct bpf_spin_lock lock;
-    __u8  state;
-    __u8  syn_retries;
-    __u8  dup_acks;
-    __u8  rtx_pending;      // RX が重複 ACK 3 回を検出 → TX が snd_una から再送
-    __u8  peer_fin;         // 相手の FIN を受信済み
-    __u8  wscale;           // 相手が SYN-ACK で提示した window scale
-    __u16 src_port;
-    __u32 iss;              // 自分の ISN
-    __u32 snd_una;          // 未 ACK の最小 seq
-    __u32 snd_nxt;          // 次に送る seq
-    __u32 rcv_nxt;          // 次に期待する相手 seq (= 自分が送る ack 番号)
-    __u32 snd_wnd;          // 相手の受信ウィンドウ (scale 適用後、バイト)
-    __u64 bytes_target;     // このフローで送るバイト数 (0 = 無制限、drain まで)
-    __u64 bytes_acked;
-    __u64 last_send_ns;     // 最後に新規/再送セグメントを送った時刻 (RTO 判定用)
-    __u64 last_ack_ns;
-};
-
-struct tcp_cfg {
-    __u32 flow_count;
-    __u32 window_segs;      // 飛行中セグメント数の上限
-    __u16 mss;              // セグメントのペイロード長
-    __u16 port_base;        // src port = port_base + flow_idx
-    __u16 dst_port;
-    __u16 hdr_len;          // Eth(+VLAN) + IP + TCP(20): 54/74、VLAN 付きなら +4
-    __u16 l3_off, l4_off;   // l3_off = 14 (VLAN 付き 18)、l4_off = l3_off + 20 (IPv4) / 40 (IPv6)
-    __u16 vlan_tci;         // 0 = タグ無し。非 0 なら RX でも TCI の VID が一致するものだけ扱う
-    __u8  ip_version;       // 4 or 6
-    __u8  src_ip[16], dst_ip[16]; // network byte order。IPv4 は先頭 4 バイト
-    __u64 bytes_per_flow;   // 0 = 無制限
-    __u64 rto_ns;           // 再送タイムアウト
-    __u8  max_syn_retries;
-    __u8  drain;            // 1 = 新規データを止めて FIN を送る (Go が duration 終了時に立てる)
-};
-
-struct tcp_cpu_state {   // PERCPU_ARRAY(1)。Go が worker CPU ごとに書く
-    __u32 first;          // この CPU が担当する最初のフロー index
-    __u32 stride;         // = parallelism (フローは CPU 間でインターリーブ)
-    __u32 count;          // この CPU が担当するフロー数
-    __u32 cursor;         // ラウンドロビン位置
-};
-
-struct tcp_stats {       // PERCPU_ARRAY(1)
-    __u64 syn_sent, synack_rcvd, established;
-    __u64 data_segs, data_bytes, bytes_acked;
-    __u64 rtx_segs, rtx_timeouts, rtx_dupack;
-    __u64 fin_sent, done, failed, rst_rcvd;
-    __u64 acks_rcvd, idle_iters, window_stalls, unexpected;
-};
-```
-
-マップ: `tcp_flow_map` (ARRAY, MAX_TCP_FLOWS)、`tcp_cfg_map` (ARRAY, 1)、
-`tcp_cpu_state_map` (PERCPU_ARRAY, 1)、`tcp_stats_map` (PERCPU_ARRAY, 1)。
-`bpf_spin_lock` は PERCPU マップに置けないので `tcp_flow_map` は通常の ARRAY にする。
-`tcp_flow` は 1 エントリ約 80B、65536 フローで約 5MB。
+`bpf_spin_lock` は PERCPU マップに置けないので `tcp_flow_map` は共有 ARRAY にする。
+現在の `tcp_flow` は 136 バイトで、65,536 エントリの値領域は 8.5 MiB である。
+`TF_SKIPPED` は drain/abort 開始までに接続しなかったフローを示す。
+`tx_pkts`、`tx_data`、`tx_rtx`、`rx_pkts`、`rx_replies` は `--tcp-flow-report` の記録に使う。
 
 フローの担当 CPU: `flow_idx = first + cursor * stride`。parallelism が P なら CPU スロット k は
 `k, k+P, k+2P, ...` を担当する。フローの所有権は TX 側だけにあり、RX は NAPI が動く任意の CPU で
@@ -145,7 +95,8 @@ struct tcp_stats {       // PERCPU_ARRAY(1)
 
 ## 4. 送信プログラム `xdp_tx_tcp`
 
-live frames の入力フレーム (Go が作る) は `hdr_len + mss` バイトの完全なフレーム。
+live frames の入力フレームは、Go が作るテンプレートを最大データ/SYN フレーム長より 1 バイト大きく確保する。
+毎回サイズ調整が必要になるようにし、再利用ページの以前の長さが残る問題を避ける。
 MAC、IP アドレス、宛先ポート、TTL 等はテンプレートの値をそのまま使い、以下のフィールドだけ毎回書く。
 
 | 書くフィールド | 理由 |
@@ -188,14 +139,14 @@ live frames はフレームプールを再利用するため、前のイテレ�
 - ペイロード領域 (l4_off+28 以降) は「テンプレート時点でゼロ」かつ「以降一度も非ゼロを書かない」ので常にゼロ。
 - l4_off+20 .. +27 だけは SYN のオプションを書くため、データ/FIN セグメントでは明示的にゼロで上書きする。
 
-ペイロードにパターンを入れたい場合は、Go 側でペイロードの 16bit 語の prefix sum テーブルをマップに置けば
-同じ O(1) で対応できる (将来の拡張)。
+混合モードの payload_pattern は実装済みであり、Go が周期の部分和を用意してチェックサムを求める。
+単独 `--tcp` は引き続きゼロペイロードを使う。
 
 ## 5. 受信プログラム `xdp_rx_tcp`
 
 `--tcp` 時は `xdp_pass_dummy` の代わりにこれを `--device` に attach する。
 
-1. `cfg.vlan_tci` が非 0 なら 802.1Q タグがあり VID が一致すること、0 ならタグが無いこと。その上で Eth の次が `cfg.ip_version` と一致する IPv4/IPv6 で、かつ上位が TCP でなければ XDP_PASS。IPv6 は拡張ヘッダ無し (next header が直接 TCP) の場合だけ扱う。
+1. `cfg.vlan_id` が非 0 なら一致する VID のタグ、または RX offload でタグを除去されたフレームを受け付ける。0 ならタグ無しだけを扱う。その上で Eth の次が `cfg.ip_version` と一致する IPv4/IPv6 で、かつ上位が TCP でなければ XDP_PASS。IPv6 は拡張ヘッダ無し (next header が直接 TCP) の場合だけ扱う。
    カーネル自身が出す IPv6 の NS/NA/RS などはここで PASS されるので、NDP はカーネルに任せられる。
 2. `daddr == cfg.src_ip && saddr == cfg.dst_ip && sport == cfg.dst_port && port_base <= dport < port_base + flow_count` でなければ XDP_PASS。
    (これが Cilium 測定で必要だった「対象外トラフィックを変更せず通す受信フィルタ」そのものになる。)
@@ -230,19 +181,23 @@ TIME_WAIT は持たない。DONE になったフローのポートに遅延パ�
 |---|---|---|
 | `--tcp` | off | TCP ストリームモード。プラグイン不要 |
 | `--tcp-dst ip:port` | 必須 | 接続先。`[2001:db8::2]:5201` の形で IPv6 も指定できる。アドレスファミリはここで決まる |
-| `--tcp-src-ip` | デバイスの同ファミリの先頭グローバルアドレス | 送信元 IP。デバイスに付いている必要がある (ARP/NDP 応答はカーネルに任せる) |
-| `--tcp-flows` | parallelism | 同時コネクション数 (<= 65536) |
+| `--tcp-src-ip` | 経路の preferred source | 送信元 IP。デバイスに付いている必要がある (ARP/NDP 応答はカーネルに任せる) |
+| `--tcp-flows` | 1 | 同時コネクション数 (<= 65536) |
 | `--tcp-port-base` | 10000 | 送信元ポートの先頭。`port_base + flows <= 65536` (13 節で 40000 から変更) |
 | `--tcp-window` | 32 | 飛行中セグメント数上限 (フローごと) |
 | `--tcp-mss` | 1448 (IPv4) / 1428 (IPv6) | セグメントのペイロード長。フレーム長 hdr_len+mss <= MTU+14 かつ <= MAX_PACKET_SIZE |
 | `--tcp-bytes` | 0 | フローごとの送信バイト数。0 なら `--duration` まで流して drain |
 | `--tcp-rto` | 200ms | 再送タイムアウト |
 | `--tcp-vlan-id` / `--tcp-vlan-pcp` | 0 / 0 | 802.1Q タグ。vlan-id が 0 ならタグ無し。既存 UDP プラグインの `vlan_id`/`vlan_pcp` と同じ意味 |
+| `--tcp-dst-mac` | ARP/NDP | ネクストホップ MAC の上書き |
+| `--tcp-ip-id` | flow | コネクション別の採番。shared は TX CPU 別のカウンター |
+| `--tcp-flow-report` | 無効 | 終了時のフロー別 CSV。混合 TCP でも使用できる |
 
 既存フラグの扱い: `--parallelism` は worker CPU 数 (フローを分配)。`--duration` は終了時刻 (0 なら全フロー DONE まで)。
 `--pps` はイテレーション数の上限 (= セグメント送出レートの上限) として既存の ticker ループを使う。
 `--count`、`--infinite` は `--tcp` と併用不可 (Validate で弾く)。
-`--plugin` を指定する場合は、第16節の静的シナリオとして扱う。
+`--tcp` と明示的な `--plugin` の併用は拒否する。
+第16節の混合送信は `--plugin` だけで選択する。
 
 ### 処理の流れ
 
@@ -254,7 +209,8 @@ TIME_WAIT は持たない。DONE になったフローのポートに遅延パ�
 4. worker ごとに `run()` と同じループで `xdp_tx_tcp` を `bpf_prog_run` する。
    `Repeat` は `--batch-size` 相当、`Data` はテンプレート、`BPF_F_TEST_XDP_LIVE_FRAMES`。
 5. 監視 goroutine: 1 秒ごとに `tcp_stats_map` を集計して表示。`done + failed == flows` で ctx をキャンセル。
-   `--duration` 到達で `cfg.drain=1` を書き、最大 `2*rto` 待って FIN が返るのを待ってから終了。
+   `--duration` 到達で `cfg.drain=1` を書き、`127*rto + 1s` を基本期限として drain し、完了しなければ abort する。
+   完了後の `2*rto` は FIN 再送に ACK を返す linger であり、drain 期限とは異なる。
 6. 終了時サマリ: 確立/完了/失敗数、ACK 済みバイト、goodput Gbps、再送数、セグメント数、平均フレーム長。
 
 ### 表示例
@@ -269,14 +225,15 @@ veth + netns の既存基盤 (`examples/common`) を使う。
 
 ```
 ns xdperf-tx (xdp-tx 192.168.100.1)  <-veth->  ns xdperf-rx (xdp-rx 192.168.100.2)
-   xdperf run --tcp --device xdp-tx ...            xdperf-sink --tcp :5201   (カーネル TCP で受けてバイト数を数える)
+   xdperf run --tcp --device xdp-tx ...            xdperf-sink -listen :5201   (カーネル TCP で受けてバイト数を数える)
 ```
 
-- `cmd/xdperf-sink`: TCP (と後で UDP) を受けてコネクション数・受信バイト数を数える小さな Go プログラム。
+- `cmd/xdperf-sink`: TCP/UDP を受けてコネクション数・受信バイト数を数える小さな Go プログラム。
   Cilium 測定のバックエンド Pod にもそのまま使う前提で作る。
 - IPv4 と IPv6 の両方、さらに VLAN タグ付き (受信 ns 側に VLAN サブインターフェースを作る、`simpleudp-vlan` と同じ構成) を回す (veth に両ファミリのアドレスを付ける。IPv6 のカーネル自発パケットは `xdp_rx_tcp` が PASS するので計数に影響しない)。
 - 合格条件 (test.sh): フロー数 F、`--tcp-bytes` B として、
-  xdperf 側 `done == F`、`bytes_acked == F*B`、シンク側 `connections == F`、`bytes == F*B`、再送 0。
+  xdperf 側 `done == F`、`bytes_acked == F*B`、シンク側 `accepted == closed == F`、`bytes == F*B` を照合する。
+  再送を許すケースとレスポンダ相手の再送率上限は [現在の examples](../../examples/tcpstream/README.md) に従う。
 - 受信側の XDP_TX 経路のために、既存の UDP シナリオと同じく受信 ns 側にも NAPI が必要 (シンク側 veth に GRO on か dummy attach)。
   `examples/simpleudp-no-rx-attach` の知見を流用する。
 
@@ -455,8 +412,8 @@ tcp-server: active 64 accepted 64 closed 0 | 9.401 Gbps rcvd, 811,922 segs/s, 81
 
 - `v4srv` / `v6srv` / `v4vlansrv` / `v6vlansrv`: 受信 ns で `xdperf run --tcp-server` を動かし、`--tcp` クライアントから流す。
   合格条件は送信側 `done == F`、`bytes_acked == F*B`、サーバ側 `accepted == closed == F`、`bytes_rcvd == F*B`。
-- `v4ack2`: `--tcp-ack-every 2` で同じことをする (末尾 PSH の確認)。
-- `v4linux` / `v6linux`: 送信 ns で Linux の TCP クライアント (`socat`) から `/dev/zero` を B バイト流し、サーバ側の
+- `v4ack2srv`: `--tcp-ack-every 2` で同じことをする (末尾 PSH の確認)。
+- `linux4` / `linux6`: 送信 ns で Linux の TCP クライアント (`socat`) から `/dev/zero` を B バイト流し、サーバ側の
   `accepted == closed == 1`、`bytes_rcvd == B` を確認する。実スタックとの相互運用性の確認。veth では送信側 veth にも
   XDP プログラムが必要 (10 節の NAPI の件) なので、`xdperf-sink -xdp-pass-dev` を pass 専用に動かす。
 
@@ -596,4 +553,5 @@ codex (差分を標準入力で渡す形。この環境ではサンドボック�
 プラグインの PacketVariantSet に TCP フローの種類を追加する。
 JSON、送信機会の重み、受信の振り分けは [混合バリアントの設計](design_mixed_variants.md) を参照。
 
-TCP グループ別の base_packet とカプセル化の拡張は [TCP フローひな型の設計](design_tcp_flow_template.md)を参照。
+TCP グループ別の base_packet、カプセル化、Timestamps、ペイロードパターン、フロー別 variable_params は実装済みである。
+詳細は [TCP フローひな型の設計](design_tcp_flow_template.md)を参照。

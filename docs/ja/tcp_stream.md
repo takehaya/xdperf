@@ -26,7 +26,7 @@ sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.100.2:5201 --tcp-vlan-id 100 
 ```
 
 上の例はプラグインを使わずに実行します。
-`--plugin` を指定するシナリオ方式は後述します。
+`--plugin` によるパケットと TCP の混合送信は後述します。
 `--count` と `--infinite` は併用できません。
 
 ### フラグ
@@ -47,7 +47,7 @@ sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.100.2:5201 --tcp-vlan-id 100 
 | `--tcp-ip-id` | `flow` | IPv4 の ID の振り方。`flow` はコネクションごとに 1 ずつ増やす (Linux と同じ)。受信側の GRO は同じフローの連続したセグメントを 1 つの skb にまとめられる。`shared` は送信 CPU ごとに 1 つのカウンタをその CPU の全フローで共有する。1 つの CPU が 2 フロー以上を交互に送ると各フローの ID が連続しなくなり、GRO はまとめない (CPU あたり 1 フローなら `shared` でも連続するので効果はない)。受信側の設定を変えずに、パケット単位の負荷を作りたいときに使う |
 | `--tcp-flow-report` | | 終了時に、フローごとの送受信の記録を CSV に書き出すパス。下の「フローごとの記録」を参照 |
 | `--parallelism` | | worker CPU 数。フローは CPU 間でインターリーブして分配される |
-| `--pps` | | TX イテレーション数 (= セグメント送出レート) の上限 |
+| `--pps` | | TX イテレーション数の上限。送信しない待機イテレーションも含む |
 | `--duration` | | 終了時刻。到達すると新規データを止め、全フローを FIN で閉じる (drain) |
 
 `--tcp-bytes` と `--duration` のどちらかは必要です。両方指定すると、先に満たした方で終わります。
@@ -149,7 +149,7 @@ tcp-server: active 64 accepted 64 closed 0 | 9.401 Gbps rcvd, 811,922 segs/s, 81
 - 送信元 IP は `--device` (または VLAN サブインターフェース) に付いている必要があります。ARP/NDP への応答はカーネルに任せます。
 - VLAN 指定時、受信側 NIC の rx-vlan-offload (や veth の hwaccel) でタグが剥がされた応答フレームも受け付け、返す ACK にはタグを押し戻します。
 - veth の対向では、live frames から作られた skb にフローハッシュが付かないため、全フローが GRO の同じバケットに入る。1 バケットに保持できるのは 8 フロー (`MAX_GRO_SKBS`) までなので、`--tcp-ip-id flow` でも 9 フロー以上はまとめられない (kind で 8 フローは 8 セグメント/skb、9 フローは 1)。RSS でハッシュが付く実 NIC ではこの制限は無い。
-- `--rx-device` の分離、IPv6 拡張ヘッダ、QinQ、双方向データには未対応です。`--tcp-server` もサーバからのデータ送信 (固定レスポンス) には未対応です。
+- 単独の `--tcp` では `--rx-device` の分離、IPv6 拡張ヘッダ、QinQ、双方向データには未対応です。`--tcp-server` もサーバからのデータ送信 (固定レスポンス) には未対応です。
 - veth 上で試す場合は [examples/tcpstream](../../examples/tcpstream/README.md) の注意 (対向側に XDP プログラムが必要、ring が小さいので再送が出る) を参照してください。
 
 ## 検証 (veth)
@@ -165,7 +165,9 @@ sudo examples/tcpstream/teardown.sh
 
 `--plugin mixed.go` は UDP パケットと TCP フローを同じバリアント集合として返します。
 `--tcp` は併記しません。
-使い方は [混合バリアントの設計](design_mixed_variants.md) と [E2E サンプル](../../examples/mixed/test.sh) を参照してください。
+使い方と設定項目は [混合送信ガイド](mixed_variants.md)、配分の設計は [混合バリアントの設計](design_mixed_variants.md)、動作確認は [E2E サンプル](../../examples/mixed/test.sh) を参照してください。
+混合モードは QinQ と各種トンネル、Timestamps、繰り返しペイロード、フロー別送信元 IP に対応しています。
+上記の全ゼロペイロードと Timestamps なしという説明は、単独の `--tcp` に適用されます。
 `--tcp-flow-report` は混合送信でも TCP フローのみを CSV に記録します。
 
 ### 混合モードの RX 診断

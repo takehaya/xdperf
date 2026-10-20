@@ -75,7 +75,8 @@ sudo ./teardown.sh
   live frames into the same 256-entry `xdp_ring` of the peer and overflow it
   (`tx_queue_0_xdp_xmit_errors` in `ethtool -S`), which TCP turns into
   retransmissions; xdperf warns about it at startup. Run the setup with
-  `VETH_QUEUES=N` (or more) to give each worker its own queue: on one box
+  `VETH_QUEUES=N` (or more), with worker CPU IDs distinct modulo that count,
+  to avoid sharing receive rings: on one box
   this took a 64-flow run from 8.7 Gbps with one worker to 81.8 Gbps with
   eight, with no retransmissions.
 - **Lost final ACKs.** With many flows the veth ring also drops some of the

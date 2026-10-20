@@ -16,6 +16,12 @@ BPF program can include the very same file to parse what this plugin builds
 free of `memcpy` on packet data: Cilium's BPF headers replace `memcpy` and
 turn unaligned copies into a compile-time trap; use `vx_load16`/`vx_load32`.
 
+The Go plugin uses generated types and codecs from this header via
+[`pkg/guest/packetdefs/vxlan`](../../pkg/guest/packetdefs/vxlan/).
+Run `make packetdefs-gen` or `make packetdefs-check` with LLVM 22 after shared
+layout changes. This generates definitions, not the C inline function bodies;
+see the [design](../../docs/ja/design_c_to_go_shared_defs.md).
+
 ## Build
 
 Needs clang with the WebAssembly target, `wasm-ld` (lld), and make.

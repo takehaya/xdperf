@@ -11,6 +11,15 @@ src/
 ├── xdp_packet.h    データ構造とBPFマップ定義（システムの心臓部）
 ├── xdp_checksum.h  チェックサム計算エンジン（フル再計算用）
 ├── xdp_tcp.h       TCP ストリームモード（xdp_tx_tcp / xdp_rx_tcp、フロー状態マップ、tcp_reply_inplace）
+├── xdp_mixed.h     混合配分の設定、CPU別グループ、tail callマップ
+├── xdp_mixed_rx_stats.h 混合RXの未照合理由と不正TCPの診断
+├── xdp_tcp_template.h 混合TCPのテンプレートと送信builder
+├── xdp_tcp_template_rx.h 混合TCPの受信照合と状態更新
+├── xdp_tcp_decap.h トンネル内側のTCPを解析する受信処理
+├── xdp_tcp_encap.h 外側ヘッダの長さとチェックサムの修正
+├── xdp_tcp_template_ext.h Timestampsとパターン用の拡張builder
+├── xdp_tcp_timestamp.h TCP Timestampの状態とオプション処理
+├── xdp_tcp_payload.h 繰り返しペイロードのチェックサムと書き込み
 ├── xdp_tcp_server.h XDP TCP レスポンダ（xdp_rx_tcp_server、--tcp-server、LRU_HASH のフローテーブル）
 └── xdp_prog.c      XDPプログラム本体（TX/RX/チェックサム）
 ```
@@ -126,10 +135,11 @@ struct pkt_state {
 ```
 
 `last_base_idx`によりベースパケットが変わっていなければコピーを省略できる。
+ただし混合送信では TCP が同じバッファを書き換えるため、`xdp_tx_mixed` が packet への tail call の直前に `last_base_idx = 0xffffffff` とし、コピー省略を無効にする。
 
 #### BPFマップ一覧
 
-データマップは全て`BPF_MAP_TYPE_PERCPU_ARRAY`であり、CPU間のロック競合がない。これが高PPSの基盤。`xdp_progs`のみ`BPF_MAP_TYPE_PROG_ARRAY`（tail call用）。
+この節のパケット生成用データマップは全て`BPF_MAP_TYPE_PERCPU_ARRAY`であり、CPU間のロック競合がない。これが高PPSの基盤。`xdp_progs`のみ`BPF_MAP_TYPE_PROG_ARRAY`（tail call用）。
 
 | マップ | エントリ数 | 用途 |
 |--------|-----------|------|
@@ -139,7 +149,7 @@ struct pkt_state {
 | `pkt_state_map` | 1 | CPU毎のラウンドロビン状態 |
 | `tx_stats_map` | 1 | 送信統計 |
 | `tail_call_ctx_map` | 1 | tail call間のコンテキスト受け渡し |
-| `xdp_progs` | 2 (PROG_ARRAY) | tail call先プログラム |
+| `xdp_progs` | 3 (PROG_ARRAY) | checksum / csum_diff / csum_recalc の tail call 先 |
 
 ### xdp_checksum.h — チェックサム計算エンジン
 
@@ -153,46 +163,45 @@ struct pkt_state {
 
 IPv6版は`final_dst`パラメータでSRHの最終宛先アドレスを疑似ヘッダに使用する（RFC 8200/8754準拠）。
 
+## TCP と混合送信の構成
+
+単独 `--tcp` の `xdp_tx_tcp` / `xdp_rx_tcp` と、混合用の入口を分離する。
+混合 TX は `xdp_tx_mixed` から packet の `xdp_tx` または `xdp_tx_tcp_mixed` に tail call する。
+混合 RX は `xdp_rx_mixed` から `xdp_rx_tcp_mixed` へ進み、トンネルを外して内側タプルで照合する。
+未照合の外側 UDP は --recv 時だけ従来の `xdp_rx` で数える。
+Timestamps または非ゼロの payload_pattern を使う集合では、ローダーが `_ext` 付きの混合 TCP TX/RX 入口を選ぶ。
+
+TCP のフロー状態は共有 ARRAY の `tcp_flow_map` に置き、spin lock で TX/RX 間の更新を保護する。
+`tcp_template_map` はグループ別、または variable_params を評価したフロー別の不変ひな型を保持する。
+`tcp_payload_map` はグループ別の繰り返しパターンと部分和を保持する。
+`mixed_cfg_map` は共有 ARRAY、`mixed_group_map` と `mixed_state_map`、`mixed_rx_stats_map` は PERCPU_ARRAY、`mixed_progs` は PROG_ARRAY である。
+これらをパケット生成用の全データマップが PERCPU という説明に含めない。
+
+基底 BPF のロードでは混合専用プログラムを除き、プラグインが混合を選んだ後に 4 プログラムを追加ロードする。
+検証済みひな型から外側修正数と LCO の有無を設定し、不要な builder の分岐を verifier が除去できるようにする。
+RX の解析形式は送信テンプレートでは制限しない。
+不正 TCP の診断ブロックは `pkg/coreelf/mixed_rx.go` がロード時に追加する。
+詳細は [混合バリアント](design_mixed_variants.md)、[TCP ひな型](design_tcp_flow_template.md)、[起動時間](design_mixed_startup.md) を参照する。
+
 ## xdp_prog.c — XDPプログラム本体
 
 ### プログラム全体フロー
 
-```
-                    ┌──────────────┐
-  受信パケット ───→ │   xdp_rx     │ ───→ XDP_TX (スワップ応答) / XDP_DROP
-                    └──────────────┘
+```text
+受信 → xdp_rx → XDP_TX (swap応答) / XDP_DROP / XDP_PASS (対象外)
 
-                    ┌──────────────────┐
-  BPF_PROG_RUN ──→ │     xdp_tx       │
-                    │                  │
-                    │ 1. 状態取得      │
-                    │ 2. diff取得      │
-                    │ 3. base取得      │
-                    │ 4. サイズ調整    │
-                    │ 5. コピー判定    │
-                    │ 6. diff適用      │
-                    │ 7. csum_cached?  │
-                    │    YES → XDP_TX  │─── ホットパス（2回目以降、固定長・IMIX両対応）
-                    │    NO  → tail call│
-                    └──────────────────┘
-                           │
-              ┌────────────┴────────────┐
-              ▼                         ▼
-  ┌───────────────────┐    ┌─────────────────────┐
-  │ xdp_tx_checksum   │    │ xdp_tx_csum_diff    │
-  │ (len_changed=1)   │    │ (len_changed=0)     │
-  │                   │    │                     │
-  │ update_lengths    │    │ インクリメンタル    │
-  │ recalc_checksum   │    │ bpf_csum_diff       │
-  │ cache_csum_to_diffs│   │ cache_csum_to_diffs │
-  │ (長さ+csum格納)   │    │ (csumのみ格納)      │
-  │ → XDP_TX          │    │ → XDP_TX            │
-  └───────────────────┘    └─────────────────────┘
-
-  ※ 初回のみ tail call。計算結果（+ len_changed時は長さフィールド値も）を
-    diff_entryにキャッシュし、2回目以降はxdp_tx内で完結（tail callなし）。
-    SRv6/MPLSネストパケットはキャッシュを安全にスキップし毎回フル計算。
+BPF_PROG_RUN → xdp_tx
+  状態取得 → diff取得 → base取得 → サイズ調整 → コピー判定 → diff適用
+    ├── csum_cached=1 → 統計更新 → XDP_TX
+    └── 初回のchecksum計算 → xdp_tx_checksum
+          ├── len_changed=0 → xdp_tx_csum_diff
+          │     差分checksum → cache_csum_to_diffs → 統計更新 → XDP_TX
+          └── len_changed=1 → update_packet_lengths → xdp_tx_csum_recalc
+                フルchecksum → cache_csum_to_diffs → 統計更新 → XDP_TX
 ```
+
+キャッシュに成功した Diff は、2 回目以降 `xdp_tx` 内で処理を完了する。
+SRv6/MPLS の内側ヘッダなど、キャッシュの安全条件を満たさないものは毎回再計算する。
 
 ### 各関数の詳細
 
@@ -336,8 +345,14 @@ tail callで`xdp_tx`から呼ばれる（初回のみ。`csum_cached=1`の場合
 
 `len_changed=1`の場合:
 1. `update_packet_lengths` — VLAN/QinQ/MPLSをパースし、IPv4 total_len、IPv6 payload_len、UDP lengthを更新。SRv6 L2VPN/L3VPNの内部パケット長も更新する。
-2. `recalc_checksum` — 各チェックサムをフル再計算。`meta->ip_version`のキャッシュ値を使用。
-3. `cache_csum_to_diffs` — 長さフィールド値とチェックサム値をdiff_entryにキャッシュ（条件付き）。キャッシュ成功後は2回目以降のパケットでこの関数自体が呼ばれなくなる。
+2. `tail_call_ctx_map` に長さ更新時のエラー数を引き継ぎ、`xdp_tx_csum_recalc` に tail call する。
+
+#### `xdp_tx_csum_recalc` のフル再計算
+
+`len_changed=1` の長さ更新後に呼ばれる。
+`recalc_checksum` で各チェックサムをフル再計算し、`cache_csum_to_diffs` で長さフィールド値とチェックサム値を条件付きで Diff にキャッシュする。
+キャッシュに成功すれば、同じ Diff の 2 回目以降はこの入口も呼ばれない。
+長さ更新と再計算を別プログラムに分け、verifier の検証命令上限に収める。
 
 #### `recalc_checksum` — フルチェックサム再計算
 
@@ -383,7 +398,7 @@ kernel 6.1のBPF verifierの制約に対処するための設計パターンが�
 
 ## 性能最適化の層
 
-1. **データマップが全てPERCPU** — CPU間ロックなし
+1. **パケット生成用データマップが全てPERCPU** — CPU間ロックなし。共有TCPフローのARRAYとspin lockは別に扱う
 2. **Diffベース** — フルパケットコピー不要、変更箇所のみ書き込み
 3. **条件付きコピー省略** — 同一ベース・同一長なら`copy_base_packet`をスキップ
 4. **チェックサムキャッシュ** — 初回計算後にdiffとしてキャッシュ、2回目以降はtail callなしで直接XDP_TX。固定長・IMIX（可変長）の両方に対応

@@ -16,4 +16,5 @@ UDP 送信元ポートはフロー番号により 49152 から変化する。
 `tcp_encapsulation` は mixed.go サンプルへの設定名であり、SDK 上では `tcp_flow.encapsulation` に対応する。
 
 GENEVE、二重 VXLAN、256 バイト上限、IPIP/GRE/SRv6/GTP-U/MPLS の送信更新は `TestTCPEncapBPF` で検証する。
-これらのうち VXLAN/GENEVE 以外のカプセル化を持つ応答の解析は後続段階である。
+SRv6、GTP-U、GRE、IPIP、MPLS の応答解析も実装済みであり、Linux 対向の相互運用性は [tcp-tunnels](../tcp-tunnels/README.md) で検証する。
+対応形式と上限は [混合送信ガイド](../../docs/ja/mixed_variants.md) を参照する。

@@ -43,8 +43,7 @@ const (
 	GeneratorTemplateTypeVariable GeneratorTemplateType = "variable"
 )
 
-// GeneratorResponse represents the response returned from the packet
-// generation plugin to simpleudp.
+// GeneratorProcessResponse is returned by a packet generation plugin to xdperf.
 // TemplateType selects RawPacketTemplate or VariablePacketTemplate.
 type GeneratorProcessResponse struct {
 	// Template type.
@@ -94,7 +93,10 @@ const (
 // Special ByteStart value to indicate packet length modification
 const ByteStartPacketLength uint64 = 0xFFFFFFFFFFFFFFFF
 
-// VariableParams defines how a specific byte range in a packet should vary.
+// VariableParams defines how a byte range varies. Packet variants evaluate it
+// per diff entry. TCP flow variants evaluate it once per connection at startup,
+// require an explicit base packet, and allow only inner source IP bytes.
+// Byte sizes are 1, 2, 4, 6, or 8; values use network byte order.
 type VariableParams struct {
 	// Start offset of the target byte range from the beginning of the packet.
 	// Use ByteStartPacketLength (0xFFFFFFFFFFFFFFFF) to vary packet length instead of byte content.
@@ -123,7 +125,8 @@ type TemplateRange struct {
 }
 
 // PacketVariantSet represents a set of packet variants along with a pattern
-// used to select among them.
+// used to select among them. A set containing TCP flows requires mixed mode,
+// at least one packet variant, and at most 16 variants in total.
 type PacketVariantSet struct {
 	// List of packet variants.
 	Variants []PacketVariant `json:"variants"`
@@ -153,21 +156,27 @@ type ChecksumSpec struct {
 	IPHeaderOffset uint16 `json:"ip_header_offset"`
 }
 
-// PacketVariant represents a base packet, the variable regions inside it,
-// and a weight used for selection when patterns require it.
+// PacketVariant is a packet template or a group of stateful TCP connections.
+// A set containing TCP needs positive weights whose sum fits uint32. Weights allocate
+// TX iterations, including TCP waits, rather than bytes or completed flows.
 type PacketVariant struct {
-	// Empty kind preserves the packet-only ABI.
+	// Kind is empty or "packet" for packet generation, or "tcp_flow" for TCP.
+	// Empty kind preserves the packet-only ABI; TCPFlow is required for tcp_flow.
 	Kind    string          `json:"kind,omitempty"`
 	TCPFlow *TCPFlowVariant `json:"tcp_flow,omitempty"`
 
-	// Base packet containing raw bytes beginning from the Ethernet header.
+	// Base contains bytes beginning at Ethernet. For TCP, it is optional when
+	// Destination is supplied, and must end at the fixed inner TCP header.
+	// TCP options, payload, source port, sequence/ACK numbers, flags, lengths,
+	// windows and checksums are supplied or updated by the engine.
 	Base BasePacket `json:"base_packet"`
 
 	// Definitions of the variable byte regions within this packet.
-	// To vary packet length, include a VariableParams with ByteStart set to ByteStartPacketLength.
+	// Packet variants may use ByteStartPacketLength. TCP variants may vary
+	// only inner source IP bytes and evaluate them once per flow at startup.
 	Params []VariableParams `json:"variable_params"`
 
-	// Checksum specifications for recalculation after applying diffs.
+	// Checksum specifications for packet diffs. TCP variants must leave this empty.
 	Checksums []ChecksumSpec `json:"checksums,omitempty"`
 
 	// Weight used during variant selection.
@@ -197,14 +206,25 @@ type GeneratorCleanupResponse struct {
 
 // TCPFlowVariant describes a group of static TCP connections sharing a target.
 // The engine owns TCP sequence numbers, flags, windows and checksums.
+// Destinations may differ between groups. Byte slices serialize as base64 JSON.
 type TCPFlowVariant struct {
-	Timestamps     bool              `json:"timestamps,omitempty"`
-	PayloadPattern []byte            `json:"payload_pattern,omitempty"`
-	Encapsulation  *TCPEncapsulation `json:"encapsulation,omitempty"`
-	Destination    string            `json:"destination,omitempty"`
-	SynOptions     []byte            `json:"syn_options,omitempty"`
-	DataOptions    []byte            `json:"data_options,omitempty"`
-	Flows          []TCPFlow         `json:"flows"`
+	// Timestamps offers TCP timestamps on SYN and uses them after negotiation.
+	Timestamps bool `json:"timestamps,omitempty"`
+	// PayloadPattern repeats at the 64-bit stream offset, including retransmits.
+	// At most 256 bytes; empty or all-zero patterns use the zero-payload path.
+	PayloadPattern []byte `json:"payload_pattern,omitempty"`
+	// Encapsulation requires an explicit base packet and matching patch tables.
+	Encapsulation *TCPEncapsulation `json:"encapsulation,omitempty"`
+	// Destination is an IP literal and port; optional with Base, otherwise required.
+	// When both are present, it must match the inner destination in Base.
+	Destination string `json:"destination,omitempty"`
+	// SynOptions and DataOptions contain static options. The engine prepends
+	// MSS/WS on SYN, and reserves 12 bytes in both when Timestamps is true.
+	// Total options cannot exceed 40 bytes; engine-owned kinds are rejected.
+	SynOptions  []byte `json:"syn_options,omitempty"`
+	DataOptions []byte `json:"data_options,omitempty"`
+	// Flows are numbered in variant/array order and get globally unique source ports.
+	Flows []TCPFlow `json:"flows"`
 }
 
 // TCPFlow.Bytes is a decimal uint64 string; zero requires --duration.
@@ -214,6 +234,10 @@ type TCPFlow struct {
 
 // TCPEncapsulation declares mutable outer-header fields. Offsets are absolute
 // frame offsets; lengths contain Constant + inner TCP segment length.
+// The base ends at the fixed TCP header and is at most 256 bytes. The host
+// validates known tunnel structures and exact patch order/completeness.
+// Limits: four outer IP layers, eight lengths, four outer IPv4 checksums,
+// and four UDP checksums. Inner IP and TCP fields are always engine-owned.
 type TCPEncapsulation struct {
 	InnerL3Offset uint16            `json:"inner_l3_offset"`
 	InnerL4Offset uint16            `json:"inner_l4_offset"`
@@ -222,16 +246,24 @@ type TCPEncapsulation struct {
 	UDPChecksums  []TCPUDPChecksum  `json:"udp_checksums"`
 	UDPSourcePort *TCPUDPSourcePort `json:"udp_source_port,omitempty"`
 }
+
+// TCPLengthField writes a uint16 length; Kind is ipv4, ipv6, udp, or gtpu.
 type TCPLengthField struct {
 	Offset   uint16 `json:"offset"`
 	Kind     string `json:"kind"`
 	Constant uint16 `json:"constant"`
 }
+
+// TCPUDPChecksum describes an outer UDP checksum. Offset points to the UDP
+// header, IPOffset to its IP header; Mode is zero (IPv4 only) or lco.
 type TCPUDPChecksum struct {
 	Offset   uint16 `json:"offset"`
 	IPOffset uint16 `json:"ip_offset"`
 	Mode     string `json:"mode"` // zero (IPv4 only) or lco
 }
+
+// TCPUDPSourcePort selects Base + global flow index % Count for one outer UDP
+// header. Offset points to its source port; the range must fit ports 1..65535.
 type TCPUDPSourcePort struct {
 	Offset uint16 `json:"offset"`
 	Base   uint16 `json:"base"`

@@ -27,6 +27,13 @@ Eth | [VLAN] | IPv4 | UDP(dst 4789) | VXLAN(8) | inner Eth | inner IPv4 | inner 
 > outer UDP checksum spec is emitted, so the data plane never writes it. The
 > outer IPv4 and inner IPv4 (and optionally inner UDP) checksums are recomputed.
 
+The VXLAN type, constants, offsets, and codec come from
+[`pkg/guest/packetdefs/vxlan`](../../pkg/guest/packetdefs/vxlan/), generated
+from [`vxlan_shared.h`](../vxlan.c/vxlan_shared.h). Regenerate with
+`make packetdefs-gen` and check drift with `make packetdefs-check` (LLVM 22).
+Normal builds use the committed Go files. The C and Go plugins keep different
+configuration schemas and feature sets.
+
 ## Build
 
 The Makefile auto-detects the directory; from the repo root:
@@ -148,7 +155,7 @@ tshark -r vxlan.pcap.cpu0 -Y vxlan \
 vxlan.go/
   main.go            plugin_init / plugin_process / plugin_cleanup (wasm exports)
   config.go          GeneratorRequest (JSON config)
-  builder/           packet construction (gopacket) — host-testable
+  builder/           packet construction (gopacket + generated VXLAN codec) — host-testable
   builder/*_test.go  go test ./builder/   (offsets, VNI, checksums, outer UDP=0, l2only 64B)
 ```
 
