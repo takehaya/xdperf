@@ -35,14 +35,41 @@ SKIPPED=0
 FAILED_SCENARIOS=()
 
 scenario_dir=""
+step_pid=""
+run_step() {
+    setsid "$1" &
+    step_pid=$!
+    local rc=0
+    wait "$step_pid" || rc=$?
+    step_pid=""
+    return "$rc"
+}
+
+interrupt_runner() {
+    local rc="$1" i
+    trap '' INT TERM
+    if [ -n "$step_pid" ]; then
+        # Stop descendants too; a synchronous foreground command delays Bash traps.
+        kill -TERM -- "-$step_pid" 2>/dev/null || kill -TERM "$step_pid" 2>/dev/null || true
+        for i in $(seq 1 50); do
+            kill -0 -- "-$step_pid" 2>/dev/null || break
+            sleep .1
+        done
+        kill -KILL -- "-$step_pid" 2>/dev/null || true
+        wait "$step_pid" 2>/dev/null || true
+        step_pid=""
+    fi
+    exit "$rc"
+}
+
 cleanup_current_scenario() {
     if [ -n "$scenario_dir" ]; then
-        "${scenario_dir}/teardown.sh"
+        run_step "${scenario_dir}/teardown.sh"
     fi
 }
 trap 'cleanup_current_scenario || true' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'interrupt_runner 130' INT
+trap 'interrupt_runner 143' TERM
 
 for scenario in "${SCENARIOS[@]}"; do
     echo "========================================"
@@ -51,7 +78,7 @@ for scenario in "${SCENARIOS[@]}"; do
 
     scenario_dir="${SCRIPT_DIR}/${scenario}"
 
-    if ! "${scenario_dir}/setup.sh"; then
+    if ! run_step "${scenario_dir}/setup.sh"; then
         print_error "Setup failed: $scenario"
         # Clean up a partially built topology before the next scenario.
         cleanup_current_scenario || print_error "Teardown failed: $scenario"
@@ -62,7 +89,7 @@ for scenario in "${SCENARIOS[@]}"; do
     fi
 
     rc=0
-    "${scenario_dir}/test.sh" || rc=$?
+    run_step "${scenario_dir}/test.sh" || rc=$?
     # Teardown is part of a successful scenario, including after a failed test.
     if ! cleanup_current_scenario; then
         print_error "Teardown failed: $scenario"

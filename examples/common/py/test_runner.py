@@ -1,5 +1,7 @@
 """Exercise the scenario runner without network privileges or xdperf."""
+import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -77,6 +79,48 @@ print_error() { echo "$1"; }
                     result, steps = self.run_scenario()
                     self.assertEqual(result.returncode, expected, result.stdout)
                     self.assertEqual(steps, (['setup'] if step == 'setup' else ['setup', 'test']) + ['teardown'])
+
+    def test_term_stops_running_descendants_before_teardown(self):
+        script = self.scenario / 'test.sh'
+        script.write_text(f'''#!/bin/bash
+echo test >> "{self.root}/steps"
+sleep 60 &
+child=$!
+echo "$$" > "{self.root}/step.pid"
+echo "$child" > "{self.root}/child.pid"
+trap 'wait "$child" || true; exit 0' TERM
+kill -TERM "$PPID"
+wait "$child"
+''')
+        (self.scenario / 'teardown.sh').write_text(f'''#!/bin/bash
+if kill -0 "$(cat "{self.root}/child.pid")" 2>/dev/null; then
+    touch "{self.root}/cleanup-with-child"
+fi
+echo teardown >> "{self.root}/steps"
+''')
+        with (self.root / 'output').open('w') as output:
+            process = subprocess.Popen(['bash', str(self.root / 'run_all.sh')],
+                                       stdout=output, stderr=subprocess.STDOUT)
+            try:
+                self.assertEqual(process.wait(timeout=10), 143)
+                self.assertEqual((self.root / 'steps').read_text().splitlines(),
+                                 ['setup', 'test', 'teardown'])
+                self.assertFalse((self.root / 'cleanup-with-child').exists())
+                child = int((self.root / 'child.pid').read_text())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child, 0)
+            finally:
+                # Keep a failing regression test from leaving its 60-second child behind.
+                for name in ('child.pid', 'step.pid'):
+                    path = self.root / name
+                    if path.exists():
+                        try:
+                            os.kill(int(path.read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
 
     def test_missing_entrypoint_fails_before_setup(self):
         (self.scenario / 'teardown.sh').unlink()
