@@ -409,7 +409,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	// The TCP modes do not use Count: --duration and --pps are applied
 	// directly (with fractional per-worker rates).
 	tcpMode := c.TCP || c.TCPServer
-	if !tcpMode && c.Duration > 0 && c.PPS > 0 {
+	if c.Sender && !tcpMode && c.Duration > 0 && c.PPS > 0 {
 		// Divide the full 128-bit product to floor the budget exactly, including
 		// sub-second durations. Div64 requires hi < divisor for a uint64 result.
 		hi, lo := bits.Mul64(c.PPS, uint64(c.Duration))
@@ -423,7 +423,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	}
 
 	// Post-validation: check count >= parallelism after duration calculation
-	if !tcpMode && c.Count > 0 && c.Count < uint64(c.Parallelism) {
+	if c.Sender && !tcpMode && c.Count > 0 && c.Count < uint64(c.Parallelism) {
 		return xdperf.Config{}, fmt.Errorf("calculated count (%d) must be greater than or equal to parallelism (%d)", c.Count, c.Parallelism)
 	}
 

@@ -90,6 +90,27 @@ func TestDurationPacketBudget(t *testing.T) {
 	}
 }
 
+func TestReceiverIgnoresPacketBudget(t *testing.T) {
+	clearConfigEnv(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "zero duration budget", args: []string{"--duration", "5ms", "--pps", "100"}},
+		{name: "overflowing duration budget", args: []string{"--duration", "2s", "--pps", "18446744073709551615"}},
+		{name: "duration budget below parallelism", args: []string{"--duration", "15ms", "--pps", "100", "--parallelism", "2"}},
+		{name: "explicit count below parallelism", args: []string{"--count", "1", "--parallelism", "2"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := append([]string{"--device", "lo", "--send=false", "--recv"}, tt.args...)
+			if _, err := parseRunArgs(args...); err != nil {
+				t.Fatalf("receiver-only config rejected: %v", err)
+			}
+		})
+	}
+}
+
 // Isolate parsing tests from the caller's configuration, including logger settings.
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
