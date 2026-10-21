@@ -1,10 +1,22 @@
 # TCP tunnel interoperability
 
-Run `sudo ./examples/tcp-tunnels/test.sh` after `make build`.
+After `make build`, run:
+
+```bash
+sudo ./examples/tcp-tunnels/setup.sh
+sudo ./examples/tcp-tunnels/test.sh
+sudo ./examples/tcp-tunnels/teardown.sh
+```
+
+Always run teardown after a failed test as well, or use `sudo ./examples/run_all.sh`.
+
 The scenario sends mixed packet/TCP traffic through Linux GRE (key/no key),
 gretap, ip6gre, IPIP/SIT, ip6tnl, SRv6, MPLS, and GTP-U endpoints.
 It checks four completed flows and 77,830 received/ACKed bytes per case,
-with both inner IPv4 and IPv6.
+with both inner IPv4 and IPv6 (22 cases before kernel-dependent skips).
+The ordered byte targets are `[4097, 4097, 4097, 65539]`, the sink must accept
+and close four connections, and both `rx_tuple_mismatch` and `rx_invalid_tcp`
+must be zero. Configuration and report checks live in [common/py](../common/py/).
 
 SRv6 sends one segment and receives one segment, two segments, or a bare IP
 reply. Linux End.DX4 and End.DT6 (local table 255) terminate the inbound

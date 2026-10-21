@@ -1,15 +1,26 @@
-# TCP フローひな型の E2E
+# TCP flow templates
+
+After `make build`, run:
 
 ```bash
-make build
-sudo examples/tcp-template/test.sh
+sudo ./examples/tcp-template/setup.sh
+sudo ./examples/tcp-template/test.sh
+sudo ./examples/tcp-template/teardown.sh
 ```
 
-mixed.go の `tcp_base` に TCP 固定ヘッダまでの Ethernet フレームを渡す。
-`syn_options` と `data_options` は base64 の固定オプション列を受け取る。
-プラグインは `tcp_flow` バリアントの `base_packet` に変換し、宛先はホストがひな型から取得する。
+Always run teardown after a failed test as well, or use `sudo ./examples/run_all.sh`.
 
-テストは IPv4/IPv6 とタグなし、VLAN、QinQ の 6 ケースを実行する。
-各ケースでカーネル TCP のシンクが受信した 4 フロー、77,830 バイトと、送信側の完了記録を照合する。
-SYN に SACK-Permitted、データに NOP を付け、DSCP、TTL、IPv6 flow label を設定する。
-ヘッダの保存とチェックサムの厳密な照合は `TestTCPTemplateBPF` が担当する。
+The `mixed.go` plugin accepts `tcp_base`, an Ethernet frame ending at the
+fixed TCP header. `syn_options` and `data_options` contain base64-encoded
+static options. The plugin maps the frame to the `tcp_flow` variant's
+`base_packet`; the host derives the destination from that template.
+
+Six cases cover IPv4/IPv6 with untagged, VLAN and QinQ frames. Each checks
+four completed flows, ordered byte targets `[4097, 4097, 4097, 65539]`, and
+four accepted and closed sink connections totaling 77,830 bytes. SYN packets
+include SACK-Permitted, data packets include NOP options, and templates set
+DSCP, TTL and the IPv6 flow label. `TestTCPTemplateBPF` independently checks
+header preservation and checksums.
+
+Setup creates the veth/VLAN/QinQ topology. The test uses the shared
+[configuration generator and report checks](../common/py/).

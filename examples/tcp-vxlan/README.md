@@ -1,20 +1,30 @@
-# VXLAN 内の TCP フロー
+# TCP flows inside VXLAN
+
+After `make build`, run:
 
 ```bash
-make build
-sudo examples/tcp-vxlan/test.sh
+sudo ./examples/tcp-vxlan/setup.sh
+sudo ./examples/tcp-vxlan/test.sh
+sudo ./examples/tcp-vxlan/teardown.sh
 ```
 
-veth 両端の netns に Linux vxlan デバイスを置く。
-xdperf はプラグインの外側 Ethernet/IP/UDP/VXLAN と内側 Ethernet/IP/TCP のひな型を使い、受信側は vxlan デバイスの内側で xdperf-sink を動かす。
-戻りの VXLAN フレームは xdperf が XDP で解析し、内側タプルで照合する。
+Always run teardown after a failed test as well, or use `sudo ./examples/run_all.sh`.
 
-外側 IPv4 では UDP checksum の zero/lco、外側 IPv6 では lco を使い、内側 IPv4/IPv6 と組み合わせた 6 ケースを検証する。
-各ケースの前に内側の近隣キャッシュを空にし、`--recv` 有効時も ARP/ND をホストへ渡して接続できることを確認する。
-各ケースで 4 フロー、77,830 バイトの完了とシンクの受信を照合する。
-UDP 送信元ポートはフロー番号により 49152 から変化する。
-`tcp_encapsulation` は mixed.go サンプルへの設定名であり、SDK 上では `tcp_flow.encapsulation` に対応する。
+Linux VXLAN devices terminate the tunnel in both namespaces. xdperf uses a
+plugin-provided outer Ethernet/IP/UDP/VXLAN and inner Ethernet/IP/TCP template;
+`xdperf-sink` receives the inner TCP streams. xdperf parses returning VXLAN
+frames in XDP and matches the inner tuple.
 
-GENEVE、二重 VXLAN、256 バイト上限、IPIP/GRE/SRv6/GTP-U/MPLS の送信更新は `TestTCPEncapBPF` で検証する。
-SRv6、GTP-U、GRE、IPIP、MPLS の応答解析も実装済みであり、Linux 対向の相互運用性は [tcp-tunnels](../tcp-tunnels/README.md) で検証する。
-対応形式と上限は [混合送信ガイド](../../docs/ja/mixed_variants.md) を参照する。
+Six cases combine IPv4/IPv6 inner packets with IPv4 outer UDP zero/LCO
+checksums or IPv6 outer LCO checksums. Each case clears inner neighbors first
+and enables `--recv`, verifying that ARP/ND still reaches the host. Each checks
+four completed flows, ordered byte targets `[4097, 4097, 4097, 65539]`, and
+four accepted and closed sink connections totaling 77,830 bytes. UDP source
+ports vary by flow, starting at 49152. `tcp_encapsulation` is the sample
+plugin's configuration name for the SDK's `tcp_flow.encapsulation`.
+
+`TestTCPEncapBPF` covers GENEVE, nested VXLAN, the 256-byte limit and transmit
+updates for IPIP/GRE/SRv6/GTP-U/MPLS. Linux interoperability for those other
+tunnels and asymmetric replies is covered by [tcp-tunnels](../tcp-tunnels/README.md).
+See the [mixed variants guide](../../docs/ja/mixed_variants.md) for supported
+formats and limits. Configuration and report checks live in [common/py](../common/py/).

@@ -2,12 +2,8 @@
 # TCP through Linux GRE, IPIP, SRv6 and MPLS endpoints.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export NS_TX=xdperf-ttun-tx NS_RX=xdperf-ttun-rx VETH_TX=ttun-tx VETH_RX=ttun-rx
-source "${SCRIPT_DIR}/../common/tcp_scenario.sh"
-check_root
-check_xdperf_built
-trap teardown_tcp_topology EXIT
-setup_tcp_topology
+source "${SCRIPT_DIR}/../common/tcp_plugin_scenario.sh"
+prepare_tcp_plugin_test
 srcmac="$(ip netns exec "$NS_TX" cat "/sys/class/net/${VETH_TX}/address")"
 dstmac="$(ip netns exec "$NS_RX" cat "/sys/class/net/${VETH_RX}/address")"
 # Permanent underlay neighbours isolate tunnel parsing from discovery timing.
@@ -132,26 +128,12 @@ for kind in ${TUNNEL_CASES:-gre gre-key gretap ip6gre ipip ip6tnl srv6 srv6-two 
         esac
         endpoint="${idst}:${DST_PORT}"; if [ "$inner" = 6 ]; then endpoint="[${idst}]:${DST_PORT}"; fi
         start_sink "$endpoint"
-        config="$(python3 "$SCRIPT_DIR/config.py" "$kind" "$srcmac" "$dstmac" "$osrc" "$odst" "$isrc" "$idst" "$ism" "$idm" "$DST_PORT")"
+        config="$(python3 "${TCP_PY_DIR}/config.py" tunnel "$kind" "$srcmac" "$dstmac" "$osrc" "$odst" "$isrc" "$idst" "$ism" "$idm" "$DST_PORT")"
         report="${XDPERF_EXAMPLE_RUNDIR}/tunnel-${kind}-${inner}.csv"
         TX_LOG="${XDPERF_EXAMPLE_RUNDIR}/tunnel-${kind}-${inner}.log"
-        if ! timeout 60 ip netns exec "$NS_TX" "$XDPERF_BIN" run --send --recv --device "$VETH_TX" \
-            --plugin mixed.go --plugin-path "$PLUGIN_PATH" --plugin-config "$config" \
-            --count 128 --pps 4000 --parallelism 1 --tcp-flow-report "$report" > "$TX_LOG" 2>&1; then
-            tail -n 40 "$TX_LOG"; exit 1
-        fi
+        run_tcp_plugin "$config" "$report" --recv --count 128 --pps 4000 --parallelism 1
         stop_sink
-        python3 - "$report" "$SINK_LOG" "$TX_LOG" <<'PY'
-import csv,json,sys
-rows=list(csv.DictReader(open(sys.argv[1])))
-sink=json.loads(open(sys.argv[2]).readlines()[-1])
-line=next(l for l in open(sys.argv[3]) if 'mixed final statistics' in l)
-stats=json.loads(line[line.index('{'):])
-assert stats['rx_tuple_mismatch']==stats['rx_invalid_tcp']==0,stats
-assert len(rows)==4 and all(r['state']=='done' for r in rows),rows
-assert [int(r['bytes_acked']) for r in rows]==[4097]*3+[65539],rows
-assert sink['accepted']==sink['closed']==4 and sink['bytes']==77830,sink
-PY
+        python3 "${TCP_PY_DIR}/verify.py" tunnel "$report" "$SINK_LOG" "$TX_LOG"
         completed=$((completed + 1))
         print_success "TCP ${kind}, inner IPv${inner}: flows/bytes verified"
         ip -n "$NS_TX" link del tun7

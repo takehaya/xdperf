@@ -103,7 +103,9 @@ base_packet、複数宛先、固定オプション、トンネル RX、Timestamp
 sudo out/bin/xdperf run --send --recv --device eth0 --plugin mixed.go --plugin-path out/bin \
   --plugin-config '{"src_ip":"192.0.2.1","dst_ip":"192.0.2.2","dst_mac":"02:00:00:00:00:02"}' \
   --count 128 --pps 2000 --parallelism 1 --tcp-flow-report flows.csv
+sudo examples/mixed/setup.sh
 sudo examples/mixed/test.sh
+sudo examples/mixed/teardown.sh
 ```
 
 サンプルは DNS 形式の UDP 問い合わせと 4 本の TCP フローを返す。

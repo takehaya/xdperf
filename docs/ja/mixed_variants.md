@@ -20,7 +20,7 @@ sudo out/bin/xdperf run --device eth0 --plugin mixed.go --plugin-path out/bin \
 [mixed.go](../../plugins/mixed.go/README.md) は DNS 形式の UDP 問い合わせと 4 本の TCP フローを生成します。
 UDP 応答も計測する場合は `--recv` を付け、対向に UDP エコーサーバーを用意します。
 TCP の応答は `--recv` の有無によらず処理します。
-netns と対向を用意する [mixed の E2E](../../examples/mixed/test.sh) でも確認できます。
+netns と対向を用意する [mixed の E2E](../../examples/mixed/README.md) でも確認できます。
 
 ## SDK の応答を書く
 
