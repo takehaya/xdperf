@@ -1,11 +1,11 @@
 # C の共有ヘッダから Go プラグイン用の定義を生成する設計
 
 状態: 段階1〜5を実装済み。
-段階6の実際の Cilium Datapath Plugin での確認は未実施。
-再確認日: 2026-10-20。
+段階6の実際の Cilium Datapath Plugin での確認も、x86_64 ホスト、当該観測実装 `DPP_MODE=6`、IPv4/UDP の VXLAN、skb フックの範囲で完了（Cilium v1.20.3、詳細は11.2節）。
+再確認日: 2026-10-21。
 以下の前提調査と方式比較は実装前の main 7b16bbc に基づく記録である。
 現在は `cmd/packetdefs-gen` と manifest、guest の生成物、Go VXLAN の移行、専用 CI を実装済みであり、末尾に結果を示す。
-段階1〜5を実装し、段階6の実際の Cilium Datapath Plugin での確認は実施しない。
+段階1〜5の実装記録に加え、11.2節に段階6の確認結果を追記した。
 実装前にこの設計書を 6c92c5f でコミットし、末尾に実装と検証の記録を追記した。
 
 ## 1. 目的と共有の範囲
@@ -64,14 +64,14 @@ C の `uint16` 相当の型や BTF の整数型だけから、通信上のバイ
   TinyGo の既存サンプルには `import "C"` があるが、これは標準 Go の wasip1 に cgo が使えることを意味しない。
 - 共有ヘッダは `memcpy` を使わず、`vx_load16/vx_load32` がバイト読み出しとシフトで big-endian の数値を返す。
   C の `main.c` には独自の `memcpy/memset` があり、ヘッダの制約とプラグイン全体の制約を区別する必要がある。
-  Cilium による置き換えの問題は [C 版 README](../../plugins/vxlan.c/README.md) に記載があるが、外部 Datapath Plugin のソースやロード失敗は今回再検証していない。
+  Cilium による置き換えの問題は [C 版 README](../../plugins/vxlan.c/README.md) に記載があるが、この前提調査では外部 Datapath Plugin のソースやロード失敗を再検証していない（後の段階6で確認、11.2節）。
 - `vxlan_hdr` は `flags`、予約領域、3バイトの VNI、末尾の予約領域を持つ。
   `packed` 指定も C のビットフィールドもなく、すべて1バイト型なので、ソースから期待するサイズは8バイト、アラインメントは1である。
   この値はビルドで実測した結果ではなく、実装時に検証する期待値である。
 - `vx_inner_key` は IPv4 アドレス2つ、ポート2つ、32ビットの VNI を持つ内部キーであり、そのままパケット上に現れるヘッダではない。
   ソースから期待するサイズは16バイトで、各フィールドの開始位置は順に 0、4、8、10、12 バイトである。
   コメントは network byte order とする一方、`vxlan_vni` や `vx_load*` は数値を組み立てて返す。
-  C プラグインにはこのキーを組み立てる処理がないため、外部観測側での格納順は未確認である。
+  C プラグインにはこのキーを組み立てる処理がないため、この前提調査では外部観測側での格納順は未確認である（後の段階6で確認、11.2節）。
 - Go 版の builder は VXLAN ヘッダを手で8バイトに書き込み、ポート4789、フラグ `0x08`、VNI の位置4を別々に定義している。
   `main.go` の VNI sweep は、3バイト書き込みが Diff で使えないため、VNI の1バイト前の予約領域から4バイトを更新する。
 - C 版も Go 版も Variable テンプレートを返すが、設定項目と機能は異なる。
@@ -207,7 +207,7 @@ func (h *Header) UnmarshalFrom(src []byte) error
 
 この例の数値は現行ヘッダから期待する生成結果であり、実装で手入力する値ではない。
 `InnerKey` にも C のサイズと各フィールドのオフセットを生成するが、初回は変換メソッドを付けない。
-外部観測側の格納順を確認するまで、この型をマップのキーとして直接渡す API を提供しない。
+段階6で外部観測側の格納順は BPF を実行するホストのバイト順と確認したが、今回も codec やマップのキーとして直接渡す API は追加しない。
 
 Go の `unsafe.Sizeof` や `unsafe.Offsetof` が C と一致することは、値型の公開契約にしない。
 `structs.HostLayout` を付けても、任意の packed 構造体を Go のメモリ上で再現できる保証にはならない。
@@ -229,9 +229,9 @@ Go の入力検査は継続し、関数の振る舞いまで自動生成で一�
 `__be16` のような typedef があっても、生成器が明示的に意味を割り当てない限り、自動的な big-endian 変換の根拠にしない。
 
 `vx_inner_key` は wire 型として登録しない。
-将来そのキーを Go から利用する場合は、観測側が `vx_load32` の戻り値をそのまま格納するのか、network-order 表現に変換して格納するのかを確認する。
-その結果に基づき、パケットの codec と別に、対象 BPF マップの格納形式を扱う codec を設計する。
-IPv4 アドレス `192.0.2.1` と VNI `0x010203` など、逆順を見分けられる値で照合する。
+当初は観測側の代入処理と格納順を未確認としていたが、段階6では読み出し関数の戻り値をそのまま BPF を実行するホストのバイト順で格納すると確認した（11.2節）。
+将来 codec を追加する場合は、パケットの codec と別に、対象 BPF マップの格納形式を扱うものとして設計する。
+別の観測実装に適用する場合も代入処理を確認し、IPv4 アドレス `192.0.2.1` と VNI `0x010203` など、逆順を見分けられる値で照合する。
 
 ### 5.3 packed、padding、アラインメント
 
@@ -456,7 +456,7 @@ MAC、payload、IMIX、チェックサム方針が異なる現行のフレーム
 実装後に結果を記録する。
 外部 Cilium のソースと環境が必要な条件は、ローカルの単体検証とは別に記録する。
 
-| 段階 | 作業 | 完了条件 |
+| 段階 | 作業 | 完了条件（段階1〜5の結果は11.1節、段階6の結果は11.2節） |
 |---|---|---|
 | 1. 抽出の成立確認 | 専用翻訳単位に2つの構造体と定数 enum を保持する。bpf2go の `-type` と BTF の読み出しで比較する | ヘッダは8バイト、VNI はオフセット4で3バイト、キーは期待する16バイトの配置になり、式マクロを含む対象定数を取得できる。対象を保持し忘れるケースがエラーになる |
 | 2. 限定した生成器 | manifest、純 Go 型、定数、codec、レイアウト記録、非対応型の診断を実装する | 再実行して同じ内容を生成する。通常の整数、配列、packed の不整列配置を正しく encode/decode し、ビットフィールドや union などを拒否する。範囲外定数と名前衝突も失敗する |
@@ -491,7 +491,7 @@ C の関数、独立した既知のバイト列、既存の decoder を組み合
 | 論点 | 初期方針と判断に必要な情報 |
 |---|---|
 | BTF に残らない意味 | wire/内部キーの分類とバイト順を manifest に必須指定する。型名やコメントだけから推測しない |
-| `vx_inner_key` の格納順 | 型とレイアウトだけ生成する。外部観測側の代入処理とマップのバイト列を確認するまで codec を公開しない |
+| `vx_inner_key` の格納順とヘッダコメント | 格納順は段階6で確認済み。`vx_load32` / `vx_load16` と `vxlan_vni` で数値化して代入したキーは BPF を実行するホストのバイト順（検証した x86_64 ではリトルエンディアン）。Go からこの外部マップと交換する場合も同じ順序で扱う。型とレイアウトのみの生成を維持し、codec は追加しない。誤った `network byte order` コメントは、固定ハッシュと生成物を更新する次のヘッダ改版で修正する（11.2節） |
 | 型と enum の除去 | 専用翻訳単位で実体を持つ変数から参照し、コンパイル後に存在を検査する。`-type` やデバッグオプションだけで保持を保証したと扱わない |
 | C ABI の差 | bpfel/bpfeb の比較と wasm32 の静的検査を必須にする。差がある型を初期版では自動変換しない |
 | packed と暗黙 padding | codec が位置を扱い、Go のメモリレイアウトと分離する。wire 型の暗黙 padding は初期版で拒否する |
@@ -499,7 +499,7 @@ C の関数、独立した既知のバイト列、既存の decoder を組み合
 | enum とマクロの互換性 | 当初はマクロを維持する。外部の `#if` 利用を調べずに enum へ置換しない。64ビット定数の対応は別途仕様化する |
 | 関数の意味のずれ | 関数の自動翻訳はしない。Go の VNI 補助関数を C と同じ入力集合で照合し、C 関数の変更時にも CI が起動するようにする |
 | 正本の外部配布 | ヘッダのパスは維持し、外部側で利用するリビジョンと内容ハッシュを記録する。同じリポジトリ内の CI だけでは、外部の古いコピーを検出できない |
-| 外部 Cilium の確認範囲 | 対象 Cilium バージョン、コンパイルオプション、Plugin のソースと保持方法を実装開始時に確定する。ローカルで型を抽出できることとロード成功を区別する |
+| 外部 Cilium の確認範囲 | Cilium v1.20.3 の計測用 `DPP_MODE=6` でコンパイル、ロード、トラフィックを確認済み。環境と再現手順、外部バリアントの保存範囲は11.2節に記録する |
 | ツールチェーンの固定 | LLVM 22 を出発点に、fork の BTF 読み出しとの組み合わせを検証する。更新は再生成差分と fixture を同じ変更で確認する |
 | Go/TinyGo の差 | 生成物に `unsafe`、`structs.HostLayout`、eBPF ローダーを持ち込まず、対象 TinyGo のバージョンで実行確認する |
 | SDK と生成物の版 | guest の公開方法に合わせて、C ヘッダの識別情報と Go 生成物を同じ変更として配布する。破壊的なフィールド変更は公開 API の変更として扱う |
@@ -514,9 +514,10 @@ C の関数、独立した既知のバイト列、既存の decoder を組み合
 移行前の Go builder とプラグインの出力を先に採取し、フレーム全体と JSON 応答の意味を移行後と照合する。
 性能改善を目的とする変更ではなく、送信ホットパスも変更しないため、トラフィック性能の比較測定は実施しない。
 性能測定を追加する場合は対応差の平均と t 分布による95%信頼区間を用いる。
-当時の生ログと移行前 Wasm は保存していない。
+段階1〜5の当時の生ログと移行前 Wasm は保存していない。
 リポジトリ内の fixture と検証コードは残るが、当時のログを再確認できるものではない。
-リポジトリには小さな検証 fixture、検算スクリプト、設計書の結果だけを残す。
+段階1〜5については、リポジトリに小さな検証 fixture、検算スクリプト、設計書の結果を残す。
+段階6の保存データと未収録のログは11.2節に示す。
 
 関連設計は [混合バリアント](design_mixed_variants.md)、[TCP フローテンプレート](design_tcp_flow_template.md)、[XDP TCP](design_xdp_tcp.md) を参照する。
 今回の生成型は guest の値型であり、これらの BPF マップや TCP 状態の ABI を置き換えない。
@@ -550,7 +551,7 @@ wasm32 の同幅 float と `_Bool` がサイズと符号の検査だけでは通
 JSON 検査の `jq -e empty` は正しい JSON にも終了コード1を返すため、`jq empty` に修正した。
 YAML の字下げと既存の末尾空白も整え、別コミット 7ec17e1 に分けた。
 
-生ログ、移行前 Wasm、およびコンテナのログは保存していない。
+段階1〜5の生ログ、移行前 Wasm、およびコンテナのログは保存していない。
 元の作業ディレクトリは削除済みである。
 [移行前 JSON fixture](../../pkg/plugin/testdata/vxlan_before/) と [検証コード](../../internal/packetdefs/) はリポジトリに残る。
 性能測定は行っておらず、PPS の改善や劣化に関する主張はしない。
@@ -574,4 +575,135 @@ YAML の字下げと既存の末尾空白も整え、別コミット 7ec17e1 に
 | ルート全体の `make test` | 全パッケージ sudo race 成功（skip なし） |
 | `make examples` の12シナリオ | 12/12 成功、失敗と skip は0 |
 | OCR レビュー | 修正必須の指摘を解消、APPROVE |
-| 実際の Cilium Datapath Plugin での段階6 | 未実施（今回の範囲外） |
+| 実際の Cilium Datapath Plugin での段階6 | 2026-10-21 に冒頭の範囲で成功。Go/C 版の内側 tuple と VNI、実送信数に対するカウンタが一致。アタッチとロード状態は作業時の観測として記録（11.2節） |
+
+### 11.2 段階6の Cilium Datapath Plugin での確認
+
+2026-10-21 に、共有ヘッダを使う外部観測側でコンパイル、ロード、生成トラフィックの照合を行った。
+この確認は定義の共有と観測結果の一致を対象とし、性能比較の結果ではない。
+
+#### 環境と入力の固定
+
+| 項目 | 条件 |
+|---|---|
+| ホスト | Ubuntu 26.04、kernel 7.0.0-38-generic、x86_64 |
+| クラスタ | kind v0.33.0、Kubernetes v1.37.0、control plane 1台と worker 2台 |
+| Cilium | v1.20.3、veth、TCX、native routing、kube-proxy replacement |
+| xdperf と共有ヘッダ | main `58573baf6c6d63869a3c7421ff21811717c2dab5`（#127 の変更後）の `plugins/vxlan.c/vxlan_shared.h` |
+| 観測側 | Cilium v1.20.3 の `examples/datapath-plugin` に計測用バリアント `DPP_MODE=6` を適用 |
+| BPF コンパイル | clang-22、`-O2 -g --target=bpf -mcpu=v3` |
+
+共有ヘッダと Go 生成物の SHA-256 は次のとおりである。
+後者は `pkg/guest/packetdefs/vxlan/types_gen.go` の内容ハッシュである。
+
+```text
+5fa16267b36e75a380a8abfc58b8367a8208f7465ce9cb8114652cda577e459a  plugins/vxlan.c/vxlan_shared.h
+977e83cfa2243fd7741220c5fc52c517a9c58a48aa2c3812464c786a8a128656  pkg/guest/packetdefs/vxlan/types_gen.go
+```
+
+バリアントは共有ヘッダを include し、`vx_load16` / `vx_load32` と `vxlan_vni` で内側 IPv4 アドレス、UDP ポート、VNI を数値化する。
+キーは `struct vx_inner_key`、値はカウンタとし、`dpp_vx_flows` を最大65,536エントリの `LRU_HASH` として定義した。
+内側のプロトコルは UDP に固定した確認であり、キーにプロトコル番号のフィールドはない。
+計数処理は skb フックだけに置き、他のフックは空にした。
+当時の4つの `.o` から出し直した [objects.txt](benchmarks/stage6-cilium/objects.txt) に、各オブジェクトの SHA-256 と `__bpf_trap`、`trace_printk` がともに0件であることを収録した。
+`CiliumDatapathPlugin` によるロードで182フックがアタッチされ、verifier エラーなし（Datapath Plugin の DaemonSet が Running、ロード後に再起動なし）だったことは作業時の観測である。
+その生ログはホストの IP を含むため収録しない。
+
+#### レイアウトとキーの格納順
+
+Cilium 側 `skb_bpfel.o` の BTF 抜粋を [objects.txt](benchmarks/stage6-cilium/objects.txt) に収録した。
+次の配置を示し、[生成済みレイアウト](../../pkg/guest/packetdefs/vxlan/layout_gen.json) と一致した。
+
+| 型またはフィールド | サイズまたはオフセット（バイト） |
+|---|---|
+| `vx_inner_key` | size 16 |
+| `saddr` | offset 0 |
+| `daddr` | offset 4 |
+| `sport` | offset 8 |
+| `dport` | offset 10 |
+| `vni` | offset 12 |
+
+マップから得た生のキーの一例は `0100a8c00200a8c00004c41367000000` である。
+これは `192.168.0.1:1024 -> 192.168.0.2:5060`、VNI 103 に対応する。
+各フィールドは読み出し関数が返した数値を BPF を実行するホストのバイト順で格納するため、検証した x86_64 ではリトルエンディアンになる。
+たとえば送信元 `192.168.0.1` は数値 `0xc0a80001` であり、キー内のバイト列は `01 00 a8 c0` だった。
+
+この観測側のキーは BPF を実行するホストのバイト順であり、ネットワーク順ではない。
+固定した共有ヘッダには `network byte order` というコメントが残るが、この代入処理と生バイト列には合致しない。
+Go の `InnerKey` をこの外部マップと交換する場合も、生成済みオフセットに従って BPF を実行するホストのバイト順で読み書きする必要がある。
+今回の変更では `InnerKey` の codec や新しい API は追加せず、格納順の結論だけを記録する。
+この結論は数値化して代入する当該観測側に対するものであり、パケット上のネットワーク順を変更するものではない。
+
+#### 生成トラフィックの照合
+
+client Pod（kind ノード `xdp-worker` 上）の `eth0` に generic XDP を使い、xdperf `58573ba` から20,000 pps、parallelism 1を指定して送信した。
+宛先は responder Pod（kind ノード `xdp-worker2` 上）の Pod IP、外側 UDP 送信元ポートは49152固定とした。
+観測点は client の lxc の `from_container` に付いた `before` フックの `dpp_vx_flows` である。
+内側は `192.168.0.1 -> 192.168.0.2`、UDP 宛先ポート5060とした。
+
+| 試行 | 送信条件 | 実送信数 | マップでの観測 |
+|---|---|---|---|
+| A | Go 版 `vxlan.go`、VNI 100〜115、内側送信元ポート1024、128バイト | 16,000 | 16キー × 1,000、計16,000 |
+| B | Go 版、VNI 200固定、`vary_inner_port` で内側送信元ポート65280〜65535 | 24,000 | 256キー、各93または94、計24,000。ポートは連続 |
+| C | C 版 `vxlan.c`、VNI 300、`inner_sport_base=65280`、`inner_flows=256` | 24,000 | Go 版の試行 B と同じ分布、計24,000 |
+
+送信元 IP、宛先 IP、宛先ポート、VNI はすべて期待値と一致した。
+試行 B と C は `--count 25600` を指定したが、`--pps` のバッチ単位の切り捨てにより実送信数は24,000だった。
+カウンタは実送信数に対して照合し、一致した。
+当時は1バッチ2,000パケットで、12バッチ × 2,000 = 24,000となった。
+この切り捨ての修正は [PR #133](https://github.com/takehaya/xdperf/pull/133) で扱い、本確認には含めない。
+
+[runA.json](benchmarks/stage6-cilium/runA.json) は試行 A 後、[runBC.json](benchmarks/stage6-cilium/runBC.json) は試行 B と C の後のダンプである。
+後者には試行 A のキーも残るため、VNI 100〜115、200、300に分けて集計する。
+取得スクリプトとデータの読み方は [保存データの README](benchmarks/stage6-cilium/README.md) を参照する。
+
+#### 再現手順と保存範囲
+
+各試行で使った CLI フラグと `--cfg` は次のとおりである。
+`<client-pod-ip>`、`<responder-pod-ip>`、`<client-mac>` は各 Pod の値に置き換える。
+`<gateway-mac>` は client Pod の既定ゲートウェイ（Cilium の lxc）の MAC である。
+WASM ファイルは各 Pod のプラグイン検索パスに配置する。
+
+試行 A:
+
+```sh
+xdperf run --device eth0 --xdp-mode generic --pps 20k --parallelism 1 \
+  -L go -p vxlan.go --count 16000 \
+  --cfg '{"src_ip":"<client-pod-ip>","dst_ip":"<responder-pod-ip>","dst_mac":"<gateway-mac>","is_arp_resolve":false,"src_port":49152,"vni_start":100,"vni_end":115,"inner_src_ip":"192.168.0.1","inner_dst_ip":"192.168.0.2","inner_src_port":1024,"inner_dst_port":5060,"imix_sizes":[128],"imix_weights":[1]}'
+```
+
+試行 B（A と同じ設定を基に、VNI、内側送信元ポート、ポート走査を変更）:
+
+```sh
+xdperf run --device eth0 --xdp-mode generic --pps 20k --parallelism 1 \
+  -L go -p vxlan.go --count 25600 \
+  --cfg '{"src_ip":"<client-pod-ip>","dst_ip":"<responder-pod-ip>","dst_mac":"<gateway-mac>","is_arp_resolve":false,"src_port":49152,"vni_start":200,"vni_end":200,"inner_src_ip":"192.168.0.1","inner_dst_ip":"192.168.0.2","inner_src_port":65280,"inner_dst_port":5060,"imix_sizes":[128],"imix_weights":[1],"vary_inner_port":true}'
+```
+
+試行 C（外側 `src_port` は既定の49152、`payload` は既定の18バイト）:
+
+```sh
+xdperf run --device eth0 --xdp-mode generic --pps 20k --parallelism 1 \
+  -L c -p vxlan.c --count 25600 \
+  --cfg '{"src_mac":"<client-mac>","dst_mac":"<gateway-mac>","src_ip":"<client-pod-ip>","dst_ip":"<responder-pod-ip>","vni":300,"inner_src_ip":"192.168.0.1","inner_dst_ip":"192.168.0.2","inner_dport":5060,"inner_sport_base":65280,"inner_flows":256}'
+```
+
+計測用バリアントはリポジトリ外にあり、本リポジトリには取り込まない。
+そのソースと Cilium v1.20.3 の作業環境を別途用意する必要があり、本リポジトリの保存データだけで Plugin の再ビルドやロードを再現できるわけではない。
+手順の要点は次のとおりである。
+
+1. Cilium v1.20.3 の `examples/datapath-plugin` に外部の `variants.patch` を適用し、`variant.h` を BPF ソースのディレクトリへ置く。
+   上記ハッシュの `vxlan_shared.h` を同じディレクトリから include できるようにし、`DPP_MODE=6` でビルドする。
+   skb 以外も含めた全4オブジェクトで `__bpf_trap` と `trace_printk` が残らないこと、および BTF の配置を確認する。
+2. `.o` を埋め込む Go バイナリを再ビルドして Plugin のイメージを作り、kind にロードする。
+   `CiliumDatapathPlugin` で有効化し、フックのアタッチと verifier エラーの有無を確認する。
+3. 上表の条件で Go/C 版トラフィックを送り、client の lxc に対応するマップを読み出す。
+   [s6dump.py](benchmarks/stage6-cilium/s6dump.py) は kind ノードのネットワーク名前空間で `from_container` のプログラム ID を求め、tracing link の接続先と `before` の名前からマップを特定する。
+   `bpftool -j` の生キーを BTF のオフセットに合わせて `struct.unpack("<IIHHI", ...)` で解釈し、VNI と内側送信元ポート順に並べる。
+   このスクリプトのリトルエンディアン指定は当時の x86_64 環境用である。
+4. 確認後に Plugin を外し、ホスト側の状態を比較する。
+   ホストの上流 NIC の XDP/tc、cgroup root、経路、nft の行数、外部疎通が、作業前、ロード後、最後の3時点で差分なしだったことは作業時の観測である。
+   その生ログはホストの IP を含むため収録しない。
+
+保存するのは `s6dump.py`、`runA.json`、`runBC.json`、`objects.txt` と説明用 README である。
+ホストの IP を含む `host_*.txt`、バイナリ、外部バリアントはコミットしない。

@@ -22,6 +22,12 @@ Run `make packetdefs-gen` or `make packetdefs-check` with LLVM 22 after shared
 layout changes. This generates definitions, not the C inline function bodies;
 see the [design](../../docs/ja/design_c_to_go_shared_defs.md).
 
+The stage 6 observer for Cilium v1.20.3 assigns the numeric results of `vx_load16` / `vx_load32` and `vxlan_vni` to `vx_inner_key` fields and stores them in the byte order of the host running BPF (little endian on the tested x86_64 host).
+The pinned header's `network byte order` comment does not describe this storage order; correcting it remains pending for the next header revision.
+Exchanging Go `InnerKey` values with this map requires the BPF host's byte order, regardless of the Wasm guest's byte order.
+No `InnerKey` codec is provided.
+See [design section 11.2](../../docs/ja/design_c_to_go_shared_defs.md#112-段階6の-cilium-datapath-plugin-での確認) for the raw bytes and comparison results.
+
 ## Build
 
 Needs clang with the WebAssembly target, `wasm-ld` (lld), and make.

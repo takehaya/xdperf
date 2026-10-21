@@ -1,0 +1,14 @@
+# objects: Cilium v1.20.3 examples/datapath-plugin, DPP_MODE=6, clang-22 -O2 -g --target=bpf -mcpu=v3
+Ubuntu clang version 22.1.2 (1ubuntu1)
+skb.o sha256=2f11df2baa07d41175087e9812c1156f2a93e9699d881e919488c934fb61ce18 __bpf_trap=0 trace_printk=0
+xdp.o sha256=b35584702bd9f692a5ba0fa75427618cdddcd84869f090ae9a6f1977ca2c50d0 __bpf_trap=0 trace_printk=0
+sock.o sha256=ec13ecbd1e2b4f3a59ff037f3cc798354cf64a1c51dbf430409c440559bca593 __bpf_trap=0 trace_printk=0
+sock_addr.o sha256=f44ebdce5c4a06c04d6178758e61c75654aa2e38fbeebdf410e57772aa0f2b2a __bpf_trap=0 trace_printk=0
+
+# bpftool btf dump file skb_bpfel.o (vx_inner_key)
+[6] STRUCT 'vx_inner_key' size=16 vlen=5
+	'saddr' type_id=7 bits_offset=0
+	'daddr' type_id=7 bits_offset=32
+	'sport' type_id=9 bits_offset=64
+	'dport' type_id=9 bits_offset=80
+	'vni' type_id=7 bits_offset=96
