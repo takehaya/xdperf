@@ -42,6 +42,23 @@ type Xdperf struct {
 	cpus            []int // resolved CPU list for workers
 }
 
+// calculateDiffMapSize requires a validated config with positive Parallelism.
+func calculateDiffMapSize(cfg Config) uint32 {
+	if !cfg.Sender || cfg.TCP {
+		return 1
+	}
+	// Clamp before adding the spare entry and narrowing, avoiding both uint64
+	// overflow at MaxUint64 and uint32 truncation for large packet budgets.
+	return uint32(min(cfg.Count/uint64(cfg.Parallelism), uint64(coreelf.MaxDiffEntries)-1) + 1)
+}
+
+// calculatePacketPoolSize requires a validated config with positive Parallelism.
+// The generated pool is bounded independently of the uint64 send budget.
+func calculatePacketPoolSize(cfg Config) int {
+	maxPoolEntries := uint64(coreelf.MaxDiffEntries) * uint64(cfg.Parallelism)
+	return int(min(cfg.Count, maxPoolEntries))
+}
+
 func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	var cleanupFnList []CancelFunc
 	var xd *Xdperf
@@ -103,17 +120,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	// Calculate diff_map size based on mode. The kernel hard-caps the per-CPU
 	// round-robin pool to coreelf.MaxDiffEntries (= MAX_DIFF_ENTRIES); sizing the
 	// map beyond that just wastes entries the data plane never reads, so clamp here.
-	var diffMapSize uint32
-	if cfg.Sender && !cfg.TCP {
-		// Sender mode: size based on Count / Parallelism, clamped to the cap.
-		diffMapSize = uint32(cfg.Count/uint64(cfg.Parallelism)) + 1
-		if diffMapSize > coreelf.MaxDiffEntries {
-			diffMapSize = coreelf.MaxDiffEntries
-		}
-	} else {
-		// Receiver-only mode: minimal size since diff_map is not used.
-		diffMapSize = 1
-	}
+	diffMapSize := calculateDiffMapSize(cfg)
 	logger.Info("calculated diff_map size",
 		zap.Uint32("diff_map_size", diffMapSize),
 		zap.Uint32("max_diff_entries", coreelf.MaxDiffEntries),
@@ -310,15 +317,14 @@ func (x *Xdperf) initPacketGeneration(resp *guest.GeneratorProcessResponse) erro
 	// pre-allocate a correspondingly huge []DiffEntry on the host (OOM risk) while
 	// the kernel only round-robins the first MaxDiffEntries/CPU anyway. The total
 	// number of packets sent is governed separately by --count, not the pool size.
-	genCount := int(x.cfg.Count)
-	if maxGen := int(coreelf.MaxDiffEntries) * x.cfg.Parallelism; x.cfg.Parallelism > 0 && genCount > maxGen {
+	genCount := calculatePacketPoolSize(x.cfg)
+	if uint64(genCount) < x.cfg.Count {
 		x.Logger.Warn("requested count exceeds data-plane pool capacity, capping generated variant pool",
 			zap.Uint64("requested_count", x.cfg.Count),
-			zap.Int("max_pool_entries", maxGen),
+			zap.Int("max_pool_entries", genCount),
 			zap.Uint32("max_per_cpu", coreelf.MaxDiffEntries),
 			zap.Int("parallelism", x.cfg.Parallelism),
 		)
-		genCount = maxGen
 	}
 
 	switch resp.TemplateType {
@@ -468,15 +474,14 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		IngressIfindex: uint32(x.Device.Index),
 	}
 
-	// Calculate batch parameters based on PPS setting
-	repeatPerBatch, interval, totalBatches, batchSize := x.calculateBatchParams()
+	// The first worker has the largest share when Count is not divisible by
+	// Parallelism. Each worker gets its own plan below.
+	logPlan := calculatePacketBatchPlan(x.cfg, 0)
 
-	runOpts := &ebpf.RunOptions{
-		Data:      in,
-		Repeat:    repeatPerBatch,
-		Flags:     unix.BPF_F_TEST_XDP_LIVE_FRAMES,
-		Context:   xdpmd,
-		BatchSize: batchSize,
+	runOpts := ebpf.RunOptions{
+		Data:    in,
+		Flags:   unix.BPF_F_TEST_XDP_LIVE_FRAMES,
+		Context: xdpmd,
 	}
 
 	// Get NIC stats before sending (only if flag is set)
@@ -505,10 +510,10 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		zap.Int("parallelism", x.cfg.Parallelism),
 		zap.Uint64("packet_pool_size", x.cfg.Count),
 		zap.Uint64("target_pps", x.cfg.PPS),
-		zap.Uint32("repeat_per_batch", repeatPerBatch),
-		zap.Uint32("batch_size", batchSize),
-		zap.Uint32("total_batches_per_cpu", totalBatches),
-		zap.Duration("batch_interval", interval),
+		zap.Uint32("repeat_per_batch_slot0", logPlan.repeat),
+		zap.Uint32("batch_size", logPlan.batchSize),
+		zap.Uint64("total_batches_slot0", logPlan.totalBatches()),
+		zap.Duration("batch_interval_slot0", logPlan.interval),
 		zap.Bool("infinite_mode", x.cfg.Infinite),
 	)
 
@@ -516,7 +521,8 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	var once sync.Once
 	var firstErr error
 
-	for _, cpu := range x.cpus {
+	for slot, cpu := range x.cpus {
+		plan := calculatePacketBatchPlan(x.cfg, slot)
 		p, err := prog.Clone()
 		if err != nil {
 			return fmt.Errorf("failed to clone XDP program: %w", err)
@@ -525,7 +531,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		go func(cpu int) {
 			defer wg.Done()
 			defer p.Close()
-			if err := x.run(ctx, cpu, p, runOpts, interval, totalBatches); err != nil {
+			if err := x.run(ctx, cpu, p, runOpts, plan); err != nil {
 				x.Logger.Error("error in run", zap.Int("cpu", cpu), zap.Error(err))
 				// Fail Fast: cancel all other goroutines on first error
 				once.Do(func() {
@@ -572,126 +578,20 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	return nil
 }
 
-// calculateBatchParams calculates the repeat count per batch, interval between batches, total batches, and batch size.
-// Returns (repeatPerBatch, interval, totalBatches, batchSize)
-// - repeatPerBatch: number of times to repeat bpf_prog_run (0 means use batchSize for infinite mode)
-// - interval: time between batches (0 means no rate limiting, run as fast as possible)
-// - totalBatches: total number of batches to send per CPU (0 means infinite for infinite mode)
-// - batchSize: number of packets per bpf_prog_run call (used in infinite mode with BatchSize feature)
-func (x *Xdperf) calculateBatchParams() (uint32, time.Duration, uint32, uint32) {
-	packetsPerCPU := uint32(x.cfg.Count / uint64(x.cfg.Parallelism))
-
-	if x.cfg.Infinite {
-		// Infinite mode: infinite sending at max speed using BatchSize feature
-		return 1 << 20, 0, 0, x.cfg.BatchSize
-	}
-
-	if x.cfg.PPS == 0 {
-		// Max speed: send all packets in one batch
-		return packetsPerCPU, 0, 1, x.cfg.BatchSize
-	}
-
-	// PPS limited: calculate batch parameters
-	ppsPerCPU := x.cfg.PPS / uint64(x.cfg.Parallelism)
-	if ppsPerCPU == 0 {
-		ppsPerCPU = 1
-	}
-
-	// Target batch interval: 100ms for good balance between precision and overhead
-	const targetBatchIntervalMs = 100
-	packetsPerBatch := uint32(ppsPerCPU * targetBatchIntervalMs / 1000)
-
-	if packetsPerBatch < 1 {
-		packetsPerBatch = 1
-	}
-	if packetsPerBatch > packetsPerCPU {
-		packetsPerBatch = packetsPerCPU
-	}
-
-	// Calculate total batches needed to send all packets
-	totalBatches := packetsPerCPU / packetsPerBatch
-	if totalBatches < 1 {
-		totalBatches = 1
-	}
-
-	// Calculate interval based on packets per batch and target PPS
-	// interval = packetsPerBatch / ppsPerCPU (in seconds)
-	intervalNs := float64(packetsPerBatch) * float64(time.Second) / float64(ppsPerCPU)
-	interval := time.Duration(intervalNs)
-
-	// Minimum interval to avoid busy loop
-	if interval < time.Millisecond {
-		interval = time.Millisecond
-	}
-
-	return packetsPerBatch, interval, totalBatches, 1
-}
-
-func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts *ebpf.RunOptions, interval time.Duration, totalBatches uint32) error {
+func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts ebpf.RunOptions, plan packetBatchPlan) error {
 	runtime.LockOSThread()
 	var cpuset unix.CPUSet
 	cpuset.Set(cpu)
 	if err := unix.SchedSetaffinity(unix.Gettid(), &cpuset); err != nil {
 		return fmt.Errorf("failed to set CPU affinity: %v", err)
 	}
-
-	// Infinite mode: infinite loop until Ctrl-C
-	if x.cfg.Infinite {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
-				ret, err := xdpProg.Run(runOpts)
-				if err != nil {
-					return fmt.Errorf("bpf_prog_run failed: %w", err)
-				}
-				if ret != 0 {
-					return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
-				}
-			}
-		}
+	var ticks <-chan time.Time
+	if plan.interval > 0 {
+		ticker := time.NewTicker(plan.interval)
+		defer ticker.Stop()
+		ticks = ticker.C
 	}
-
-	// Unlimited mode: single batch execution
-	if interval == 0 {
-		ret, err := xdpProg.Run(runOpts)
-		if err != nil {
-			return fmt.Errorf("bpf_prog_run failed: %w", err)
-		}
-		if ret != 0 {
-			return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
-		}
-		return nil
-	}
-
-	// PPS mode: rate-limited batch execution
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	var sentBatches uint32
-	for sentBatches < totalBatches {
-		// Send batch
-		ret, err := xdpProg.Run(runOpts)
-		if err != nil {
-			return fmt.Errorf("bpf_prog_run failed: %w", err)
-		}
-		if ret != 0 {
-			return fmt.Errorf("bpf_prog_run returned non-zero: %d", ret)
-		}
-		sentBatches++
-
-		// Wait for next tick (unless this was the last batch)
-		if sentBatches < totalBatches {
-			select {
-			case <-ticker.C:
-				// continue to next batch
-			case <-ctx.Done():
-				return nil
-			}
-		}
-	}
-	return nil
+	return runPacketBatches(ctx, xdpProg.Run, runOpts, plan, ticks)
 }
 
 func (x *Xdperf) Close() {
