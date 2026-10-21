@@ -95,6 +95,28 @@ builds:
       - -X main.version={{ .Version }}
       - -X main.commit={{ .Commit }}
       - -X main.date={{ .Date }}
+  - id: plugin-tcpflow.go
+    dir: ./plugins/tcpflow.go
+    main: .
+    binary: tcpflow.go
+    goos: [wasip1]
+    goarch: [wasm]
+    buildmode: c-shared
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+  - id: plugin-tcpudp.go
+    dir: ./plugins/tcpudp.go
+    main: .
+    binary: tcpudp.go
+    goos: [wasip1]
+    goarch: [wasm]
+    buildmode: c-shared
+    ldflags:
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
   - id: plugin-srv6.go
     dir: ./plugins/srv6.go
     main: .
@@ -147,6 +169,16 @@ archives:
       - 'binary'
     ids:
       - plugin-mixed.go
+  - id: plugin-tcpflow.go
+    formats:
+      - 'binary'
+    ids:
+      - plugin-tcpflow.go
+  - id: plugin-tcpudp.go
+    formats:
+      - 'binary'
+    ids:
+      - plugin-tcpudp.go
   - id: plugin-srv6.go
     formats:
       - 'binary'

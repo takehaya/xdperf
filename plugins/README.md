@@ -89,6 +89,8 @@ For implementation details including memory helpers and packet generation, see t
 - [imixudp.go](./imixudp.go/) - Weighted IMIX traffic via multiple variants
 - [gtpv1u.go](./gtpv1u.go/) - GTPv1-U (5G/4G) tunneled traffic with PSC/QFI support
 - [vxlan.go](./vxlan.go/) - VXLAN (RFC 7348) tunneled traffic with VNI sweep and an inner Ethernet frame
+- [tcpflow.go](./tcpflow.go/README.md) - Minimal TCP-only flows with host route resolution
+- [tcpudp.go](./tcpudp.go/README.md) - Minimal weighted UDP packet and TCP flow example
 - [mixed.go](./mixed.go/README.md) - Weighted packet and TCP flow variants, with optional TCP templates and tunnels
 - [vxlan.c](./vxlan.c/README.md) - Freestanding C VXLAN generator; needs clang and wasm-ld
 - [srv6.go](./srv6.go/) - SRv6 (RFC 8754) tunneled traffic with L3VPN/L2VPN/IPv6 modes, segment list, flow-label and SRH-tag sweeps
