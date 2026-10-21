@@ -130,7 +130,7 @@ WASMプラグインがパケットテンプレートを生成。`plugins/`にリ
 
 プラグインは `GeneratorProcessResponse` を返す。2つのテンプレートタイプ:
 - **Raw**: 生パケットバイト列のリスト (ラウンドロビンで送信)
-- **Variable**: `PacketVariantSet`。`kind` が省略または `packet` ならベースパケット、`VariableParams`、`ChecksumSpec` を使い、Sequential/Mixedで選択する。`kind: "tcp_flow"` を含める場合はpacketも1種類以上必要で、`pattern: "mixed"` に限定する。重みはTXイテレーションの配分であり、実際のパケット数やバイト数の比率ではない。TCPのbase_packetは省略可能で、明示する場合はTCP固定ヘッダまでとし、seq、ack、flags、送信元ポート、長さ、チェックサムはエンジンが所有する。
+- **Variable**: `PacketVariantSet`。`kind` が省略または `packet` ならベースパケット、`VariableParams`、`ChecksumSpec` を使い、Sequential/Mixedで選択する。`kind: "tcp_flow"` を含める場合は `pattern: "mixed"` に限定する。packetは省略でき、TCPフローだけの集合も使用できる。重みはTXイテレーションの配分であり、実際のパケット数やバイト数の比率ではない。TCPのbase_packetは省略可能で、明示する場合はTCP固定ヘッダまでとし、seq、ack、flags、送信元ポート、長さ、チェックサムはエンジンが所有する。
 
 ## コード規約
 

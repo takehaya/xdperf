@@ -38,8 +38,8 @@ plugins/simpleudp.tinygo/
 See [pkg/guest/surface.go](https://github.com/takehaya/xdperf/tree/main/pkg/guest/surface.go) for the types that plugins should return.
 
 `PacketVariant.kind` is omitted or `packet` for the packet engine, or `tcp_flow`
-for stateful TCP. A set containing TCP must use `pattern: "mixed"` and include
-at least one packet variant. Weights allocate TX iterations, not bytes or
+for stateful TCP. A set containing TCP must use `pattern: "mixed"`; packet
+variants are optional. Weights allocate TX iterations, not bytes or
 completed connections. TCP variants accept an optional `base_packet`,
 `tcp_flow.encapsulation`, `timestamps`, `payload_pattern`, and restricted
 per-flow `variable_params`; see the [mixed guide](../docs/ja/mixed_variants.md).

@@ -63,7 +63,8 @@ CLI の `--cfg` に渡す設定とは異なります。
 `kind` の省略または `packet` は従来のパケット生成です。
 `base_packet`、`variable_params`、`checksums` を使い、パケットごとの Diff を事前計算します。
 `kind: "tcp_flow"` は TCP の状態機械を使い、`tcp_flow.flows` の各要素が接続を表します。
-混合集合は `pattern: "mixed"` に限定し、packet と tcp_flow をそれぞれ 1 種類以上含めます。
+TCP を含む集合は `pattern: "mixed"` に限定します。
+packet は省略でき、tcp_flow だけの集合も使えます。
 合計で最大 16 バリアントです。
 TCP を含む JSON は未知フィールドと重複キーを拒否し、応答全体は 32 MiB 以下に制限します。
 従来の packet 専用と raw 応答も引き続き使用できます。
@@ -162,6 +163,9 @@ Linux 対向の例は [tcp-vxlan](../../examples/tcp-vxlan/README.md) と [tcp-t
 ## 終了条件と起動時間を確認する
 
 `--count` はパケットの Diff プールサイズであり、混合送信の総フレーム数ではありません。
+TCP だけの場合は packet 用のベースパケットと Diff を初期化せず、すべての送信機会を TCP に配分します。
+`--count` の既定値はなく、TCP だけでも現行 CLI では `--count` または `--duration` が必要です。
+有限フローなら `--count 1`（worker が複数なら worker 数以上）を指定でき、この値は TCP の送信量には影響しません。
 全 TCP フロー完了、`--duration`、シグナルで終了し、drain 中はパケット送信を止めて TCP を閉じます。
 時間指定は `--count` を省き、`--duration` と `--pps` を指定します。
 `--infinite`、`--rx-device`、`--swap-resp` は混合モードでは使えません。

@@ -1,6 +1,7 @@
 package xdperf
 
 import (
+	"fmt"
 	"math"
 	"net"
 	"reflect"
@@ -127,5 +128,34 @@ func TestMixedValidation(t *testing.T) {
 	}
 	if x.tcpVariantBytes[0] != math.MaxUint64 || x.cfg.TCPFlows != 4 || x.mixed.packetWeight != 3 || x.mixed.totalWeight != 4 {
 		t.Fatalf("bad plan: %+v", x)
+	}
+}
+
+func TestTCPOnlyPlan(t *testing.T) {
+	for _, groups := range []int{1, 2} {
+		t.Run(fmt.Sprint(groups), func(t *testing.T) {
+			r := mixedResponse()
+			tcp := r.VariablePacketTemplate.Variants[1]
+			r.VariablePacketTemplate.Variants = []guest.PacketVariant{tcp}
+			if groups == 2 {
+				r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants, tcp)
+			}
+			x := &Xdperf{cfg: mixedConfig()}
+			x.cfg.Count = 1
+			if err := x.prepareMixed(r); err != nil {
+				t.Fatal(err)
+			}
+			if len(x.mixed.packets.VariablePacketTemplate.Variants) != 0 || x.mixed.packetWeight != 0 || x.mixed.totalWeight != uint32(groups) {
+				t.Fatalf("unexpected packet plan: %+v", x.mixed)
+			}
+			if x.cfg.TCPFlows != 4*groups || len(x.tcpVariantBytes) != 4*groups || len(x.mixed.groups) != groups {
+				t.Fatalf("unexpected TCP plan: %+v", x.mixed)
+			}
+			for i, g := range x.mixed.groups {
+				if g.first != uint32(4*i) || g.count != 4 || g.weight != 1 {
+					t.Fatalf("group %d: %+v", i, g)
+				}
+			}
+		})
 	}
 }
