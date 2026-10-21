@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.2](https://github.com/takehaya/xdperf/compare/v0.19.1...v0.19.2) (2026-10-21)
+
+
+### 🐛 Bug Fixes
+
+* preserve packet count across PPS batches and workers ([#133](https://github.com/takehaya/xdperf/issues/133)) ([11737cd](https://github.com/takehaya/xdperf/commit/11737cd25a73d44e1c1f342a7f5d64e1196add3a))
+
+
+### 📝 Documentation
+
+* record the Cilium datapath plugin check for shared VXLAN definitions ([#132](https://github.com/takehaya/xdperf/issues/132)) ([14c235a](https://github.com/takehaya/xdperf/commit/14c235a2296348011acf8c274c02365388faa5c1))
+
 ## [0.19.1](https://github.com/takehaya/xdperf/compare/v0.19.0...v0.19.1) (2026-10-20)
 
 
