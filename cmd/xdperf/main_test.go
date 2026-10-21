@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"math"
 	"os"
 	"reflect"
 	"strings"
@@ -55,12 +56,37 @@ func TestTCPPluginSelection(t *testing.T) {
 
 func TestDurationPacketBudget(t *testing.T) {
 	clearConfigEnv(t)
-	cfg, err := parseRunArgs("--device", "lo", "--duration", "1.28005s", "--pps", "20k")
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name, duration, pps string
+		wantCount           uint64
+		wantErr             string
+	}{
+		{name: "batch remainder", duration: "1.28005s", pps: "20k", wantCount: 25601},
+		{name: "290ms regression", duration: "290ms", pps: "100", wantCount: 29},
+		{name: "2.3s regression", duration: "2.3s", pps: "100k", wantCount: 230000},
+		{name: "2.01s regression", duration: "2.01s", pps: "100", wantCount: 201},
+		{name: "fractional packet", duration: "299ms", pps: "100", wantCount: 29},
+		{name: "zero budget", duration: "5ms", pps: "100", wantErr: "calculated count must be greater than zero"},
+		{name: "uint64 limit", duration: "1s", pps: "18446744073709551615", wantCount: math.MaxUint64},
+		{name: "wide intermediate", duration: "500ms", pps: "18446744073709551615", wantCount: math.MaxUint64 / 2},
+		{name: "overflow", duration: "2s", pps: "18446744073709551615", wantErr: "calculated count exceeds uint64 range"},
 	}
-	if cfg.Count != 25601 {
-		t.Fatalf("duration budget = %d, want 25601", cfg.Count)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := parseRunArgs("--device", "lo", "--duration", tt.duration, "--pps", tt.pps)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Count != tt.wantCount {
+				t.Fatalf("duration budget = %d, want %d", cfg.Count, tt.wantCount)
+			}
+		})
 	}
 }
 

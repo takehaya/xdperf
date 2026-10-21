@@ -187,6 +187,8 @@ Specify how many packets to send. You must use **either** `--count` **or** `--du
 **Note**: When `--infinite` is set, `--count` specifies the number of packet pools (packet templates) instead of total packets to send.
 
 For finite packet mode, the total is preserved across workers and PPS batches, including any remainder in the final batch.
+This count guarantee applies when no signals are delivered during transmission.
+If a signal interrupts a BPF run, the underlying library may retry the batch after sending some packets, exceeding the requested count; cancellation can also stop transmission before the budget is exhausted.
 Mixed TCP mode uses count as the packet diff pool size instead (see above).
 
 ```shell
@@ -206,6 +208,7 @@ sudo xdperf run --device eth0 --count 10k --infinite
 
 In packet mode, the send budget is `floor(PPS × duration in seconds)` packets.
 This budget is preserved when it is split across workers and batches.
+A budget of zero packets or one exceeding the uint64 range is rejected.
 
 ```shell
 # Send packets at 100k pps for 10 seconds

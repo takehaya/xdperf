@@ -9,6 +9,8 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+const targetBatchInterval = 100 * time.Millisecond
+
 type packetBatchPlan struct {
 	packets   uint64
 	repeat    uint32
@@ -26,7 +28,8 @@ func calculatePacketBatchPlan(cfg Config, slot int) packetBatchPlan {
 		packets++
 	}
 	plan := packetBatchPlan{
-		packets:   packets,
+		packets: packets,
+		// Keep repeat nonzero even for an empty budget so totalBatches can divide by it.
 		repeat:    uint32(max(1, min(packets, math.MaxUint32))),
 		batchSize: cfg.BatchSize,
 		infinite:  cfg.Infinite,
@@ -41,10 +44,10 @@ func calculatePacketBatchPlan(cfg Config, slot int) packetBatchPlan {
 
 	// Keep the 100ms target interval. Divide before narrowing to uint32,
 	// and retain fractional per-worker PPS when PPS < Parallelism.
-	repeat := max(uint64(1), cfg.PPS/workers/10)
+	repeat := max(uint64(1), cfg.PPS/workers/uint64(time.Second/targetBatchInterval))
 	plan.repeat = uint32(max(1, min(repeat, packets, math.MaxUint32)))
-	ppsPerCPU := float64(cfg.PPS) / float64(workers)
-	plan.interval = max(time.Millisecond, time.Duration(float64(plan.repeat)*float64(time.Second)/ppsPerCPU))
+	ppsPerWorker := float64(cfg.PPS) / float64(workers)
+	plan.interval = max(time.Millisecond, time.Duration(float64(plan.repeat)*float64(time.Second)/ppsPerWorker))
 	plan.batchSize = 1
 	return plan
 }
@@ -62,15 +65,10 @@ func (p packetBatchPlan) totalBatches() uint64 {
 
 // runPacketBatches owns its RunOptions copy: workers must not share Repeat,
 // since the final batch can differ between workers. run is injectable so the
-// actual send loop can be tested without loading BPF programs.
-func runPacketBatches(ctx context.Context, run func(*ebpf.RunOptions) (uint32, error), opts ebpf.RunOptions, plan packetBatchPlan) error {
+// actual send loop can be tested without loading BPF programs. ticks controls
+// pacing between batches; nil disables pacing.
+func runPacketBatches(ctx context.Context, run func(*ebpf.RunOptions) (uint32, error), opts ebpf.RunOptions, plan packetBatchPlan, ticks <-chan time.Time) error {
 	opts.BatchSize = plan.batchSize
-	var ticks <-chan time.Time
-	if plan.interval > 0 {
-		ticker := time.NewTicker(plan.interval)
-		defer ticker.Stop()
-		ticks = ticker.C
-	}
 	remaining := plan.packets
 	for plan.infinite || remaining > 0 {
 		if ctx.Err() != nil {
@@ -90,6 +88,7 @@ func runPacketBatches(ctx context.Context, run func(*ebpf.RunOptions) (uint32, e
 		if !plan.infinite {
 			remaining -= uint64(opts.Repeat)
 			if remaining == 0 {
+				// No pacing wait is needed once the final batch has been sent.
 				return nil
 			}
 		}

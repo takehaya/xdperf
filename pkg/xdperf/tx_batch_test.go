@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -18,18 +19,18 @@ func TestPacketBatchPlan(t *testing.T) {
 		workers    int
 		packets    []uint64
 		repeats    []uint32
-		batches    uint64
+		batches    []uint64
 		interval   time.Duration
 	}{
-		{"reported truncation", 25600, 20000, 1, []uint64{25600}, []uint32{2000}, 13, 100 * time.Millisecond},
-		{"exact batches", 16000, 20000, 1, []uint64{16000}, []uint32{2000}, 8, 100 * time.Millisecond},
-		{"worker and batch remainders", 25601, 20000, 3, []uint64{8534, 8534, 8533}, []uint32{666, 666, 666}, 13, 99900 * time.Microsecond},
-		{"unlimited worker remainder", 101, 0, 3, []uint64{34, 34, 33}, []uint32{34, 34, 33}, 1, 0},
-		{"PPS below workers", 7, 2, 4, []uint64{2, 2, 2, 1}, []uint32{1, 1, 1, 1}, 2, 2 * time.Second},
-		{"small count", 3, 20000, 1, []uint64{3}, []uint32{3}, 1, 150 * time.Microsecond},
-		{"zero count", 0, 20000, 1, []uint64{0}, []uint32{1}, 0, 50 * time.Microsecond},
-		{"unlimited uint32 boundary", math.MaxUint32 + 7, 0, 1, []uint64{math.MaxUint32 + 7}, []uint32{math.MaxUint32}, 2, 0},
-		{"PPS uint32 boundary", math.MaxUint32 + 7, math.MaxUint64, 1, []uint64{math.MaxUint32 + 7}, []uint32{math.MaxUint32}, 2, time.Millisecond},
+		{name: "reported truncation", count: 25600, pps: 20000, workers: 1, packets: []uint64{25600}, repeats: []uint32{2000}, batches: []uint64{13}, interval: 100 * time.Millisecond},
+		{name: "exact batches", count: 16000, pps: 20000, workers: 1, packets: []uint64{16000}, repeats: []uint32{2000}, batches: []uint64{8}, interval: 100 * time.Millisecond},
+		{name: "worker and batch remainders", count: 25601, pps: 20000, workers: 3, packets: []uint64{8534, 8534, 8533}, repeats: []uint32{666, 666, 666}, batches: []uint64{13, 13, 13}, interval: 99900 * time.Microsecond},
+		{name: "unlimited worker remainder", count: 101, workers: 3, packets: []uint64{34, 34, 33}, repeats: []uint32{34, 34, 33}, batches: []uint64{1, 1, 1}},
+		{name: "PPS below workers", count: 7, pps: 2, workers: 4, packets: []uint64{2, 2, 2, 1}, repeats: []uint32{1, 1, 1, 1}, batches: []uint64{2, 2, 2, 1}, interval: 2 * time.Second},
+		{name: "small count", count: 3, pps: 20000, workers: 1, packets: []uint64{3}, repeats: []uint32{3}, batches: []uint64{1}, interval: time.Millisecond},
+		{name: "zero count", pps: 20000, workers: 1, packets: []uint64{0}, repeats: []uint32{1}, batches: []uint64{0}, interval: time.Millisecond},
+		{name: "unlimited uint32 boundary", count: math.MaxUint32 + 7, workers: 1, packets: []uint64{math.MaxUint32 + 7}, repeats: []uint32{math.MaxUint32}, batches: []uint64{2}},
+		{name: "PPS uint32 boundary", count: math.MaxUint32 + 7, pps: math.MaxUint64, workers: 1, packets: []uint64{math.MaxUint32 + 7}, repeats: []uint32{math.MaxUint32}, batches: []uint64{2}, interval: time.Millisecond},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -40,13 +41,10 @@ func TestPacketBatchPlan(t *testing.T) {
 				if plan.packets != tt.packets[slot] || plan.repeat != tt.repeats[slot] {
 					t.Fatalf("slot %d: packets/repeat = %d/%d, want %d/%d", slot, plan.packets, plan.repeat, tt.packets[slot], tt.repeats[slot])
 				}
-				if slot == 0 && plan.totalBatches() != tt.batches {
-					t.Fatalf("batches = %d, want %d", plan.totalBatches(), tt.batches)
+				if plan.totalBatches() != tt.batches[slot] {
+					t.Fatalf("slot %d: batches = %d, want %d", slot, plan.totalBatches(), tt.batches[slot])
 				}
 				wantInterval := tt.interval
-				if cfg.PPS > 0 {
-					wantInterval = max(time.Millisecond, wantInterval)
-				}
 				if plan.interval != wantInterval {
 					t.Fatalf("interval = %v, want %v", plan.interval, wantInterval)
 				}
@@ -60,8 +58,8 @@ func TestPacketBatchPlan(t *testing.T) {
 
 				// Exercise the production send loop without BPF or real pacing.
 				// Check every call, including the shortened final batch.
-				plan.interval = 0
 				var sent, calls uint64
+				// A sentinel catches a missing Repeat assignment in the send loop.
 				opts := ebpf.RunOptions{Repeat: 99}
 				err := runPacketBatches(context.Background(), func(got *ebpf.RunOptions) (uint32, error) {
 					want := uint32(min(uint64(plan.repeat), plan.packets-sent))
@@ -71,12 +69,9 @@ func TestPacketBatchPlan(t *testing.T) {
 					sent += uint64(got.Repeat)
 					calls++
 					return 0, nil
-				}, opts, plan)
+				}, opts, plan, nil)
 				if err != nil || sent != plan.packets || calls != plan.totalBatches() {
 					t.Fatalf("sent %d in %d calls, err %v; want %d in %d calls", sent, calls, err, plan.packets, plan.totalBatches())
-				}
-				if opts.Repeat != 99 {
-					t.Fatal("worker modified shared RunOptions")
 				}
 				total += sent
 			}
@@ -111,7 +106,7 @@ func TestPacketBatchesInfinite(t *testing.T) {
 			cancel()
 		}
 		return 0, nil
-	}, ebpf.RunOptions{}, plan)
+	}, ebpf.RunOptions{}, plan, nil)
 	if err != nil || calls != 3 {
 		t.Fatalf("calls = %d, err = %v", calls, err)
 	}
@@ -124,13 +119,13 @@ func TestPacketBatchesCancellation(t *testing.T) {
 			cancel()
 		}
 		calls := 0
-		// A long interval proves cancellation interrupts the pacing wait.
-		plan := packetBatchPlan{packets: 5, repeat: 2, interval: time.Hour, batchSize: 1}
+		// No tick will arrive: cancellation must interrupt the pacing wait.
+		plan := packetBatchPlan{packets: 5, repeat: 2, batchSize: 1}
 		err := runPacketBatches(ctx, func(*ebpf.RunOptions) (uint32, error) {
 			calls++
 			cancel()
 			return 0, nil
-		}, ebpf.RunOptions{}, plan)
+		}, ebpf.RunOptions{}, plan, make(chan time.Time))
 		cancel()
 		wantCalls := 1
 		if beforeRun {
@@ -149,7 +144,7 @@ func TestPacketBatchesError(t *testing.T) {
 		err := runPacketBatches(context.Background(), func(*ebpf.RunOptions) (uint32, error) {
 			calls++
 			return 1, runErr
-		}, ebpf.RunOptions{}, packetBatchPlan{packets: 5, repeat: 2})
+		}, ebpf.RunOptions{}, packetBatchPlan{packets: 5, repeat: 2}, nil)
 		if err == nil || calls != 1 {
 			t.Fatalf("calls = %d, err = %v", calls, err)
 		}
@@ -160,4 +155,41 @@ func TestPacketBatchesError(t *testing.T) {
 			t.Fatalf("unexpected return value error: %v", err)
 		}
 	}
+}
+
+func TestPacketBatchesPacing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ticks := make(chan time.Time)
+		done := make(chan error, 1)
+		var repeats []uint32
+		go func() {
+			done <- runPacketBatches(ctx, func(opts *ebpf.RunOptions) (uint32, error) {
+				repeats = append(repeats, opts.Repeat)
+				return 0, nil
+			}, ebpf.RunOptions{}, packetBatchPlan{packets: 5, repeat: 2}, ticks)
+		}()
+
+		for batch, wantRepeat := range []uint32{2, 2, 1} {
+			synctest.Wait()
+			if len(repeats) != batch+1 || repeats[batch] != wantRepeat {
+				t.Fatalf("batch %d: repeats = %v, want %d calls ending with %d", batch, repeats, batch+1, wantRepeat)
+			}
+			select {
+			case err := <-done:
+				if batch != 2 || err != nil {
+					t.Fatalf("completed after batch %d with err %v", batch, err)
+				}
+			default:
+				if batch == 2 {
+					t.Fatal("waiting for a tick after the final batch")
+				}
+			}
+			if batch < 2 {
+				// Release exactly one batch; the loop must then wait again.
+				ticks <- time.Now()
+			}
+		}
+	})
 }
