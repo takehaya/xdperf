@@ -84,7 +84,7 @@ print_error() { echo "$1"; }
         script = self.scenario / 'test.sh'
         script.write_text(f'''#!/bin/bash
 echo test >> "{self.root}/steps"
-sleep 60 &
+timeout --foreground 60 sleep 60 &
 child=$!
 echo "$$" > "{self.root}/step.pid"
 echo "$child" > "{self.root}/child.pid"
@@ -114,10 +114,12 @@ echo teardown >> "{self.root}/steps"
                 for name in ('child.pid', 'step.pid'):
                     path = self.root / name
                     if path.exists():
-                        try:
-                            os.kill(int(path.read_text()), signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
+                        pid = int(path.read_text())
+                        for stop in (os.killpg, os.kill):
+                            try:
+                                stop(pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
                 if process.poll() is None:
                     process.kill()
                     process.wait()

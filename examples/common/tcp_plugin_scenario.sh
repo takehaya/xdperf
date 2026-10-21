@@ -95,7 +95,7 @@ run_tcp_plugin() {
     local config="$1" report="$2"
     shift 2
     local command=(ip netns exec "$NS_TX" "$XDPERF_BIN")
-    if [ "$TCP_SCENARIO" = tcp-tunnels ]; then command=(timeout 60 "${command[@]}"); fi
+    if [ "$TCP_SCENARIO" = tcp-tunnels ]; then command=(timeout --foreground 60 "${command[@]}"); fi
     if ! "${command[@]}" run --send --device "$VETH_TX" \
         --plugin mixed.go --plugin-path "$PLUGIN_PATH" --plugin-config "$config" \
         --tcp-flow-report "$report" "$@" > "$TX_LOG" 2>&1; then
