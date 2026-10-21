@@ -1,0 +1,6 @@
+#!/bin/bash
+# mixed: setup the shared TCP plugin topology.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../common/tcp_plugin_scenario.sh"
+setup_tcp_plugin_topology

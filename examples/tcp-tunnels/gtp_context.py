@@ -4,6 +4,7 @@
 The link is created with `ip link add ... type gtp role ggsn`; its kernel-owned
 UDP sockets need no userspace daemon. Run this helper in the receiver netns.
 """
+import argparse
 import ipaddress
 import os
 import socket
@@ -52,7 +53,12 @@ def request(sock, family, command, payload, seq):
 
 
 def main():
-    dev, peer, ms = sys.argv[1:]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('device')
+    parser.add_argument('peer')
+    parser.add_argument('subscriber')
+    args = parser.parse_args()
+    dev, peer, ms = args.device, args.peer, args.subscriber
     peer, ms = ipaddress.ip_address(peer), ipaddress.ip_address(ms)
     with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 16) as sock:
         sock.bind((0, 0))

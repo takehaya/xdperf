@@ -11,6 +11,12 @@ check_root
 SCENARIOS=()
 for dir in "${SCRIPT_DIR}"/*/; do
     if [ -f "${dir}test.sh" ]; then
+        for entry in README.md setup.sh teardown.sh; do
+            if [ ! -f "${dir}${entry}" ]; then
+                print_error "Missing scenario entrypoint: ${dir}${entry}"
+                exit 1
+            fi
+        done
         SCENARIOS+=("$(basename "$dir")")
     fi
 done
@@ -28,6 +34,16 @@ FAILED=0
 SKIPPED=0
 FAILED_SCENARIOS=()
 
+scenario_dir=""
+cleanup_current_scenario() {
+    if [ -n "$scenario_dir" ]; then
+        "${scenario_dir}/teardown.sh"
+    fi
+}
+trap 'cleanup_current_scenario || true' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 for scenario in "${SCENARIOS[@]}"; do
     echo "========================================"
     print_info "Running scenario: $scenario"
@@ -35,22 +51,24 @@ for scenario in "${SCENARIOS[@]}"; do
 
     scenario_dir="${SCRIPT_DIR}/${scenario}"
 
-    if [ -f "${scenario_dir}/setup.sh" ]; then
-        if ! "${scenario_dir}/setup.sh"; then
-            print_error "Setup failed: $scenario"
-            # Clean up a partially built topology so it can't leak into the
-            # next scenario
-            if [ -f "${scenario_dir}/teardown.sh" ]; then
-                "${scenario_dir}/teardown.sh" || true
-            fi
-            FAILED=$((FAILED + 1))
-            FAILED_SCENARIOS+=("$scenario")
-            continue
-        fi
+    if ! "${scenario_dir}/setup.sh"; then
+        print_error "Setup failed: $scenario"
+        # Clean up a partially built topology before the next scenario.
+        cleanup_current_scenario || print_error "Teardown failed: $scenario"
+        scenario_dir=""
+        FAILED=$((FAILED + 1))
+        FAILED_SCENARIOS+=("$scenario")
+        continue
     fi
 
     rc=0
     "${scenario_dir}/test.sh" || rc=$?
+    # Teardown is part of a successful scenario, including after a failed test.
+    if ! cleanup_current_scenario; then
+        print_error "Teardown failed: $scenario"
+        rc=1
+    fi
+    scenario_dir=""
     if [ "$rc" -eq 0 ]; then
         print_success "Scenario $scenario: PASS"
         PASSED=$((PASSED + 1))
@@ -62,11 +80,6 @@ for scenario in "${SCENARIOS[@]}"; do
         print_error "Scenario $scenario: FAIL"
         FAILED=$((FAILED + 1))
         FAILED_SCENARIOS+=("$scenario")
-    fi
-
-    # Always run teardown
-    if [ -f "${scenario_dir}/teardown.sh" ]; then
-        "${scenario_dir}/teardown.sh" || true
     fi
 
     echo ""

@@ -167,3 +167,6 @@ dist/
 # perf profiling output
 perf.data
 perf.data.old
+
+# Python example helpers
+__pycache__/
