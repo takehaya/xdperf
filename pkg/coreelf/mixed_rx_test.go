@@ -177,7 +177,7 @@ func TestMixedRXExtendedFailsClosed(t *testing.T) {
 			switch kind {
 			case "timestamp_branch":
 				for i, ins := range p.Instructions {
-					if ins.OpCode == asm.JSGT.Op(asm.RegSource) && ins.Src == asm.R0 {
+					if ins.OpCode == asm.JSLT.Imm32(asm.R0, 0, "").OpCode && ins.Dst == asm.R0 {
 						p.Instructions[i].OpCode = asm.JSGE.Op(asm.RegSource)
 						break
 					}

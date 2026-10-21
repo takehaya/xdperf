@@ -33,7 +33,7 @@ for outer in 4 6; do
             config="$(python3 "${TCP_PY_DIR}/config.py" vxlan "$srcmac" "$dstmac" "$osrc" "$odst" "$ism" "$idm" "$isrc" "$idst" "$mode" "$DST_PORT" "$TX_IP4" "$RX_IP4")"
             report="${XDPERF_EXAMPLE_RUNDIR}/vxlan-${outer}-${inner}-${mode}.csv"
             TX_LOG="${XDPERF_EXAMPLE_RUNDIR}/vxlan-${outer}-${inner}-${mode}.log"
-            run_tcp_plugin "$config" "$report" --recv --count 128 --pps 4000 --parallelism 1
+            run_tcp_plugin "$config" "$report" --recv --count 100000 --pps 4000 --parallelism 1
             stop_sink
             python3 "${TCP_PY_DIR}/verify.py" template "$report" "$SINK_LOG"
             print_success "TCP VXLAN outer IPv${outer}, inner IPv${inner}, checksum=${mode}: flows/bytes verified"

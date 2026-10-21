@@ -50,10 +50,12 @@ If `udp_port` differs from `tcp_port`, run a separate `xdperf-sink -proto udp -l
 To count UDP replies at the sender, use a UDP echo server and add `--recv`; the sink only counts incoming UDP.
 TCP replies are handled regardless of `--recv`.
 
-Currently, when a response includes `tcp_flow`, `--count` only sets the Diff pool size and does not limit transmitted frames, including UDP packets.
-The run ends at the earliest of the TCP flow completing, `--duration` expiring, or a signal starting drain.
-UDP stops during drain, and the sender closes TCP.
-The CLI still requires `--count` or `--duration`.
+`--count N` limits the total UDP and TCP frames sent by TX workers, including TCP control frames and retransmissions.
+RX replies, idle iterations, and build failures do not consume the budget.
+The run ends below N if the TCP flow completes first.
+At N, it skips drain and lingers for 2×RTO; unfinished flows produce a warning and exit 0 unless a flow failed.
+Duration or a signal starts drain: UDP stops while TCP closes.
+Choose `--count` or `--duration`; because this set contains packets, duration requires PPS.
 
 The standalone `--tcp` mode sends TCP using CLI flags without a plugin.
 This example supplies both variant types from Wasm, so omit `--tcp`, `--tcp-dst`, `--tcp-flows`, and `--tcp-bytes`.

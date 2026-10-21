@@ -88,7 +88,7 @@ in [TCP and mixed modes](#tcp-and-mixed-modes).
 | `--rx-device` | - | No | same as TX | Packet client only: count on another device; implies `--recv` |
 | `--xdp-mode` | - | No | `auto` | Attach mode: `auto` (fallback to generic), `native`, or `generic` |
 | `--wasm-cache-dir` | - | No | user cache + `xdperf/wasm` | WASM compilation cache directory |
-| `--count` | `-c` | *Conditional* | - | Number of packets to send (e.g., `1000`, `100k`, `1m`) |
+| `--count` | `-c` | *Conditional* | - | TX worker frame limit (e.g., `1000`, `100k`, `1m`) |
 | `--duration` | `-t` | *Conditional* | - | Duration to send packets (e.g., `10s`, `1m`, `500ms`) |
 | `--pps` | - | No | unlimited | Target packets per second (e.g., `100k`, `1m`) |
 | `--parallelism` | `-l` | No | `1` | Number of parallel sending threads |
@@ -142,10 +142,18 @@ PPS, and rejects `--plugin`, `--recv`, `--count`, `--infinite`, and `--rx-device
 The responder accepts duration without PPS and rejects `--tcp`, `--swap-resp`,
 `--rx-device`, `--count`, and `--infinite`.
 
-Mixed mode retains the plugin CLI rule: choose count, or duration with PPS.
-Here count sizes the packet diff pool; it does not limit transmitted frames.
+Mixed mode uses `--count` as a TX worker frame limit across packets and TCP, including SYN, data, FIN, retransmissions, probes, and RST.
+RX replies, idle iterations, and build failures do not consume the budget.
+The mixed count limit is at most 9223372036854775807.
+Closing frames sent during duration/signal drain or abort are outside this count limit.
+All TCP flows completing first ends the run below count.
+At count, the sender skips drain, lingers for 2×RTO, and warns about unfinished flows; the exit status is 0 unless a flow failed.
+Finite TCP-only sets need neither count nor duration, and TCP-only duration needs no PPS.
+A zero-byte (unlimited) flow requires count or duration.
+Sets containing packets require count or duration, and PPS with duration.
 PPS limits TX iterations, including TCP iterations that send nothing.
 Mixed mode rejects `--infinite`, `--rx-device`, and `--swap-resp`.
+The packet Diff pool remains `min(count, 131072 × parallelism)` and count must be at least parallelism when specified.
 The plugin supplies destinations, flow counts, and byte targets; do not set
 `--tcp-dst`, `--tcp-flows`, or `--tcp-bytes` for mixed traffic.
 Use `--recv` to count packet replies; TCP replies are always processed.
@@ -178,9 +186,10 @@ sudo xdperf run --device eth0 --count 1000
 
 #### `--count`, `-c` / `--duration`, `-t`
 
-Specify how many packets to send. You must use **either** `--count` **or** `--duration`, but not both.
+Specify a frame limit or duration; explicit `--count` and `--duration` cannot be combined.
+Finite TCP-only sets can omit both; sets containing packets require one.
 
-**`--count`**: Total number of packets to send. Supports suffixes:
+**`--count`**: Total TX worker frame limit (mixed TCP may finish earlier). Supports suffixes:
 - `k` = 1,000 (e.g., `100k` = 100,000)
 - `m` = 1,000,000 (e.g., `1m` = 1,000,000)
 
@@ -189,7 +198,7 @@ Specify how many packets to send. You must use **either** `--count` **or** `--du
 For finite packet mode, the total is preserved across workers and PPS batches, including any remainder in the final batch.
 This count guarantee applies when no signals are delivered during transmission.
 If a signal interrupts a BPF run, the underlying library may retry the batch after sending some packets, exceeding the requested count; cancellation can also stop transmission before the budget is exhausted.
-Mixed TCP mode uses count as the packet diff pool size instead (see above).
+Mixed TCP enforces the frame budget in BPF, including batch retries. Duration/signal drain and abort can send closing frames outside the budget (see above).
 
 ```shell
 # Send 100,000 packets
@@ -204,7 +213,9 @@ sudo xdperf run --device eth0 --count 10k --infinite
 
 **`--duration`**: Duration to send packets. Uses Go duration format (e.g., `10s`, `1m`, `500ms`).
 
-**Note**: `--duration` requires `--pps` to be specified.
+**Note**: `--duration` requires `--pps` when the set contains packet variants.
+TCP-only duration works without PPS.
+When PPS is supplied, the CLI still derives count from duration and PPS; mixed mode also enforces that frame limit.
 
 In packet mode, the send budget is `floor(PPS × duration in seconds)` packets.
 This budget is preserved when it is split across workers and batches.
@@ -227,7 +238,8 @@ sudo xdperf run --device eth0 --count 1000 --duration 10s
 Target packets per second. Supports the same suffixes as `--count` (`k`, `m`).
 If not specified, packets are sent at maximum speed.
 
-**Note:** `--pps` cannot be used alone. It must be combined with `--count` or `--duration`.
+**Note:** Sets containing packets require `--count` or `--duration` with `--pps`.
+Finite TCP-only sets may use PPS alone to limit TX iterations.
 
 ```shell
 # Send at 50,000 packets per second
@@ -543,9 +555,9 @@ in [TCP and mixed modes](#tcp-and-mixed-modes).
 | Constraint | Description |
 |------------|-------------|
 | `--device` is required | Must specify a valid network interface |
-| `--count` or `--duration` | One of these must be specified (but not both), unless `--infinite` is used |
-| `--duration` requires `--pps` | Duration mode needs a rate limit to calculate packet count |
-| `--pps` requires `--count` or `--duration` | Cannot be used alone |
+| `--count` or `--duration` | Sets containing packets require one; finite TCP-only sets may omit both; never explicitly combine them |
+| `--duration` requires `--pps` | Required for sets containing packets; optional for TCP-only sets |
+| `--pps` requires `--count` or `--duration` | Sets containing packets require a run bound |
 | `--count` >= `--parallelism` | Total packets must be at least equal to thread count |
 | `--parallelism` <= CPU cores | Cannot exceed available CPU cores |
 | `--cpu-mode local`/`node:<N>` fits the node | `--parallelism` must not exceed the CPUs on the target NUMA node |

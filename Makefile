@@ -6,7 +6,7 @@ GOVET=$(GOCMD) vet
 VERSION := 0.0.1
 GIT_HASH=$(git rev-parse --short HEAD)
 CLANG ?= clang
-CFLAGS := -O2 -g -Wall -Werror $(CFLAGS)
+CFLAGS := -O2 -g -Wall -Werror -mcpu=v3 $(CFLAGS)
 DIFF_FROM_BRANCH_NAME ?= origin/main
 
 ENTRY_POINT_DIR=cmd

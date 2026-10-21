@@ -340,6 +340,11 @@ struct tcp_tx_extra {
     __u64 stream_offset;
 };
 
+static __always_inline int mixed_flow_closed(__u8 state)
+{
+    return state == TF_DONE || state == TF_FAILED || state == TF_SKIPPED;
+}
+
 static __always_inline int tcp_flow_open(__u8 state)
 {
     return state == TF_ESTABLISHED || state == TF_FIN_WAIT_1 || state == TF_FIN_WAIT_2;
@@ -366,7 +371,7 @@ static __always_inline int tcp_tx_fail(struct tcp_flow *f, struct tcp_stats *st,
 // Returns the action kind; fills *a. No helper calls inside the lock region.
 static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cfg *cfg, struct tcp_stats *st, __u64 now,
                                          struct tcp_tx_action *a, struct tcp_tx_extra *extra, const int mixed_mode,
-                                         const int timestamps)
+                                         const int timestamps, const int track_closed, __u32 idx)
 {
     int kind = TXA_NONE;
     __u64 rto = cfg->rto_ns;
@@ -600,7 +605,10 @@ out:
         extra->tsval = clock;
         extra->tsecr = (a->flags & TCPF_ACK) ? f->ts_recent : 0;
     }
+    int closed = track_closed && !mixed_flow_closed(state) && mixed_flow_closed(f->state);
     bpf_spin_unlock(&f->lock);
+    if (closed)
+        mixed_count_closed(idx);
     a->kind = kind;
     return kind;
 }
@@ -774,7 +782,8 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
                 return XDP_ABORTED;
             cfg = &tmpl->cfg;
         }
-        kind = tcp_tx_decide(f, cfg, st, now, &act, &extra, extended, extended && mixed_has_timestamps && tmpl->timestamps);
+        kind = tcp_tx_decide(f, cfg, st, now, &act, &extra, extended, extended && mixed_has_timestamps && tmpl->timestamps,
+                             mixed_mode, idx);
         if (kind != TXA_NONE && kind != TXA_CLOSED) {
             sel = f;
             break;
@@ -852,6 +861,11 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
         break;
     default:
         break;
+    }
+    if (mixed_mode && !cfg->drain && !cfg->abort) {
+        struct pkt_state *ps = bpf_map_lookup_elem(&pkt_state_map, &zero);
+        if (ps && ps->budget)
+            ps->budget--;
     }
     return XDP_TX;
 }
@@ -1107,7 +1121,7 @@ static __always_inline void tcp_rx_reply(struct tcp_rx_resp *r, __u32 seq, __u32
 // lie below the peer's RCV.NXT, which would make the segment unacceptable.
 static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *st, const struct tcp_rx_info *in, __u16 cfg_mss,
                                           __u64 now, struct tcp_rx_resp *r, const struct tcp_rx_timestamp *ts,
-                                          struct tcp_tx_extra *extra, const int timestamps)
+                                          struct tcp_tx_extra *extra, const int timestamps, const int track_closed, __u32 idx)
 {
     __u8 flags = in->flags;
     __u8 need_ack = 0;
@@ -1292,7 +1306,10 @@ out:
         extra->tsval = tcp_timestamp_clock(f, now);
         extra->tsecr = f->ts_recent;
     }
+    int closed = track_closed && !mixed_flow_closed(state) && mixed_flow_closed(f->state);
     bpf_spin_unlock(&f->lock);
+    if (closed)
+        mixed_count_closed(idx);
 }
 
 SEC("xdp")
@@ -1413,7 +1430,7 @@ int xdp_rx_tcp(struct xdp_md *ctx)
 
     __u64 now = bpf_ktime_get_ns();
     struct tcp_rx_resp resp = {0};
-    tcp_rx_update(f, st, &in, cfg->mss, now, &resp, NULL, NULL, 0);
+    tcp_rx_update(f, st, &in, cfg->mss, now, &resp, NULL, NULL, 0, 0, idx);
     if (!resp.flags)
         return XDP_DROP;
 

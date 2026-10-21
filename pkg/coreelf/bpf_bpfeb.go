@@ -63,6 +63,7 @@ type BpfMixedCfg struct {
 	Groups       uint32
 	Workers      uint32
 	Receive      uint32
+	CountLimited uint32
 }
 
 type BpfMixedGroup struct {
@@ -90,9 +91,11 @@ type BpfMixedState struct {
 
 type BpfPktState struct {
 	_           structs.HostLayout
+	Budget      uint64
 	Count       uint32
 	Idx         uint32
 	LastBaseIdx uint32
+	_           [4]byte
 }
 
 type BpfTailCallCtx struct {
@@ -395,7 +398,9 @@ type BpfMapSpecs struct {
 	BasePacketMap   *ebpf.MapSpec `ebpf:"base_packet_map"`
 	ChecksumMetaMap *ebpf.MapSpec `ebpf:"checksum_meta_map"`
 	DiffMap         *ebpf.MapSpec `ebpf:"diff_map"`
+	MixedBudgetMap  *ebpf.MapSpec `ebpf:"mixed_budget_map"`
 	MixedCfgMap     *ebpf.MapSpec `ebpf:"mixed_cfg_map"`
+	MixedClosedMap  *ebpf.MapSpec `ebpf:"mixed_closed_map"`
 	MixedGroupMap   *ebpf.MapSpec `ebpf:"mixed_group_map"`
 	MixedProgs      *ebpf.MapSpec `ebpf:"mixed_progs"`
 	MixedRxStatsMap *ebpf.MapSpec `ebpf:"mixed_rx_stats_map"`
@@ -457,7 +462,9 @@ type BpfMaps struct {
 	BasePacketMap   *ebpf.Map `ebpf:"base_packet_map"`
 	ChecksumMetaMap *ebpf.Map `ebpf:"checksum_meta_map"`
 	DiffMap         *ebpf.Map `ebpf:"diff_map"`
+	MixedBudgetMap  *ebpf.Map `ebpf:"mixed_budget_map"`
 	MixedCfgMap     *ebpf.Map `ebpf:"mixed_cfg_map"`
+	MixedClosedMap  *ebpf.Map `ebpf:"mixed_closed_map"`
 	MixedGroupMap   *ebpf.Map `ebpf:"mixed_group_map"`
 	MixedProgs      *ebpf.Map `ebpf:"mixed_progs"`
 	MixedRxStatsMap *ebpf.Map `ebpf:"mixed_rx_stats_map"`
@@ -483,7 +490,9 @@ func (m *BpfMaps) Close() error {
 		m.BasePacketMap,
 		m.ChecksumMetaMap,
 		m.DiffMap,
+		m.MixedBudgetMap,
 		m.MixedCfgMap,
+		m.MixedClosedMap,
 		m.MixedGroupMap,
 		m.MixedProgs,
 		m.MixedRxStatsMap,

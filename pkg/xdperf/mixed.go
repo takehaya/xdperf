@@ -182,8 +182,8 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 			if err != nil {
 				return fmt.Errorf("TCP variant %d bytes: %w", i, err)
 			}
-			if b == 0 && x.cfg.Duration <= 0 {
-				return fmt.Errorf("unlimited TCP flow requires --duration")
+			if b == 0 && x.cfg.Duration <= 0 && x.cfg.Count == 0 {
+				return fmt.Errorf("unlimited TCP flow requires --count or --duration")
 			}
 			targets = append(targets, b)
 		}
@@ -198,7 +198,11 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	if err := check.validateTCP(); err != nil {
 		return err
 	}
+	if cfg.Count > math.MaxInt64 {
+		return fmt.Errorf("mixed --count must be <= %d", int64(math.MaxInt64))
+	}
 	x.cfg, x.tcpVariantBytes, x.mixed = cfg, targets, plan
+	x.warnMixedWorkers()
 	return nil
 }
 
@@ -208,7 +212,18 @@ func (x *Xdperf) initMixedMaps() error {
 			return err
 		}
 	}
+	if x.mixed.packetWeight == 0 {
+		if err := x.initPktStateMap(make([]uint32, ebpf.MustPossibleCPU())); err != nil {
+			return err
+		}
+	}
 	cfg := coreelf.BpfMixedCfg{TotalWeight: x.mixed.totalWeight, PacketWeight: x.mixed.packetWeight, Groups: uint32(len(x.mixed.groups)), Workers: uint32(len(x.cpus))}
+	if x.cfg.Count > 0 && !x.cfg.Infinite {
+		cfg.CountLimited = 1
+		if err := x.bpfobjs.MixedBudgetMap.Put(uint32(0), int64(x.cfg.Count)); err != nil {
+			return err
+		}
+	}
 	if x.cfg.Receiver {
 		cfg.Receive = 1
 	}
@@ -320,4 +335,34 @@ func (x *Xdperf) readMixedRXStats() (mixedRXTotals, error) {
 		}
 	}
 	return totals, nil
+}
+
+// validateRunBounds needs the plugin response to distinguish finite TCP-only runs.
+func (c *Config) validateRunBounds(mixed *mixedPlan) error {
+	if (mixed == nil || mixed.packetWeight != 0) && c.Count == 0 && c.Duration == 0 {
+		return fmt.Errorf("either --count or --duration must be specified")
+	}
+	if (mixed == nil || mixed.packetWeight != 0) && c.Duration > 0 && c.PPS == 0 {
+		return fmt.Errorf("--duration requires --pps to be specified with packet variants")
+	}
+	return nil
+}
+
+func (x *Xdperf) mixedCountReached(remaining int64, states []coreelf.BpfPktState) bool {
+	if x.mixed == nil || x.cfg.Count == 0 || x.cfg.Infinite || remaining > 0 {
+		return false
+	}
+	for _, cpu := range x.cpus {
+		if states[cpu].Budget != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (x *Xdperf) warnMixedWorkers() {
+	if x.mixed.packetWeight == 0 && x.cfg.TCPFlows < len(x.cpus) {
+		x.Logger.Warn("fewer TCP flows than TX workers: workers without flows remain idle",
+			zap.Int("flows", x.cfg.TCPFlows), zap.Int("workers", len(x.cpus)))
+	}
 }

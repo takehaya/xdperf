@@ -26,9 +26,9 @@ type Config struct {
 	Device      string
 	RxDevice    string // device to attach the receive/count XDP program in client mode; empty = same as Device
 	Parallelism int
-	Count       uint64        // total packets to send
+	Count       uint64        // TX worker frame limit (0 = unspecified)
 	PPS         uint64        // 0 = unlimited (max speed)
-	Duration    time.Duration // 0 = not specified (use count instead)
+	Duration    time.Duration // 0 = not specified
 	Infinite    bool          // enable infinite mode for maximum throughput
 	BatchSize   uint32        // syscall batch size tuning (default: 64)
 
@@ -183,20 +183,10 @@ func (c *Config) Validate() error {
 		}
 		// Note: --pps is ignored in infinite mode (always max speed)
 	} else {
-		// Non-infinite mode: either count or duration must be specified
-		if c.Count == 0 && c.Duration == 0 {
-			return fmt.Errorf("either --count or --duration must be specified")
-		}
-
 		// Cannot specify both count and duration
 		if c.Count > 0 && c.Duration > 0 {
 			return fmt.Errorf("cannot specify both --count and --duration")
 		}
-	}
-
-	// Duration requires PPS
-	if c.Duration > 0 && c.PPS == 0 {
-		return fmt.Errorf("--duration requires --pps to be specified")
 	}
 
 	// PluginLanguage is derived by Normalize; if it is still empty here, the

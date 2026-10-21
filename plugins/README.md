@@ -43,6 +43,10 @@ variants are optional. Weights allocate TX iterations, not bytes or
 completed connections. TCP variants accept an optional `base_packet`,
 `tcp_flow.encapsulation`, `timestamps`, `payload_pattern`, and restricted
 per-flow `variable_params`; see the [mixed guide](../docs/ja/mixed_variants.md).
+The host-provided `count` is the TX worker frame limit (0 means unspecified), not a template count.
+Mixed packet/TCP runs stop at this limit or earlier when all TCP flows complete.
+Finite TCP-only sets can omit both count and duration; TCP-only duration needs no PPS.
+Packet variants still require count or duration, and duration requires PPS.
 The removed standalone TCP scenario API is not accepted.
 
 Go VXLAN layout definitions and codecs are generated from the

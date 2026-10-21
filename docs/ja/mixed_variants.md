@@ -14,7 +14,7 @@ out/bin/xdperf-sink -listen 192.0.2.2:5201
 # 送信側
 sudo out/bin/xdperf run --device eth0 --plugin mixed.go --plugin-path out/bin \
   --cfg '{"src_ip":"192.0.2.1","dst_ip":"192.0.2.2","dst_mac":"02:00:00:00:00:02"}' \
-  --count 128 --pps 2000 --tcp-flow-report flows.csv
+  --count 100000 --pps 2000 --tcp-flow-report flows.csv
 ```
 
 [mixed.go](../../plugins/mixed.go/README.md) は DNS 形式の UDP 問い合わせと 4 本の TCP フローを生成します。
@@ -77,7 +77,7 @@ packet 側は有限の重み付き Diff プールを使うため、丸めも生�
 
 `flows[].bytes` は uint64 の十進文字列です。
 `"65536"` のように指定し、CLI の `1g` のような接尾辞は使えません。
-`"0"` は `--duration` 指定時だけ使える無制限フローです。
+`"0"` は `--count` または `--duration` が必要な無制限フローです。
 フロー番号は TCP バリアント順、各 `flows` 配列順に割り当て、送信元ポートは `--tcp-port-base + フロー番号` になります。
 全フローでポートを共有せず、ポート範囲は 65535 以下に収めます。
 
@@ -162,12 +162,32 @@ Linux 対向の例は [tcp-vxlan](../../examples/tcp-vxlan/README.md) と [tcp-t
 
 ## 終了条件と起動時間を確認する
 
-`--count` はパケットの Diff プールサイズであり、混合送信の総フレーム数ではありません。
+`--count N` は TX worker が送る packet と TCP のフレーム総数の上限です。
+SYN、データ、FIN、再送、プローブ、RST を含み、idle、build 失敗、RX 側のその場応答 ACK/RST は含みません。
+全 TCP フローが先に完了すれば N 未満で終了します。
+上限に達すると drain を待たず、2×RTO の linger 後に終了します。
+未完了フローが残る場合は `count reached before N flows completed` を Warn で出し、フロー失敗がなければ終了コードは 0 です。
+予算が残っていないため RST は送らず、対向の未完了接続はタイムアウトで解消されます。
+時間指定とシグナルによる終了では、従来どおりパケット送信を止めて TCP を drain します。
+この drain / abort で送る閉鎖用フレームは `--count` の制限に含めません。
+混合の `--count` の上限は 9223372036854775807 です。
+共有予算を CPU ごとに小分けで借用し、TCP だけの集合では担当フローがすべて閉じた worker の残りを返却します。
+フロー数が worker 数より少ない場合は Warn を出し、担当のない worker は予算を借りません。
+
+送信バイト数がすべて有限の TCP だけの集合では `--count` と `--duration` を両方省略できます。
 TCP だけの場合は packet 用のベースパケットと Diff を初期化せず、すべての送信機会を TCP に配分します。
-`--count` の既定値はなく、TCP だけでも現行 CLI では `--count` または `--duration` が必要です。
-有限フローなら `--count 1`（worker が複数なら worker 数以上）を指定でき、この値は TCP の送信量には影響しません。
-全 TCP フロー完了、`--duration`、シグナルで終了し、drain 中はパケット送信を止めて TCP を閉じます。
-時間指定は `--count` を省き、`--duration` と `--pps` を指定します。
+TCP だけなら `--duration` に `--pps` は不要です。
+packet を含む集合で時間指定する場合は `--count` を省き、`--duration` と `--pps` を指定します。
+packet を含む集合では Diff プールを初期化するため count か duration が必要です。
+混合の `--pps` は TX イテレーション数の上限であり、実際の送信フレーム数ではありません。
+`--count` を指定する場合は worker 数以上である必要があります。
+
+Diff プール長は従来どおり `min(count, 131072 × worker 数)` で、列全体を worker ごとの連続ブロックに分けます。
+同じ N 個の列を生成する際、長さ N のプールを一度送る場合と周期 L の列を巡回して N 個送る場合は、集計する値の多重集合が同じでも CPU ごとの列が異なります。
+sequential の複数パラメータは同時に進み、それぞれの範囲の先頭へ独立に戻るため、周期は範囲長の最小公倍数です。
+複数バリアントの sequential 選択では、CPU0 のブロックがバリアント 0 の範囲内に収まり、CPU0 がバリアント 0 だけを送ることがあります。
+混合では TCP も同じ予算を消費するため、パケット列の到達範囲は TCP との配分に依存します。
+
 `--infinite`、`--rx-device`、`--swap-resp` は混合モードでは使えません。
 宛先、接続数、バイト数はプラグインから渡し、`--tcp-dst`、`--tcp-flows`、`--tcp-bytes` は指定しません。
 共通の window、MSS、RTO、送信元ポート先頭、IPv4 ID の方式は TCP フラグで設定できます。

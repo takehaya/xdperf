@@ -47,7 +47,7 @@ CLI (cmd/xdperf/main.go) → 設定パース → Xdperf初期化
   │   → packetのDiffとTCPグループ別/フロー別テンプレートをマップへ書込
   │   → xdp_tx_mixedで重み付きの送信機会を配分 → packet TX / TCP TXへtail call
   │   → xdp_rx_mixed / xdp_rx_tcp_mixedでトンネル内側のTCP応答を照合
-  │   → 全TCPフロー完了、duration、シグナルで終了 (drain中はTCPだけを駆動)
+  │   → 全TCPフロー完了、count上限、duration、シグナルで終了 (count到達は短いlinger、duration/シグナルのdrain中はTCPだけを駆動)
   └── サーバー: eBPF読込 → 受信、オプションでswap応答
 
 (--tcp 指定時) プラグインを使わず Go がテンプレートフレームを生成 → tcp_cfg/tcp_flow マップ初期化

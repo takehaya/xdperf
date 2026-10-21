@@ -14,8 +14,7 @@ type GeneratorInitResponse struct {
 // BaseGeneratorRequest represents the common parameters passed to a packet
 // generation plugin.
 type BaseGeneratorRequest struct {
-	// Number of templates to generate.
-	// Required by simpleudp as a common counter.
+	// TX worker frame limit, not the number of templates; 0 means unspecified.
 	Count uint64 `json:"count" default:"1"`
 
 	// Source MAC address.
@@ -227,7 +226,7 @@ type TCPFlowVariant struct {
 	Flows []TCPFlow `json:"flows"`
 }
 
-// TCPFlow.Bytes is a decimal uint64 string; zero requires --duration.
+// TCPFlow.Bytes is a decimal uint64 string; zero requires --count or --duration.
 type TCPFlow struct {
 	Bytes string `json:"bytes"`
 }

@@ -22,7 +22,7 @@ for mode in v4 v6 v4vlan v6vlan v4qinq v6qinq; do
     config="$(python3 "${TCP_PY_DIR}/config.py" template "$srcmac" "$dstmac" "$src" "$dst" "$tags" "$DST_PORT" "$TX_IP4" "$RX_IP4")"
     report="${XDPERF_EXAMPLE_RUNDIR}/template-${mode}.csv"
     TX_LOG="${XDPERF_EXAMPLE_RUNDIR}/template-${mode}.log"
-    run_tcp_plugin "$config" "$report" --count 128 --pps 4000 --parallelism 1
+    run_tcp_plugin "$config" "$report" --count 100000 --pps 4000 --parallelism 1
     stop_sink
     python3 "${TCP_PY_DIR}/verify.py" template "$report" "$SINK_LOG"
     print_success "TCP template ${mode}: all flows and bytes verified"

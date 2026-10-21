@@ -109,11 +109,13 @@ sudo xdperf run --tcp-server --device eth0 --tcp-listen 10.0.0.2:5201
 
 Use `--plugin mixed.go` without `--tcp` to combine packet templates and TCP flows.
 Weights allocate TX iterations; TCP waits can make the actual frame ratio differ.
-`--count` sizes the packet diff pool, and the run ends when all TCP flows finish,
-when the duration expires, or on a signal.
+`--count` limits TX worker frames across packet and TCP variants, including retransmissions.
+The run can finish below this limit when all TCP flows complete first.
+At the limit, open flows produce a warning and exit successfully unless a flow failed.
+Finite TCP-only sets can omit both `--count` and `--duration`.
 
 ```bash
-sudo xdperf run --device eth0 --plugin mixed.go --count 128 --pps 2000 \
+sudo xdperf run --device eth0 --plugin mixed.go --count 100000 --pps 2000 \
     --cfg '{"src_ip":"192.0.2.1","dst_ip":"192.0.2.2","dst_mac":"02:00:00:00:00:02"}' \
     --tcp-flow-report flows.csv
 ```

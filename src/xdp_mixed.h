@@ -8,6 +8,7 @@ struct mixed_cfg {
     __u32 groups;
     __u32 workers;
     __u32 receive;
+    __u32 count_limited;
 };
 struct mixed_group {
     __u32 upper;
@@ -46,4 +47,29 @@ struct {
     __type(key, __u32);
     __type(value, __u32);
 } mixed_progs SEC(".maps");
+// Shared count pool; local reservations live in pkt_state_map.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __s64);
+} mixed_budget_map SEC(".maps");
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 65536);
+    __type(key, __u32);
+    __type(value, __u32);
+} mixed_closed_map SEC(".maps");
+
+static __always_inline void mixed_count_closed(__u32 idx)
+{
+    __u32 zero = 0;
+    struct mixed_cfg *cfg = bpf_map_lookup_elem(&mixed_cfg_map, &zero);
+    if (!cfg || !cfg->workers)
+        return;
+    __u32 slot = idx % cfg->workers;
+    __u32 *closed = bpf_map_lookup_elem(&mixed_closed_map, &slot);
+    if (closed)
+        __sync_fetch_and_add(closed, 1);
+}
 #endif

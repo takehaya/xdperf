@@ -42,7 +42,7 @@ func (x *Xdperf) getBpfConstant(name string) int {
 
 // DiffEntry represents a single packet entry with optional modifications
 type DiffEntry struct {
-	BaseIdx    uint8  // Index into base_packet_map (which base to use)
+	BaseIdx    uint8 // Index into base_packet_map (which base to use)
 	PacketLen  uint16
 	LenChanged bool // True if packet length differs from base (requires full checksum recalculation)
 	Diffs      []DiffValue

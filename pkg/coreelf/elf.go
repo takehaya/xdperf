@@ -28,7 +28,7 @@ type XdpMd struct {
 	EgressIfindex  uint32
 }
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -I ./src -I /usr/include/x86_64-linux-gnu
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc $BPF_CLANG -cflags $BPF_CFLAGS Bpf ../../src/xdp_prog.c -- -mcpu=v3 -I ./src -I /usr/include/x86_64-linux-gnu
 
 // ReadCollection loads the BPF objects with diff_map sized to diffMapSize.
 // See ReadCollectionWithSizes for the general form.

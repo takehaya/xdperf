@@ -8,7 +8,7 @@ for mode in ${MIXED_CASES:-finite duration}; do
 for workers in ${MIXED_WORKERS:-1 2}; do
     small_bytes=65536
     large_bytes=262144
-    run_args=(--count 128)
+    run_args=(--count 100000)
     if [ "$mode" = duration ]; then
         small_bytes=4097
         large_bytes=0
