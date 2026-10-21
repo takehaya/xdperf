@@ -6,7 +6,7 @@ Omit `--tcp`.
 ```bash
 make build
 sudo out/bin/xdperf run --device eth0 --plugin mixed.go --plugin-path out/bin \
-  --count 128 --pps 2000 --tcp-flow-report flows.csv \
+  --duration 10s --pps 2000 --tcp-flow-report flows.csv \
   --cfg '{"src_ip":"192.0.2.1","dst_ip":"192.0.2.2","dst_mac":"02:00:00:00:00:02"}'
 ```
 
@@ -34,7 +34,9 @@ Otherwise, the host resolves the route and neighbor for `dst_ip:tcp_port`.
 The sample UDP packet uses IPv4 only.
 For TCP over IPv6, supply an IPv6 `tcp_base` and keep the UDP addresses as IPv4.
 
-`--count` is the Diff pool size; the run ends when all TCP flows complete, the duration expires, or a signal arrives.
+Currently, when a response includes `tcp_flow`, `--count` only sets the Diff pool size and does not limit transmitted frames, including UDP packets.
+The run ends at the earliest of all TCP flows completing, `--duration` expiring, or a signal starting TCP drain.
+The CLI still requires `--count` or `--duration`.
 Weights do not guarantee actual frame or byte ratios.
 See the [mixed traffic guide](../../docs/ja/mixed_variants.md) for SDK JSON, tunnel limits, startup time, and RX diagnostics.
 

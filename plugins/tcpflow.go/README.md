@@ -32,7 +32,7 @@ On the sender, use an interface with a route to the peer:
 
 ```bash
 sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
-  --count 1 --pps 2000 --tcp-flow-report flows.csv \
+  --duration 10s --pps 2000 --tcp-flow-report flows.csv \
   --cfg '{"dst_ip":"192.0.2.2","tcp_port":5201,"flows":4,"bytes":"65536"}'
 ```
 
@@ -40,10 +40,10 @@ For a veth peer, run the sink as root with `-xdp-pass-dev <peer-veth>` so it can
 TCP replies are handled automatically; `--recv` is unnecessary.
 The sink prints connection and byte totals on exit (Ctrl-C).
 
-The run ends when all TCP flows complete, the duration expires, or a signal starts TCP drain.
-The CLI still requires `--count` or `--duration`; `--count` has no default and does not limit TCP bytes or frames.
-`--count 1` is enough for one worker; use at least the worker count with `--parallelism`.
-For unlimited flows, replace `--count 1` with `--duration 10s` and set `"bytes":"0"`, retaining `--pps`.
+Currently, when a response includes `tcp_flow`, `--count` only sets the Diff pool size and does not limit transmitted frames.
+The run ends at the earliest of all TCP flows completing, `--duration` expiring, or a signal starting TCP drain.
+The CLI still requires `--count` or `--duration`.
+To stream until the duration expires, set `"bytes":"0"` in the example above.
 
 The standalone `--tcp` mode creates flows from CLI flags without a plugin.
 This example supplies them from Wasm, so omit `--tcp`, `--tcp-dst`, `--tcp-flows`, and `--tcp-bytes`.

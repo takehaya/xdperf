@@ -40,7 +40,7 @@ On the sender, adjust the IP addresses, MAC, and device:
 
 ```bash
 sudo out/bin/xdperf run --device eth0 --plugin tcpudp.go --plugin-path out/bin \
-  --count 128 --pps 2000 --tcp-flow-report flows.csv \
+  --duration 10s --pps 2000 --tcp-flow-report flows.csv \
   --cfg '{"src_ip":"192.0.2.1","dst_ip":"192.0.2.2","dst_mac":"02:00:00:00:00:02","packet_weight":3,"tcp_weight":1}'
 ```
 
@@ -50,10 +50,10 @@ If `udp_port` differs from `tcp_port`, run a separate `xdperf-sink -proto udp -l
 To count UDP replies at the sender, use a UDP echo server and add `--recv`; the sink only counts incoming UDP.
 TCP replies are handled regardless of `--recv`.
 
-The run ends when the TCP flow completes, the duration expires, or a signal starts drain.
+Currently, when a response includes `tcp_flow`, `--count` only sets the Diff pool size and does not limit transmitted frames, including UDP packets.
+The run ends at the earliest of the TCP flow completing, `--duration` expiring, or a signal starting drain.
 UDP stops during drain, and the sender closes TCP.
-`--count` is the UDP Diff pool size, not a total frame limit.
-To set a time limit, replace `--count 128` with `--duration 10s`, retaining `--pps`; the finite TCP flow can finish sooner.
+The CLI still requires `--count` or `--duration`.
 
 The standalone `--tcp` mode sends TCP using CLI flags without a plugin.
 This example supplies both variant types from Wasm, so omit `--tcp`, `--tcp-dst`, `--tcp-flows`, and `--tcp-bytes`.
