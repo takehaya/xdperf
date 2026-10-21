@@ -13,7 +13,7 @@ For verification closer to a real NIC path with QEMU 2-VM, see
 - Linux kernel 5.18+ (XDP live-frames required; automatically SKIPs on
   unsupported kernels)
 - root privileges (for netns / veth / eBPF operations)
-- `iproute2`, `ethtool`
+- `iproute2`, `ethtool`, Python 3 (standard library only for TCP plugin scenarios)
 - `make build` done at the repository root (`out/bin/xdperf` and `*.wasm`)
 - [otlp-metrics](otlp-metrics/) only: `docker` and `curl` (SKIPs when docker is
   unavailable)
@@ -30,8 +30,12 @@ make examples
 
 # Run a single scenario
 cd examples/simpleudp
-sudo ./setup.sh && sudo ./test.sh && sudo ./teardown.sh
+sudo ./setup.sh
+sudo ./test.sh
+sudo ./teardown.sh
 ```
+
+Always run teardown after a failed test as well.
 
 ## Scenarios
 
@@ -45,7 +49,7 @@ sudo ./setup.sh && sudo ./test.sh && sudo ./teardown.sh
 | [simpleudp-split-rx](simpleudp-split-rx/) | One process with `--rx-device`: TX on one veth, forwarded by a middle "DUT" netns, counted by `xdp_rx` on a second veth |
 | [srv6](srv6/) | SRv6 (RFC 8754) traffic via the srv6.go plugin, all three encapsulation modes (`l3vpn_ipv4`/`l2vpn_eth`/`ipv6`). Verifies rx counter == packets sent per mode |
 | [tcpstream](tcpstream/) | `xdperf run --tcp` (XDP-implemented TCP client) streaming into `xdperf-sink` (kernel TCP) and into `xdperf run --tcp-server` (XDP responder) over IPv4, IPv6 and both with an 802.1Q tag, plus `socat` (kernel TCP) into the XDP responder. Verifies sender `bytes_acked` == receiver bytes and connection counts |
-| [mixed](mixed/test.sh) | Weighted DNS-style UDP packets and unequal TCP byte targets, with TCP flow CSV and UDP echo verification |
+| [mixed](mixed/README.md) | Weighted DNS-style UDP packets and unequal TCP byte targets, with TCP flow CSV and UDP echo verification |
 | [tcp-template](tcp-template/README.md) | TCP base frames, IPv4/IPv6, VLAN/QinQ, and static options |
 | [tcp-vxlan](tcp-vxlan/README.md) | TCP through Linux VXLAN with IPv4/IPv6 and outer UDP zero/LCO checksums |
 | [tcp-tunnels](tcp-tunnels/README.md) | GRE, IPIP, SRv6, MPLS, GTP-U, and asymmetric replies |
@@ -107,9 +111,17 @@ flowchart LR
 ## Adding a new scenario
 
 Put a directory containing `test.sh` directly under examples/ and
-`run_all.sh` will pick it up. `setup.sh` / `teardown.sh` are optional (run
-before/after if present). Source the helpers in [common/](common/)
-(`udp_scenario.sh` etc.) for shared logic.
+`run_all.sh` will pick it up. Include `README.md`, `setup.sh` and `teardown.sh`;
+the runner executes setup, test and teardown in sequence and cleans up after
+failures. Source the helpers in [common/](common/) (`udp_scenario.sh`,
+`tcp_scenario.sh` or `tcp_plugin_scenario.sh`) for topology and process handling.
+Keep Python code in `.py` files with argparse CLIs, using only the standard
+library. Shared configuration, UDP echo and CSV/statistics checks live in
+[common/py](common/py/). Run their tests without root:
+
+```bash
+python3 -m unittest discover -s examples/common/py -v
+```
 
 `test.sh` exit codes: `0` = PASS, `3` = SKIP (e.g. kernel without
 live-frames support), anything else = FAIL.

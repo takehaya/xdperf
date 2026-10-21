@@ -165,7 +165,7 @@ sudo examples/tcpstream/teardown.sh
 
 `--plugin mixed.go` は UDP パケットと TCP フローを同じバリアント集合として返します。
 `--tcp` は併記しません。
-使い方と設定項目は [混合送信ガイド](mixed_variants.md)、配分の設計は [混合バリアントの設計](design_mixed_variants.md)、動作確認は [E2E サンプル](../../examples/mixed/test.sh) を参照してください。
+使い方と設定項目は [混合送信ガイド](mixed_variants.md)、配分の設計は [混合バリアントの設計](design_mixed_variants.md)、動作確認は [E2E サンプル](../../examples/mixed/README.md) を参照してください。
 混合モードは QinQ と各種トンネル、Timestamps、繰り返しペイロード、フロー別送信元 IP に対応しています。
 上記の全ゼロペイロードと Timestamps なしという説明は、単独の `--tcp` に適用されます。
 `--tcp-flow-report` は混合送信でも TCP フローのみを CSV に記録します。

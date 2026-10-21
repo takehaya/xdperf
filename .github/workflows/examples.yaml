@@ -55,5 +55,5 @@ jobs:
           fi
       - name: build binary and plugins
         run: make build
-      - name: run veth e2e examples
+      - name: run all scenarios (setup, test, teardown)
         run: sudo ./examples/run_all.sh
