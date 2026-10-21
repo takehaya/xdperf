@@ -736,6 +736,9 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 			return
 		}
 		draining = true
+		if countReached {
+			lingerCh = nil
+		}
 		x.Logger.Info("draining: closing all flows", zap.String("reason", reason))
 		if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.Drain = 1 }); err != nil {
 			x.Logger.Warn("failed to set drain flag", zap.Error(err))

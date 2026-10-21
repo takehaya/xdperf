@@ -70,7 +70,7 @@ static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extend
     __sync_fetch_and_add(&f->rx_pkts, 1);
     struct tcp_rx_resp resp = {0};
     tcp_rx_update(f, st, &in, t->cfg.mss, bpf_ktime_get_ns(), &resp, &ts, &extra, extended && mixed_has_timestamps && t->timestamps,
-                  1, idx);
+                  1);
     if (!resp.flags)
         return XDP_DROP;
     struct tcp_tx_action act = {.seq = resp.seq, .ack = resp.ack, .flags = resp.flags, .src_port = dport};

@@ -61,15 +61,4 @@ struct {
     __type(value, __u32);
 } mixed_closed_map SEC(".maps");
 
-static __always_inline void mixed_count_closed(__u32 idx)
-{
-    __u32 zero = 0;
-    struct mixed_cfg *cfg = bpf_map_lookup_elem(&mixed_cfg_map, &zero);
-    if (!cfg || !cfg->workers)
-        return;
-    __u32 slot = idx % cfg->workers;
-    __u32 *closed = bpf_map_lookup_elem(&mixed_closed_map, &slot);
-    if (closed)
-        __sync_fetch_and_add(closed, 1);
-}
 #endif
