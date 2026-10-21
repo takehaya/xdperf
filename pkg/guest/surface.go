@@ -125,8 +125,8 @@ type TemplateRange struct {
 }
 
 // PacketVariantSet represents a set of packet variants along with a pattern
-// used to select among them. A set containing TCP flows requires mixed mode,
-// at least one packet variant, and at most 16 variants in total.
+// used to select among them. A set containing TCP flows requires mixed mode
+// and at most 16 variants in total. Packet variants are optional.
 type PacketVariantSet struct {
 	// List of packet variants.
 	Variants []PacketVariant `json:"variants"`

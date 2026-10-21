@@ -188,9 +188,6 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 			targets = append(targets, b)
 		}
 	}
-	if plan.packetWeight == 0 {
-		return fmt.Errorf("mixed variants require at least one packet variant")
-	}
 	plan.totalWeight = uint32(total)
 	cfg := x.cfg
 	cfg.TCPDst, cfg.TCPFlows = destination, len(targets)
@@ -206,8 +203,10 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 }
 
 func (x *Xdperf) initMixedMaps() error {
-	if err := x.initPacketGeneration(&x.mixed.packets); err != nil {
-		return err
+	if x.mixed.packetWeight != 0 {
+		if err := x.initPacketGeneration(&x.mixed.packets); err != nil {
+			return err
+		}
 	}
 	cfg := coreelf.BpfMixedCfg{TotalWeight: x.mixed.totalWeight, PacketWeight: x.mixed.packetWeight, Groups: uint32(len(x.mixed.groups)), Workers: uint32(len(x.cpus))}
 	if x.cfg.Receiver {
