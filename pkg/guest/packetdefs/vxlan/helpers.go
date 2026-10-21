@@ -1,9 +1,11 @@
 // Package vxlan contains value types and codecs derived from vxlan_shared.h.
 // No Go memory layout or unsafe casts are part of its ABI.
-// Cilium 1.20.3 の段階6の観測側は、数値化した InnerKey の各フィールドを
-// ネイティブ順でマップに格納する（x86 ではリトルエンディアン）。
-// 外部マップと交換する場合も生成済みオフセットとネイティブ順を使う。
-// InnerKey の codec は提供しない。
+//
+// The stage 6 observer for Cilium v1.20.3 stores numeric InnerKey fields in the
+// byte order of the host running BPF (little endian on the tested x86_64 host).
+// Exchange with that external map requires the generated offsets and the BPF
+// host's byte order, regardless of the Wasm guest's byte order.
+// No InnerKey codec is provided.
 package vxlan
 
 import "fmt"

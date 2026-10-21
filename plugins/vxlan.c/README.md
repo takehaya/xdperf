@@ -22,13 +22,11 @@ Run `make packetdefs-gen` or `make packetdefs-check` with LLVM 22 after shared
 layout changes. This generates definitions, not the C inline function bodies;
 see the [design](../../docs/ja/design_c_to_go_shared_defs.md).
 
-段階6の Cilium 1.20.3 の観測側では、`vx_inner_key` の各フィールドに
-`vx_load16` / `vx_load32` と `vxlan_vni` の返す数値を代入し、ネイティブ順
-（検証した x86 ではリトルエンディアン）でマップに格納する。
-共有ヘッダの `network byte order` というコメントとは異なり、ネットワーク順ではない。
-Go の `InnerKey` をこのマップと交換する場合もネイティブ順で扱う。
-今回 `InnerKey` の codec は追加していない。
-生バイト列と照合結果は [設計書の11.2節](../../docs/ja/design_c_to_go_shared_defs.md#112-段階6の-cilium-datapath-plugin-での確認) を参照する。
+The stage 6 observer for Cilium v1.20.3 assigns the numeric results of `vx_load16` / `vx_load32` and `vxlan_vni` to `vx_inner_key` fields and stores them in the byte order of the host running BPF (little endian on the tested x86_64 host).
+The pinned header's `network byte order` comment does not describe this storage order; correcting it remains pending for the next header revision.
+Exchanging Go `InnerKey` values with this map requires the BPF host's byte order, regardless of the Wasm guest's byte order.
+No `InnerKey` codec is provided.
+See [design section 11.2](../../docs/ja/design_c_to_go_shared_defs.md#112-段階6の-cilium-datapath-plugin-での確認) for the raw bytes and comparison results.
 
 ## Build
 
