@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.20.0](https://github.com/takehaya/xdperf/compare/v0.19.2...v0.20.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* mixed --count now limits packet and TCP worker frames, including handshake, retransmission and probe frames, instead of only sizing the packet pool. Mixed counts must fit int64.
+
+### 🎉 Features
+
+* allow TCP-only plugin variant sets ([#137](https://github.com/takehaya/xdperf/issues/137)) ([a3bc8c4](https://github.com/takehaya/xdperf/commit/a3bc8c4934e5bbc1190e5767fba70841befa54c3))
+* count mixed worker frames with shared budgets ([#139](https://github.com/takehaya/xdperf/issues/139)) ([dbb398c](https://github.com/takehaya/xdperf/commit/dbb398c089d813c07fc9aeeb8310a00b3728c4b3))
+* **plugins:** add minimal TCP and TCP/UDP examples ([#138](https://github.com/takehaya/xdperf/issues/138)) ([ef4a98a](https://github.com/takehaya/xdperf/commit/ef4a98a3cb159ff9fd1ec09c263d5ce26f2efcd5))
+
+
+### 🔧 Miscellaneous Chores
+
+* keep breaking changes on minor bumps before 1.0 ([#140](https://github.com/takehaya/xdperf/issues/140)) ([0133dbd](https://github.com/takehaya/xdperf/commit/0133dbd3657e778ff17038114b921106c83df3e3))
+
+
+### ♻️ Code Refactoring
+
+* **examples:** standardize TCP scenarios and extract Python helpers ([#135](https://github.com/takehaya/xdperf/issues/135)) ([bbfc831](https://github.com/takehaya/xdperf/commit/bbfc831ffc7225bb15096e87ac772700ffe48cb8))
+
 ## [0.19.2](https://github.com/takehaya/xdperf/compare/v0.19.1...v0.19.2) (2026-10-21)
 
 
