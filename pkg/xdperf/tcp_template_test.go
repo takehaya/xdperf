@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
@@ -312,6 +313,13 @@ func TestTCPTemplateMSS(t *testing.T) {
 }
 
 func TestTCPGroupKnobsBPF(t *testing.T) {
+	n, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 2 {
+		t.Skip("requires two possible CPUs for worker completion accounting")
+	}
 	for _, explicitBase := range []bool{false, true} {
 		t.Run(fmt.Sprint("base=", explicitBase), func(t *testing.T) {
 			spec, err := coreelf.LoadBpf()
