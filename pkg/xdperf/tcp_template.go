@@ -100,8 +100,8 @@ func tcpStaticOptions(input []byte, syn bool) ([]byte, error) {
 	return out, nil
 }
 
-func (x *Xdperf) templateMSS(t *tcpTarget, options int) error {
-	mss := x.cfg.TCPMSS
+func (x *Xdperf) templateMSS(t *tcpTarget, mss, options int) error {
+	automatic := mss == 0
 	if mss == 0 {
 		mss = tcpDefaultMSSv4
 		if t.ipVersion == 6 {
@@ -115,7 +115,7 @@ func (x *Xdperf) templateMSS(t *tcpTarget, options int) error {
 	}
 	mss -= options
 	max := x.Device.MTU + 14 - int(t.hdrLen) - options
-	if x.cfg.TCPMSS == 0 && mss > max {
+	if automatic && mss > max {
 		mss = max
 	}
 	if mss < tcpMinMSS || mss > max || int(t.hdrLen)+options+mss > x.getBpfConstant("max_packet_size") {
@@ -159,7 +159,7 @@ func (x *Xdperf) initTCPTemplates(fallback *tcpTarget, frame []byte, cfg coreelf
 				b = append([]byte(nil), g.variant.Base.Data...)
 			} else if f.Destination != x.cfg.TCPDst || len(x.mixed.groups[0].variant.Base.Data) != 0 {
 				copyCfg := x.cfg
-				copyCfg.TCPDst = f.Destination
+				copyCfg.TCPDst, copyCfg.TCPMSS = f.Destination, g.mss
 				resolver := &Xdperf{cfg: copyCfg, Device: x.Device, bpfSpec: x.bpfSpec, Logger: x.Logger}
 				var err error
 				t, err = resolver.resolveTCPTarget()
@@ -184,20 +184,14 @@ func (x *Xdperf) initTCPTemplates(fallback *tcpTarget, frame []byte, cfg coreelf
 				extra = 12
 			}
 			tc := *t
-			if len(g.variant.Base.Data) != 0 {
-				if err := x.templateMSS(&tc, (len(data) + extra)); err != nil {
-					return err
-				}
-			} else {
-				if int(tc.mss)-(len(data)+extra) < tcpMinMSS {
-					return fmt.Errorf("TCP data options leave MSS below %d", tcpMinMSS)
-				}
-				tc.mss -= uint16((len(data) + extra))
+			if err := x.templateMSS(&tc, g.mss, len(data)+extra); err != nil {
+				return err
 			}
 			if x.Device != nil && int(tc.hdrLen)+tcpSynOptLen+len(syn)+extra > x.Device.MTU+14 {
 				return fmt.Errorf("TCP SYN exceeds device MTU")
 			}
 			c := cfg
+			c.WindowSegs, c.RtoNs, c.IpIdShared = uint32(g.window), uint64(g.rto), g.ipIDShared
 			c.Mss, c.DstPort, c.HdrLen, c.L3Off, c.L4Off, c.IpVersion = tc.mss, tc.dstPort, tc.hdrLen, tc.l3Off, tc.l4Off, tc.ipVersion
 			c.PseudoSum, c.SrcIp, c.DstIp = pseudoHeaderAddrSum(tc.srcIP, tc.dstIP), ipTo4Words(tc.srcIP), ipTo4Words(tc.dstIP)
 			v := coreelf.BpfTcpTemplate{Cfg: c, SynLen: uint8(tcpSynOptLen + len(syn)), DataLen: uint8(len(data))}

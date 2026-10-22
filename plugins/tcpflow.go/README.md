@@ -14,6 +14,20 @@ Pass these fields as JSON with `--cfg`:
 | `flows` | `4` | Number of connections; each uses a distinct source port |
 | `bytes` | `"65536"` | Bytes per connection as a uint64 decimal string; `"0"` requires `--count` or `--duration` |
 
+Zero or omitted tuning fields use the corresponding CLI value, including its default.
+Plugin values take precedence over CLI values.
+
+| Field | CLI fallback | Meaning |
+| --- | --- | --- |
+| `window_segs` | `--tcp-window` (32) | Maximum segments in flight per flow, 1..65535 |
+| `mss` | `--tcp-mss` (automatic) | MSS before subtracting TCP data options, 64..65535; automatic sizing respects MTU/frame limits |
+| `rto_ms` | `--tcp-rto` (200ms) | Positive retransmission timeout in milliseconds |
+| `ip_id` | `--tcp-ip-id` (`flow`) | IPv4 ID mode: `flow` or `shared`; empty uses CLI fallback |
+| `port_base` | `--tcp-port-base` (10000) | First source port for the entire set; all flows must fit through port 65535 |
+
+The host uses the largest group RTO for linger and drain timeout.
+Retry counts remain engine constants.
+
 ## Run
 
 Build from the repository root:
@@ -33,7 +47,7 @@ On the sender, use an interface with a route to the peer:
 ```bash
 sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
   --tcp-flow-report flows.csv \
-  --cfg '{"dst_ip":"192.0.2.2","tcp_port":5201,"flows":4,"bytes":"65536"}'
+  --cfg '{"dst_ip":"192.0.2.2","tcp_port":5201,"flows":4,"bytes":"65536","window_segs":8,"mss":1024,"port_base":12000}'
 ```
 
 For a veth peer, run the sink as root with `-xdp-pass-dev <peer-veth>` so it can receive XDP traffic.

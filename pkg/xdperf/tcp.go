@@ -395,7 +395,7 @@ func (x *Xdperf) warnEphemeralPortOverlap() {
 	}
 	first, last := x.cfg.TCPPortBase, x.cfg.TCPPortBase+x.cfg.TCPFlows-1
 	if first <= hi && last >= lo {
-		x.Logger.Warn("TCP source ports overlap the kernel's ephemeral port range; host connections to the same destination may be captured by xdp_rx_tcp. Move --tcp-port-base or reserve the ports with net.ipv4.ip_local_reserved_ports",
+		x.Logger.Warn("TCP source ports overlap the kernel's ephemeral port range; host connections to the same destination may be captured by xdp_rx_tcp. Change tcp_port_base/--tcp-port-base or reserve the ports with net.ipv4.ip_local_reserved_ports",
 			zap.Int("first_port", first), zap.Int("last_port", last),
 			zap.Int("ephemeral_lo", lo), zap.Int("ephemeral_hi", hi))
 	}
@@ -531,11 +531,15 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	if x.mixed != nil && len(x.mixed.groups[0].variant.Base.Data) != 0 {
 		t, err = parseTCPVariant(x.mixed.groups[0].variant)
 		if err == nil {
-			err = x.templateMSS(t, 0)
+			err = x.templateMSS(t, x.mixed.groups[0].mss, 0)
 		}
 		template = append([]byte(nil), x.mixed.groups[0].variant.Base.Data...)
 	} else {
-		t, err = x.resolveTCPTarget()
+		resolver := &Xdperf{cfg: x.cfg, Device: x.Device, bpfSpec: x.bpfSpec, Logger: x.Logger}
+		if x.mixed != nil {
+			resolver.cfg.TCPMSS = x.mixed.groups[0].mss
+		}
+		t, err = resolver.resolveTCPTarget()
 		if err == nil {
 			template, err = buildTCPTemplate(t, uint16(x.cfg.TCPPortBase))
 		}
@@ -562,6 +566,10 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 			}
 		}
 	}
+	window, rto := x.cfg.TCPWindow, x.cfg.TCPRTO
+	if x.mixed != nil {
+		window, rto = x.mixed.groups[0].window, x.mixed.groups[0].rto
+	}
 	x.Logger.Info("TCP stream target resolved",
 		zap.Uint8("ip_version", t.ipVersion),
 		zap.String("src", t.srcIP.String()),
@@ -573,9 +581,9 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		zap.Int("frame_len", len(template)),
 		zap.Int("flows", x.cfg.TCPFlows),
 		zap.Int("port_base", x.cfg.TCPPortBase),
-		zap.Int("window_segs", x.cfg.TCPWindow),
+		zap.Int("window_segs", window),
 		zap.Uint64("bytes_per_flow", x.cfg.TCPBytes),
-		zap.Duration("rto", x.cfg.TCPRTO),
+		zap.Duration("rto", rto),
 	)
 
 	if x.mixed != nil {
@@ -697,10 +705,10 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	// hitting the kernel (which would reply with RST and leave the peer in
 	// LAST-ACK).
 	var lingerCh <-chan time.Time
-	linger := 2 * x.cfg.TCPRTO
+	linger := 2 * x.tcpRTO()
 	// Covers the longest retry sequence after drain starts (FIN backoff, or
 	// the FIN_WAIT_2 ACK probes), plus slack.
-	drainTimeout := tcpBackoffSpan*x.cfg.TCPRTO + time.Second
+	drainTimeout := tcpBackoffSpan*x.tcpRTO() + time.Second
 	if x.mixed != nil {
 		drainTimeout += mixedDrainSchedulingGrace(flows, uint64(len(x.cpus)), uint64(repeat), interval)
 	}
