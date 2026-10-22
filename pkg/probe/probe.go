@@ -63,8 +63,12 @@ func printProbeResultWithLogger(lg *zap.Logger, result *ProbeResult) {
 		)
 	}
 
-	// Live-frame TX capability
-	lg.Info("Live-frame TX capability",
+	// The attach fallback only checks kernel live-frames API support.
+	liveFrameLabel := "Live-frame TX capability"
+	if result.XDPFeatures == nil {
+		liveFrameLabel = "Live-frame API support (device TX not checked)"
+	}
+	lg.Info(liveFrameLabel,
 		zap.Bool("live_frame_mode", result.LiveFrameMode),
 	)
 
