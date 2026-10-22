@@ -135,7 +135,7 @@ int xdp_rx_tcp_server(struct xdp_md *ctx)
         }
         // Untagged while a VLAN is configured: tag stripped by the driver or
         // carried in skb metadata; accept on the L3/L4 match, push it back on
-        // the reply (same as xdp_rx_tcp).
+        // the reply via tcp_reply_inplace.
     } else if (proto == bpf_htons(ETH_P_8021Q) || proto == bpf_htons(ETH_P_8021AD)) {
         return XDP_PASS;
     }

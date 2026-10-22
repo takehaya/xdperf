@@ -46,7 +46,7 @@ func ReadCollectionWithSizes(constants map[string]any, sizes map[string]uint32, 
 }
 
 // ReadBaseCollectionWithSizes defers mixed TCP programs until the plugin returns
-// a mixed variant set. Ordinary packet and standalone TCP startup avoid their
+// a mixed variant set. Ordinary packet and TCP responder startup avoid their
 // verifier cost. ReadCollectionWithSizes still loads everything for load tests.
 func ReadBaseCollectionWithSizes(constants map[string]any, sizes map[string]uint32, debug ...bool) (*BpfObjects, *ebpf.CollectionSpec, error) {
 	return readCollection(constants, sizes, false, debug...)

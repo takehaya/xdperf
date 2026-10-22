@@ -128,7 +128,7 @@ See [tcpflow.go settings](../plugins/tcpflow.go/README.md) for window, MSS, RTO,
 | `--tcp-ack-every` | `1` | ACK every N in-order data segments (1..255); PSH/FIN/out-of-order get immediate ACKs |
 | `--tcp-mss` | MTU-sized, 1448 IPv4 / 1428 IPv6 | Responder only: advertised MSS, minimum 64 |
 | `--tcp-rto` | `200ms` | Responder only: stale-flow retention timeout basis |
-| `--tcp-vlan-id` / `--tcp-vlan-pcp` | `0` / `0` | Responder only: VLAN ID and priority |
+| `--tcp-vlan-id` / `--tcp-vlan-pcp` | `0` / `0` | Responder only: 802.1Q VID and PCP; with a nonzero VID, tag replies even to untagged frames (veth/rx offload). VID 0 passes tagged frames to the kernel |
 
 The responder accepts duration without PPS and rejects `--swap-resp`,
 `--rx-device`, `--count`, and `--infinite`.

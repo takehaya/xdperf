@@ -86,10 +86,10 @@ struct tcp_flow {
     // Per-flow ledger, read by Go for --tcp-flow-report. Counted with atomic
     // adds after the frame is built, so a frame that failed to build is not
     // counted (it shows up in tcp_stats.build_errors instead).
-    __u64 tx_pkts;    // frames xdp_tx_tcp sent: SYN, data, FIN, retransmissions, probes, RST
+    __u64 tx_pkts;    // frames TCP TX sent: SYN, data, FIN, retransmissions, probes, RST
     __u64 tx_data;    // new data segments (first transmission)
     __u64 tx_rtx;     // retransmitted data segments (RTO, dup ACK, go-back-N)
-    __u64 rx_replies; // ACK / RST frames xdp_rx_tcp bounced back for this flow
+    __u64 rx_replies; // ACK / RST frames TCP RX bounced back for this flow
     __u64 rx_pkts;    // frames received from the peer for this flow
 };
 
@@ -107,7 +107,7 @@ struct tcp_cfg {
     __u8 max_syn_retries;
     __u8 max_fin_retries;
     __u8 drain;            // 1 = stop new data, close every flow (Go sets it on --duration / signal)
-    __u8 vlan_pcp;         // 802.1Q priority for tags pushed by xdp_rx_tcp
+    __u8 vlan_pcp;         // 802.1Q priority for tags pushed by TCP RX
     __u8 abort;            // 1 = reset every open flow with RST and stop (Go: drain timeout / 2nd signal)
     __u8 max_data_retries; // consecutive RTOs before a flow gives up with RST
     __u8 ip_id_shared;     // 1 = one IPv4 ID counter per TX CPU (interleaved flows defeat GRO)
@@ -365,7 +365,7 @@ static __always_inline int tcp_flow_open(__u8 state)
 
 // Give up on a flow with a RST (caller holds the lock). seq = snd_max: the
 // peer's RCV.NXT is somewhere in [snd_una, snd_max]; if it is lower, Linux
-// answers with a challenge ACK and xdp_rx_tcp replies RST at SEG.ACK, which is
+// answers with a challenge ACK and TCP RX replies RST at SEG.ACK, which is
 // exact (RFC 5961).
 static __always_inline int tcp_tx_fail(struct tcp_flow *f, struct tcp_stats *st, struct tcp_tx_action *a)
 {
@@ -423,7 +423,7 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
     switch (state) {
     case TF_SYN_SENT:
         if (f->syn_rst & 1) {
-            // xdp_rx_tcp just reset a stale peer connection on this port:
+            // TCP RX just reset a stale peer connection on this port:
             // retry once right away, then fall back to the normal backoff
             // (so a peer that keeps answering with challenge ACKs cannot make
             // us loop without consuming retries).
@@ -1015,7 +1015,7 @@ static __always_inline void tcp_parse_syn_opts(struct xdp_md *ctx, __u32 l4_off,
 
 #include "xdp_tcp_timestamp.h"
 
-// What xdp_rx_tcp sends back (if anything) after updating the flow.
+// What TCP RX sends back (if anything) after updating the flow.
 struct tcp_rx_resp {
     __u32 seq;
     __u32 ack;
