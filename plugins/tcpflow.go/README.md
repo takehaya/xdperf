@@ -2,6 +2,8 @@
 
 This Go Wasm plugin returns one `tcp_flow` variant and sends no UDP packets.
 The host builds the TCP template using its route and neighbor tables.
+Routes through an 802.1Q VLAN child add its tag with PCP 0.
+Automatic 802.1ad routes are rejected; use a plugin returning `base_packet` for other VLAN protocols.
 
 ## Configuration
 

@@ -23,7 +23,8 @@ sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin --durati
 ```
 
 送信元 IP と宛先 MAC は経路と近隣表から決まります。
-経路が `--device` の VLAN 子を通る場合は VLAN ID を自動で付け、PCP は 0 にします。
+経路が `--device` の 802.1Q VLAN 子を通る場合は VLAN ID を自動で付け、PCP は 0 にします。
+802.1ad などの VLAN プロトコルでは宛先だけの自動生成を拒否するため、`base_packet` にヘッダを指定してください。
 アドレス、MAC、VLAN の詳細を固定する場合は `base_packet` を返すプラグインを使います (`mixed.go` の `tcp_base` など)。
 `bytes` は十進文字列で指定し、k/m/g 接尾辞は使えません。
 

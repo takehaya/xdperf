@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -373,6 +374,36 @@ func TestTCPGroupKnobsBPF(t *testing.T) {
 			dev.HardwareAddr = net.HardwareAddr{2, 0, 0, 0, 0, 1}
 			x := &Xdperf{cfg: mixedConfig(), Device: dev, bpfSpec: spec, cpus: []int{0, 1}, Logger: zap.NewNop()}
 			x.cfg.Parallelism = 2
+			if !explicitBase {
+				for i, protocol := range []netlink.VlanProtocol{netlink.VLAN_PROTOCOL_8021Q, netlink.VLAN_PROTOCOL_8021AD} {
+					vlan := &netlink.Vlan{LinkAttrs: netlink.LinkAttrs{Name: fmt.Sprintf("vlan%d", i), ParentIndex: link.Index}, VlanId: 110 + i, VlanProtocol: protocol}
+					if err := netlink.LinkAdd(vlan); err != nil {
+						t.Fatal(err)
+					}
+					if err := netlink.LinkSetUp(vlan); err != nil {
+						t.Fatal(err)
+					}
+					addr, err := netlink.ParseAddr(fmt.Sprintf("192.0.%d.1/24", 3+i))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := netlink.AddrAdd(vlan, addr); err != nil {
+						t.Fatal(err)
+					}
+					peer := net.ParseIP(fmt.Sprintf("192.0.%d.2", 3+i))
+					if err := netlink.NeighSet(&netlink.Neigh{LinkIndex: vlan.Index, State: netlink.NUD_PERMANENT, IP: peer, HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 2}}); err != nil {
+						t.Fatal(err)
+					}
+					target, err := x.resolveTCPTarget(net.JoinHostPort(peer.String(), "5201"), 0)
+					if protocol == netlink.VLAN_PROTOCOL_8021AD {
+						if err == nil || !strings.Contains(err.Error(), "requires an 802.1Q VLAN child") {
+							t.Fatalf("802.1ad route accepted: %v", err)
+						}
+					} else if err != nil || target.vlanID != 110 || target.vlanPCP != 0 {
+						t.Fatalf("802.1Q route: target=%+v err=%v", target, err)
+					}
+				}
+			}
 			r := &guest.GeneratorProcessResponse{TemplateType: guest.GeneratorTemplateTypeVariable,
 				VariablePacketTemplate: guest.PacketVariantSet{Pattern: guest.VariantSelectionModeMixed, TCPPortBase: 12001}}
 			for i := range 2 {

@@ -138,6 +138,9 @@ func (x *Xdperf) resolveTCPTarget(destination string, mss int) (*tcpTarget, erro
 		if !ok || vlan.ParentIndex != x.Device.Index {
 			return nil, fmt.Errorf("TCP variant route via %s does not use device %s or its VLAN child", egressName, x.Device.Name)
 		}
+		if vlan.VlanProtocol != netlink.VLAN_PROTOCOL_8021Q {
+			return nil, fmt.Errorf("TCP variant route via %s requires an 802.1Q VLAN child; use base_packet for other VLAN protocols", egressName)
+		}
 		t.vlanID = uint16(vlan.VlanId)
 	}
 	macStr := plugin.ResolveNeighborMAC(nextHop.String(), egressName)

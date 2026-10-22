@@ -571,4 +571,5 @@ TCP 設定は `window_segs`、`mss`、`rto_ms`、`ip_id`、集合単位の `tcp_
 既定値は順に 32、MTU に合わせて自動、200 ms、`flow`、10000 である。
 `tcpflow.go` での設定名と使用例は [プラグイン README](../../plugins/tcpflow.go/README.md) を参照。
 `--tcp-mss`、`--tcp-rto`、`--tcp-vlan-id`、`--tcp-vlan-pcp` は responder 専用として残し、`--tcp-server` なしの明示指定は拒否する。
-送信側の VLAN は経路の VLAN 子から自動で決まり、詳細の固定は `base_packet` に指定する。
+送信側の VLAN は経路の 802.1Q VLAN 子から自動で決まる。
+802.1ad などは自動生成では拒否し、詳細の固定は `base_packet` に指定する。

@@ -96,7 +96,7 @@ xdperf-sink -listen 10.0.0.2:5201
 sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin --parallelism 4 \
   --cfg '{"dst_ip":"10.0.0.2","tcp_port":5201,"flows":64,"bytes":"1000000000"}'
 
-# IPv6, time-bounded; VLAN tags are inferred when the route uses a VLAN child.
+# IPv6, time-bounded; VLAN tags are inferred when the route uses an 802.1Q VLAN child.
 sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin --duration 30s \
   --cfg '{"dst_ip":"fd00::2","tcp_port":5201,"flows":16,"bytes":"0"}'
 
