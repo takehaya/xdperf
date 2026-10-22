@@ -745,6 +745,23 @@ static __always_inline int tcp_tx_build(struct xdp_md *ctx, const struct tcp_cfg
 #include "xdp_tcp_template.h"
 #include "xdp_tcp_template_ext.h"
 
+// Keep the mixed decision stack separate from the extended frame builder.
+struct tcp_mixed_decision {
+    struct tcp_tx_action act;
+    struct tcp_tx_extra extra;
+    __u64 now;
+};
+
+static __noinline int tcp_tx_decide_mixed(struct tcp_flow *f, const struct tcp_template *tmpl, struct tcp_stats *st,
+                                          struct tcp_mixed_decision *decision, int extended)
+{
+    // Drain may scan templates with different timestamp settings.
+    if (extended && mixed_has_timestamps)
+        decision->extra.timestamps = 0;
+    return tcp_tx_decide(f, &tmpl->cfg, st, decision->now, &decision->act, &decision->extra, extended,
+                         extended && mixed_has_timestamps && tmpl->timestamps, 1);
+}
+
 // Compile separate entry points so mixed selection adds no verifier paths
 // or map lookup overhead to the standalone TCP scan.
 static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, const int extended)
@@ -760,29 +777,40 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
         mixed = bpf_map_lookup_elem(&mixed_state_map, &zero);
         if (!mixed)
             return XDP_ABORTED;
-    } else if (cs->count == 0) {
+    }
+    if (cs->count == 0) {
         st->idle_iters++;
         return XDP_DROP;
     }
 
-    __u64 now = bpf_ktime_get_ns();
-    struct tcp_tx_action act = {0};
-    struct tcp_tx_extra extra = {0};
+    __u32 first = cs->first, count = cs->count;
+    __u32 *next = &cs->cursor;
+    if (mixed_mode && mixed->selected_group != 0xffffffff) {
+        __u32 key = mixed->selected_group;
+        struct mixed_group *group = bpf_map_lookup_elem(&mixed_group_map, &key);
+        if (!group)
+            return XDP_ABORTED;
+        first = group->first;
+        count = group->count;
+        next = &group->cursor;
+        if (!count) {
+            st->idle_iters++;
+            return XDP_DROP;
+        }
+    }
+
+    struct tcp_mixed_decision decision = {.now = bpf_ktime_get_ns()};
     struct tcp_flow *sel = NULL;
     int kind = TXA_NONE;
     struct tcp_template *tmpl = NULL;
 
-    for (int i = 0; i < (mixed_mode ? 1 : TCP_TX_SCAN); i++) {
+    for (int i = 0; i < TCP_TX_SCAN; i++) {
         __u32 idx;
-        if (mixed_mode) {
-            idx = mixed->selected_flow;
-        } else {
-            __u32 cursor = cs->cursor;
-            if (cursor >= cs->count)
-                cursor = 0;
-            cs->cursor = cursor + 1;
-            idx = cs->first + cursor * cs->stride;
-        }
+        __u32 cursor = *next;
+        if (cursor >= count)
+            cursor = 0;
+        *next = cursor + 1;
+        idx = first + cursor * cs->stride;
         if (idx >= MAX_TCP_FLOWS)
             continue;
         struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
@@ -795,8 +823,10 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
                 return XDP_ABORTED;
             cfg = &tmpl->cfg;
         }
-        kind = tcp_tx_decide(f, cfg, st, now, &act, &extra, extended, extended && mixed_has_timestamps && tmpl->timestamps,
-                             mixed_mode);
+        if (mixed_mode)
+            kind = tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
+        else
+            kind = tcp_tx_decide(f, cfg, st, decision.now, &decision.act, &decision.extra, 0, 0, 0);
         if (kind != TXA_NONE && kind != TXA_CLOSED) {
             sel = f;
             break;
@@ -811,23 +841,23 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
     int built;
     if (mixed_mode) {
         if (extended)
-            built = tcp_template_build_ext(ctx, tmpl, cs, &act, &extra);
+            built = tcp_template_build_ext(ctx, tmpl, cs, &decision.act, &decision.extra);
         else
-            built = tcp_template_build(ctx, tmpl, cs, &act);
+            built = tcp_template_build(ctx, tmpl, cs, &decision.act);
     } else
-        built = tcp_tx_build(ctx, cfg, cs, &act);
+        built = tcp_tx_build(ctx, cfg, cs, &decision.act);
     if (built >= 0 && extended)
-        built = tcp_template_finish(ctx, tmpl, &act, &extra);
-    if (built >= 0 && extended && mixed_has_payload && act.len) {
+        built = tcp_template_finish(ctx, tmpl, &decision.act, &decision.extra);
+    if (built >= 0 && extended && mixed_has_payload && decision.act.len) {
         __u32 id = tmpl->payload_id;
         const struct tcp_payload *p = bpf_map_lookup_elem(&tcp_payload_map, &id);
         if (!p) {
             built = -1;
         } else if (p->period) {
             __u32 offset = tmpl->cfg.l4_off + 20 + tmpl->data_len;
-            if (mixed_has_timestamps && extra.timestamps)
+            if (mixed_has_timestamps && decision.extra.timestamps)
                 offset += 12;
-            built = tcp_payload_write(ctx, offset, act.len, extra.stream_offset, p);
+            built = tcp_payload_write(ctx, offset, decision.act.len, decision.extra.stream_offset, p);
         }
     }
     if (built < 0) {
@@ -847,7 +877,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
         break;
     case TXA_DATA:
         st->data_segs++;
-        st->data_bytes += act.len;
+        st->data_bytes += decision.act.len;
         break;
     case TXA_FIN:
         st->fin_sent++;

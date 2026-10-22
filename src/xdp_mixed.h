@@ -21,7 +21,7 @@ struct mixed_state {
     __u64 tcp_opportunities;
     __u64 drain_opportunities;
     __u64 errors;
-    __u32 selected_flow;
+    __u32 selected_group;
 };
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);

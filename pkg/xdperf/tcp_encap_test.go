@@ -242,19 +242,13 @@ func testTCPEncapBPF(t *testing.T, profile string) {
 	if err := x.initTCPMaps(target, x.mixed.groups[0].variant.Base.Data); err != nil {
 		t.Fatal(err)
 	}
-	states := make([]coreelf.BpfMixedState, ebpf.MustPossibleCPU())
 	for i := range x.mixed.groups {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			var tmpl coreelf.BpfTcpTemplate
 			if err := objs.TcpTemplateMap.Lookup(uint32(i), &tmpl); err != nil {
 				t.Fatal(err)
 			}
-			for k := range states {
-				states[k].SelectedFlow = uint32(i)
-			}
-			if err := objs.MixedStateMap.Put(uint32(0), states); err != nil {
-				t.Fatal(err)
-			}
+			selectMixedTestFlow(t, objs, uint32(i))
 			for _, syn := range []bool{true, false} {
 				f := coreelf.BpfTcpFlow{TemplateId: uint32(i), State: tcpFlowEstablished, SrcPort: uint16(40000 + i), Iss: 100, SndUna: 101, SndNxt: 101, SndMax: 101, RcvNxt: 5001, SndWnd: 65535, Mss: tmpl.Cfg.Mss, BytesTarget: 3}
 				if syn {

@@ -7,7 +7,6 @@ import (
 	"net"
 	"testing"
 
-	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
@@ -272,13 +271,7 @@ func TestTCPReceiveTunnels(t *testing.T) {
 				if f.State != tcpFlowEstablished {
 					t.Fatalf("SYN: %+v", f)
 				}
-				states := make([]coreelf.BpfMixedState, ebpf.MustPossibleCPU())
-				for i := range states {
-					states[i].SelectedFlow = uint32(idx)
-				}
-				if e := objs.MixedStateMap.Put(uint32(0), states); e != nil {
-					t.Fatal(e)
-				}
+				selectMixedTestFlow(t, objs, uint32(idx))
 				tx := func() {
 					t.Helper()
 					a, out, e := objs.XdpTxTcpMixed.Test(bytes.Repeat([]byte{0xa5}, 2049))

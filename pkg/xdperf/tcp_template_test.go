@@ -6,7 +6,6 @@ import (
 	"net"
 	"testing"
 
-	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
@@ -164,19 +163,13 @@ func TestTCPTemplateBPF(t *testing.T) {
 	if err := x.initTCPMaps(target, base.Data); err != nil {
 		t.Fatal(err)
 	}
-	states := make([]coreelf.BpfMixedState, ebpf.MustPossibleCPU())
 	for i, g := range x.mixed.groups {
 		var tmpl coreelf.BpfTcpTemplate
 		if err := objs.TcpTemplateMap.Lookup(uint32(i), &tmpl); err != nil {
 			t.Fatal(err)
 		}
 		tt, _ := parseTCPBase(g.variant.Base)
-		for k := range states {
-			states[k].SelectedFlow = uint32(i)
-		}
-		if err := objs.MixedStateMap.Put(uint32(0), states); err != nil {
-			t.Fatal(err)
-		}
+		selectMixedTestFlow(t, objs, uint32(i))
 		for _, kind := range []string{"syn", "data", "tail", "fin", "retransmit"} {
 			f := coreelf.BpfTcpFlow{TemplateId: uint32(i), State: tcpFlowEstablished, SrcPort: uint16(40000 + i), Iss: 100, SndUna: 101, SndNxt: 101, SndMax: 101, RcvNxt: 5001, SndWnd: 65535, Mss: tmpl.Cfg.Mss, BytesTarget: 101, IpId: 0x1234}
 			opts, wantLen, flags := 4, 101, byte(0x18)
