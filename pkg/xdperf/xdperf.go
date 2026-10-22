@@ -40,6 +40,7 @@ type Xdperf struct {
 	pluginResponse  *guest.GeneratorProcessResponse
 	mixed           *mixedPlan
 	otlpMeter       metric.Meter
+	summary         *runSummary
 	cpus            []int // resolved CPU list for workers
 }
 
@@ -512,6 +513,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		nicStatsBefore = x.GetNICStats()
 	}
 
+	x.beginSummary()
 	var wg sync.WaitGroup
 	// Derive from the caller's context so a parent cancellation propagates to the
 	// workers and the stats goroutine (previously rooted at context.Background(),
@@ -597,7 +599,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	if firstErr != nil {
 		return fmt.Errorf("worker failed: %w", firstErr)
 	}
-	return nil
+	return x.writeSummary()
 }
 
 func (x *Xdperf) run(ctx context.Context, cpu int, xdpProg *ebpf.Program, runOpts ebpf.RunOptions, plan packetBatchPlan) error {

@@ -28,6 +28,7 @@ A required option such as `--device` can be supplied through its environment var
 | `--send`, `-s` | `XDPERF_SEND` | `false` |
 | `--duration`, `-t` | `XDPERF_DURATION` | `10s` |
 | `--tcp-flow-report` | `XDPERF_TCP_FLOW_REPORT` | `flows.csv` |
+| `--summary-json` | `XDPERF_SUMMARY_JSON` | `result.json` |
 | `--otlp-interval` | `XDPERF_OTLP_INTERVAL` | `5s` |
 | `--json`, `-j` (`probe`) | `XDPERF_JSON` | `true` |
 
@@ -97,6 +98,7 @@ in [TCP and mixed modes](#tcp-and-mixed-modes).
 | `--recv` | `-r` | No | `false` | Run in receive mode |
 | `--swap-resp` | `--swap` | No | `false` | Swap response packets (for echo server) |
 | `--show-nic-stats` | - | No | `false` | Show NIC-level statistics |
+| `--summary-json` | - | No | disabled | Write final statistics to a JSON file |
 | `--plugin` | `-p` | No | `simpleudp.tinygo` | Plugin name in format `<name>.<language>` |
 | `--plugin-path` | `-P` | No | `/usr/local/share/xdperf/plugins` | Directory containing plugin files |
 | `--plugin-language` | `-L` | No | (auto-detected) | Plugin language (`go`, `tinygo`, or `c`) |
@@ -391,6 +393,37 @@ sudo xdperf run --device eth0 --count 1m --cfgpath ./config.json
 ```
 
 **Note:** If both `--plugin-config` and `--plugin-config-path` are specified, `--plugin-config` takes precedence.
+
+#### `--summary-json`
+
+Write one JSON object at shutdown with `--summary-json result.json` (or `XDPERF_SUMMARY_JSON=result.json`).
+This works for clients, receive servers, and `--tcp-server`.
+The file is overwritten; its parent directory must exist.
+`-` is a literal filename, with no stdout shorthand.
+
+```shell
+sudo xdperf run --device eth0 --count 10k --summary-json result.json
+sudo xdperf run --device eth0 --send=false --recv --summary-json receive.json
+sudo xdperf run --device eth0 --tcp-server --duration 10s --summary-json tcp-server.json
+```
+
+All counter and rate values are JSON numbers with snake_case keys.
+`elapsed_seconds` measures the active run through shutdown (including TCP drain, excluding plugin initialization and JSON file writing).
+`tx_packets`, `tx_bytes`, `rx_packets`, `rx_bytes`, `diff_errors`, and `checksum_errors` use the existing packet statistics maps.
+`tx_pps`, `rx_pps`, `tx_bps`, and `rx_bps` are their averages over `elapsed_seconds`; bps uses bits per second without a 1024 divisor.
+The counters have the same scope as the existing statistics: packet TX excludes TCP flow traffic; mixed RX counts outer UDP packets.
+TCP wire byte totals are not measured.
+
+For TCP flow clients, `tcp` contains the final TCP counters, including `flows`, `done`, `failed`, `retransmits`, `window_stalls`, and `data_bytes_sent` (payload bytes).
+`mixed` contains the existing dispatch, packet/TCP TX, RX reply, and RX diagnostic counters.
+For `--tcp-server`, `tcp_server` contains its final counters, including `accepted`, `closed`, `closed_implicit`, `active`, `bytes` (received payload), and errors; the top-level packet counters and rates are zero because this mode uses a separate statistics map.
+`nic` is included when the packet client uses `--show-nic-stats`, with the same interface-wide counters as its final log.
+Sections that do not apply are omitted; zero counters within a section are included.
+
+The file is written after successful completion, including handled SIGINT/SIGTERM or context cancellation.
+Initialization errors, worker errors, failed TCP flows, and final statistics/report errors skip the JSON output and leave any previous file untouched.
+SIGKILL and crashes cannot produce a summary.
+A JSON statistics read or file write failure returns a nonzero exit status; a file write failure may leave a partial file.
 
 #### `--show-nic-stats`
 

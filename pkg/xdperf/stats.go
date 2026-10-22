@@ -11,8 +11,8 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
-	"golang.org/x/text/message"
 	"go.uber.org/zap"
+	"golang.org/x/text/message"
 )
 
 type TrafficType string
@@ -190,6 +190,13 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 		nicTxDelta := safeDelta(nicStatsAfter.TxXdpPackets, nicStatsBefore.TxXdpPackets)
 		nicDropDelta := safeDelta(nicStatsAfter.TxXdpDropped, nicStatsBefore.TxXdpDropped)
 
+		if x.summary != nil {
+			x.summary.NIC = &nicSummary{TxPackets: nicTxDelta, TxDropped: nicDropDelta}
+			if sumPackets > nicTxDelta {
+				x.summary.NIC.XDPToNICDropped = sumPackets - nicTxDelta
+				x.summary.NIC.DropRatePercent = float64(sumPackets-nicTxDelta) / float64(sumPackets) * 100
+			}
+		}
 		fields := []zap.Field{
 			zap.Uint64("nic_tx_packets", nicTxDelta),
 			zap.Uint64("nic_tx_dropped", nicDropDelta),

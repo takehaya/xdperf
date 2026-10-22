@@ -280,3 +280,19 @@ func TestProbeEnv(t *testing.T) {
 		t.Fatal("probe action was not called")
 	}
 }
+
+func TestSummaryJSONArgs(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("XDPERF_SUMMARY_JSON", "env.json")
+	for _, mode := range [][]string{nil, {"--send=false", "--recv"}, {"--tcp-server"}} {
+		args := append([]string{"--device", "lo"}, mode...)
+		cfg, err := parseRunArgs(args...)
+		if err != nil || cfg.SummaryJSON != "env.json" {
+			t.Fatalf("env: cfg=%+v err=%v", cfg, err)
+		}
+		cfg, err = parseRunArgs(append(args, "--summary-json", "flag.json")...)
+		if err != nil || cfg.SummaryJSON != "flag.json" {
+			t.Fatalf("flag: cfg=%+v err=%v", cfg, err)
+		}
+	}
+}

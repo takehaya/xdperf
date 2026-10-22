@@ -24,17 +24,29 @@ func (x *Xdperf) StartServer(ctx context.Context) error {
 		x.Logger.Info("detaching XDP program")
 		return l.Close()
 	})
-	go x.ShowStats(ctx, TrafficTypeRX)
+	x.beginSummary()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	statsDone := make(chan struct{})
+	go func() { defer close(statsDone); x.ShowStats(ctx, TrafficTypeRX) }()
 	// Wait for termination signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	select {
 	case <-ctx.Done():
 		x.Logger.Info("context cancelled, shutting down server")
 	case sig := <-sigCh:
 		x.Logger.Info("received signal, shutting down server", zap.String("signal", sig.String()))
 	}
-	return nil
+	cancel()
+	<-statsDone
+	if x.summary != nil {
+		if err := l.Close(); err != nil {
+			return fmt.Errorf("detach RX before summary JSON: %w", err)
+		}
+	}
+	return x.writeSummary()
 }
 
 func (x *Xdperf) runRxPacket(_ context.Context) (link.Link, error) {

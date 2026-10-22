@@ -572,6 +572,7 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		BatchSize: x.cfg.BatchSize,
 	}
 
+	x.beginSummary()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	statsDone := make(chan struct{})
@@ -785,13 +786,44 @@ loop:
 		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d)",
 			s.Failed, x.mixed.flows, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts)
 	}
-	return nil
+	return x.writeSummary()
 }
 
 func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpStats, error) {
 	s, err := x.readTCPStats(recs)
 	if err != nil {
 		return s, fmt.Errorf("failed to read tcp stats: %w", err)
+	}
+	if x.summary != nil {
+		x.summary.TCP = &tcpSummary{
+			Flows:              x.mixed.flows,
+			SynSent:            s.SynSent,
+			Established:        s.Established,
+			Done:               s.Done,
+			Failed:             s.Failed,
+			RstRcvd:            s.RstRcvd,
+			DataSegments:       s.DataSegs,
+			DataBytesSent:      s.DataBytes,
+			BytesAcked:         s.BytesAcked,
+			Retransmits:        s.RtxSegs,
+			RetransmitsTimeout: s.RtxTimeouts,
+			RetransmitsDupack:  s.RtxDupack,
+			AcksRcvd:           s.AcksRcvd,
+			AcksSent:           s.AcksSent,
+			WindowStalls:       s.WindowStalls,
+			IdleIterations:     s.IdleIters,
+			Unexpected:         s.Unexpected,
+			BuildErrors:        s.BuildErrors,
+			FailedEstablished:  s.FailedEst,
+			Skipped:            s.Skipped,
+			Aborted:            s.Aborted,
+			RstSent:            s.RstSent,
+			RetransmitGiveups:  s.RtxGiveups,
+			FinWait2Timeouts:   s.FinWait2Timeouts,
+			AckProbes:          s.AckProbes,
+			WindowProbes:       s.WindowProbes,
+			ChallengeAcks:      s.ChallengeAcks,
+		}
 	}
 	x.Logger.Info("tcp final statistics",
 		zap.Int("flows", x.mixed.flows),
