@@ -432,6 +432,26 @@ func tcpActiveFlows(s coreelf.BpfTcpStats) uint64 {
 	return s.Established - gone
 }
 
+func (x *Xdperf) tcpPortsExhausted() (bool, error) {
+	if !x.mixed.untilDuration {
+		return false, nil
+	}
+	// The last connection of every slot must have started before all ports
+	// are consumed; a closed last connection then needs an unavailable refill.
+	exhausted := false
+	for i := max(0, x.mixed.connections-x.mixed.flows); i < x.mixed.connections; i++ {
+		var f coreelf.BpfTcpFlow
+		if err := x.bpfobjs.TcpFlowMap.Lookup(uint32(i), &f); err != nil {
+			return false, fmt.Errorf("tcp_flow_map[%d]: %w", i, err)
+		}
+		if f.Started == 0 {
+			return false, nil
+		}
+		exhausted = exhausted || f.State == tcpFlowDone || f.State == tcpFlowFailed
+	}
+	return exhausted, nil
+}
+
 func (x *Xdperf) showTCPStats(ctx context.Context, started time.Time) {
 	recs := make([]coreelf.BpfTcpStats, ebpf.MustPossibleCPU())
 	p := message.NewPrinter(message.MatchLanguage("en"))
@@ -722,8 +742,12 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		if draining {
 			return
 		}
-		if x.mixed.untilDuration && allClosed() {
-			portExhausted = true
+		var err error
+		portExhausted, err = x.tcpPortsExhausted()
+		if err != nil {
+			once.Do(func() { firstErr = err })
+		}
+		if portExhausted {
 			reason = "port_exhausted"
 		}
 		draining = true
