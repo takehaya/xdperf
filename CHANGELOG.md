@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.21.0](https://github.com/takehaya/xdperf/compare/v0.20.0...v0.21.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove --tcp and client-only TCP flags. Explicit MSS, RTO and VLAN flags now require --tcp-server, including environment values. Use tcpflow.go plugin settings for TCP senders.
+
+### 🎉 Features
+
+* configure mixed TCP flow knobs from plugins ([#143](https://github.com/takehaya/xdperf/issues/143)) ([1ccd6e3](https://github.com/takehaya/xdperf/commit/1ccd6e334da7ac189d7937f6834e2f1b766d234b))
+* remove the standalone TCP client ([#144](https://github.com/takehaya/xdperf/issues/144)) ([99151d3](https://github.com/takehaya/xdperf/commit/99151d34859a57bf0a74c06ecf773d800e307d3b))
+
+
+### ⚡ Performance Improvements
+
+* scan up to eight owned flows per mixed TCP opportunity ([#141](https://github.com/takehaya/xdperf/issues/141)) ([48e36ad](https://github.com/takehaya/xdperf/commit/48e36ad13e99a108013cbca6fab263ea88625fd7))
+
+
+### 📝 Documentation
+
+* explain TCP responder VLAN flags and refresh stale comments ([#145](https://github.com/takehaya/xdperf/issues/145)) ([c463012](https://github.com/takehaya/xdperf/commit/c4630121864bdf07c918db80dd0c9a0146b927ee))
+
 ## [0.20.0](https://github.com/takehaya/xdperf/compare/v0.19.2...v0.20.0) (2026-10-22)
 
 
