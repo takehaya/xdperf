@@ -433,6 +433,9 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 	// LAST_ACK flow (final ACK lost) is closed and a SYN_RCVD one timed out.
 	if err := x.sweepTCPServerFlows(sw, 0); err != nil {
 		x.Logger.Warn("tcp server flow sweep failed", zap.Error(err))
+		if x.summary != nil {
+			return fmt.Errorf("summary JSON TCP server sweep: %w", err)
+		}
 	}
 	recs := make([]coreelf.BpfTcpSrvStats, ebpf.MustPossibleCPU())
 	s, err := x.readTCPServerStats(recs)
