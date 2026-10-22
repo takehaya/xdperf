@@ -740,6 +740,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         return XDP_DROP;
     }
 
+    kind = decision.act.kind;
     __sync_fetch_and_add(&sel->tx_pkts, 1);
     if (kind == TXA_DATA)
         __sync_fetch_and_add(&sel->tx_data, 1);
