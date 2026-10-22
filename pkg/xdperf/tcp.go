@@ -722,6 +722,10 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		if draining {
 			return
 		}
+		if x.mixed.untilDuration && allClosed() {
+			portExhausted = true
+			reason = "port_exhausted"
+		}
 		draining = true
 		if loadEnded.IsZero() {
 			loadEnded = time.Now()
@@ -792,12 +796,7 @@ loop:
 				}
 			}
 			if lingerCh == nil && allClosed() {
-				if !draining && x.mixed.untilDuration {
-					portExhausted = true
-					startDrain("port_exhausted")
-				} else {
-					startDrain("all flows closed")
-				}
+				startDrain("all flows closed")
 				lingerCh = time.After(linger)
 			}
 		case <-lingerCh:
