@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"runtime"
@@ -39,6 +40,7 @@ const (
 	tfFinWait2    = 4
 	tfDone        = 5
 	tfFailed      = 6
+	tfSkipped     = 7
 
 	tsSynRcvd     = 1
 	tsEstablished = 2
@@ -1631,6 +1633,68 @@ func TestTcpRepeatedConnections(t *testing.T) {
 			}
 			if got := clientStats(t, objs).PortExhausted; got != tc.wantExhausted {
 				t.Fatalf("port_exhausted=%d", got)
+			}
+		})
+	}
+}
+
+func TestTcpRepeatedStopFlags(t *testing.T) {
+	for _, stopGlobal := range []bool{false, true} {
+		t.Run(fmt.Sprint(stopGlobal), func(t *testing.T) {
+			objs := loadTCPObjs(t)
+			frame := setupClient(t, objs, clientOpts{}, BpfTcpFlow{State: tfDone}, BpfTcpFlow{State: tfClosed, Iss: 1000}, BpfTcpFlow{State: tfClosed, Iss: 2000})
+			var cfg BpfTcpCfg
+			if err := objs.TcpCfgMap.Lookup(uint32(0), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			cfg.SlotCount = 1
+			cfg.UntilDuration = 1
+			if stopGlobal {
+				cfg.Drain = 1
+			}
+			if err := objs.TcpCfgMap.Put(uint32(0), cfg); err != nil {
+				t.Fatal(err)
+			}
+			var tmpl BpfTcpTemplate
+			if err := objs.TcpTemplateMap.Lookup(uint32(0), &tmpl); err != nil {
+				t.Fatal(err)
+			}
+			if !stopGlobal {
+				tmpl.Cfg.Drain = 1
+			} // deliberately disagree during a map update
+			if err := objs.TcpTemplateMap.Put(uint32(0), tmpl); err != nil {
+				t.Fatal(err)
+			}
+			states := make([]BpfTcpCpuState, ebpf.MustPossibleCPU())
+			for i := range states {
+				states[i] = BpfTcpCpuState{Count: 1, Stride: 1}
+			}
+			if err := objs.TcpCpuStateMap.Put(uint32(0), states); err != nil {
+				t.Fatal(err)
+			}
+			if err := objs.MixedCfgMap.Put(uint32(0), BpfMixedCfg{Workers: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if err := objs.TcpSlotMap.Put(uint32(0), uint32(0)); err != nil {
+				t.Fatal(err)
+			}
+			ret, _ := runProg(t, objs.XdpTxTcpMixed, frame)
+			if stopGlobal {
+				if ret != xdpDrop || getFlow(t, objs, 1).State != tfClosed {
+					t.Fatal("global drain allowed refill")
+				}
+				if err := objs.TcpSlotMap.Put(uint32(0), uint32(1)); err != nil {
+					t.Fatal(err)
+				}
+				ret, _ = runProg(t, objs.XdpTxTcpMixed, frame)
+				if ret != xdpDrop || getFlow(t, objs, 1).State != tfSkipped {
+					t.Fatal("global drain allowed first SYN")
+				}
+			} else if ret != xdpTx || getFlow(t, objs, 1).State != tfSynSent || getFlow(t, objs, 2).State != tfClosed {
+				t.Fatal("template stop flags consumed unstarted connections")
+			}
+			if s := clientStats(t, objs); s.PortExhausted != 0 {
+				t.Fatalf("false port exhaustion: %+v", s)
 			}
 		})
 	}

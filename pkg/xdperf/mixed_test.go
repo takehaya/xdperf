@@ -355,3 +355,55 @@ func TestTCPConnectionsUnusedSlotsNeedNoPorts(t *testing.T) {
 		t.Fatalf("plan: %+v", x.mixed)
 	}
 }
+
+func TestTCPConnectionsIgnoresDerivedPacketCount(t *testing.T) {
+	for _, connections := range []uint32{0, 1000} {
+		resp := mixedResponse()
+		resp.VariablePacketTemplate.Variants = resp.VariablePacketTemplate.Variants[1:]
+		resp.VariablePacketTemplate.Variants[0].TCPFlow.Connections = ptrConnections(connections)
+		cfg := mixedConfig()
+		cfg.Count = 10000
+		cfg.CountFromDuration = true
+		cfg.Duration = 10 * time.Second
+		cfg.PPS = 1000
+		x := &Xdperf{cfg: cfg, Logger: zap.NewNop()}
+		if err := x.prepareMixed(resp); err != nil {
+			t.Fatal(err)
+		}
+		if x.cfg.Count != 0 || x.cfg.PPS != 1000 || x.cfg.Duration != 10*time.Second {
+			t.Fatalf("config: %+v", x.cfg)
+		}
+	}
+}
+
+func TestTCPConnectionsIgnoresDerivedBudgetErrors(t *testing.T) {
+	for _, count := range []uint64{0, 1, math.MaxUint64} {
+		resp := mixedResponse()
+		resp.VariablePacketTemplate.Variants = resp.VariablePacketTemplate.Variants[1:]
+		resp.VariablePacketTemplate.Variants[0].TCPFlow.Connections = ptrConnections(0)
+		budgetErr := fmt.Errorf("invalid derived packet budget")
+		cfg := mixedConfig()
+		cfg.Count = count
+		cfg.CountFromDuration = true
+		cfg.DurationCountError = budgetErr
+		cfg.Duration = time.Second
+		cfg.PPS = 1
+		cfg.Parallelism = 4
+		if err := cfg.validateRunBounds(nil); err != budgetErr {
+			t.Fatalf("packet budget error was ignored: %v", err)
+		}
+		if err := cfg.validateRunBounds(&mixedPlan{}); err != budgetErr {
+			t.Fatalf("legacy TCP budget error was ignored: %v", err)
+		}
+		x := &Xdperf{cfg: cfg, Logger: zap.NewNop()}
+		if err := x.prepareMixed(resp); err != nil {
+			t.Fatal(err)
+		}
+		if err := x.cfg.validateRunBounds(x.mixed); err != nil {
+			t.Fatal(err)
+		}
+		if x.cfg.Count != 0 {
+			t.Fatal("derived packet budget was retained")
+		}
+	}
+}

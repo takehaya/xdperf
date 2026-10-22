@@ -115,7 +115,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 			return fmt.Errorf("TCP variant %d requires flows and cannot contain checksums", i)
 		}
 		if f.Connections != nil {
-			if len(set.Variants) != 1 || x.cfg.Count != 0 {
+			if len(set.Variants) != 1 || (x.cfg.Count != 0 && !x.cfg.CountFromDuration) {
 				return fmt.Errorf("connections requires a single TCP variant and cannot be used with --count")
 			}
 			plan.repeat = true
@@ -239,8 +239,11 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	if !plan.repeat {
 		plan.connections = plan.flows
 	}
-	if x.cfg.Count > math.MaxInt64 {
+	if x.cfg.Count > math.MaxInt64 && !(plan.repeat && x.cfg.CountFromDuration) {
 		return fmt.Errorf("mixed --count must be <= %d", int64(math.MaxInt64))
+	}
+	if plan.repeat && x.cfg.CountFromDuration {
+		x.cfg.Count = 0
 	}
 	x.tcpVariantBytes, x.mixed = targets, plan
 	x.warnMixedWorkers()
@@ -380,6 +383,9 @@ func (x *Xdperf) readMixedRXStats() (mixedRXTotals, error) {
 
 // validateRunBounds needs the plugin response to distinguish finite TCP-only runs.
 func (c *Config) validateRunBounds(mixed *mixedPlan) error {
+	if c.DurationCountError != nil && (mixed == nil || !mixed.repeat) {
+		return c.DurationCountError
+	}
 	if (mixed == nil || mixed.packetWeight != 0) && c.Count == 0 && c.Duration == 0 {
 		return fmt.Errorf("either --count or --duration must be specified")
 	}

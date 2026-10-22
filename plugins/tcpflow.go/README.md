@@ -25,7 +25,7 @@ Zero or omitted tuning fields use the defaults below.
 | `mss` | automatic | MSS before subtracting TCP data options, 64..65535; automatic sizing respects MTU/frame limits |
 | `rto_ms` | 200 | Positive retransmission timeout in milliseconds |
 | `ip_id` | `flow` | IPv4 ID mode: `flow` or `shared`; empty uses the default |
-| `port_base` | 10000 | First source port for the entire set; all flows must fit through port 65535 |
+| `port_base` | 10000 | First source port for the entire set; all connection attempts must fit through port 65535 |
 
 The host uses the largest group RTO for linger and drain timeout.
 Retry counts remain engine constants.

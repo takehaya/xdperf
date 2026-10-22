@@ -430,8 +430,13 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
 {
     int kind = TXA_NONE;
     __u64 rto = cfg->rto_ns;
-    __u8 drain = cfg->drain;
-    __u8 abort = cfg->abort;
+    // Scheduling and TCP decisions share one stop flag, even during template updates.
+    __u32 zero = 0;
+    struct tcp_cfg *global = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
+    if (!global)
+        return TXA_NONE;
+    __u8 drain = global->drain;
+    __u8 abort = global->abort;
 
     bpf_spin_lock(&f->lock);
     a->src_port = f->src_port;
@@ -832,7 +837,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
     default:
         break;
     }
-    if (!cfg->drain && !cfg->abort) {
+    if (!global->drain && !global->abort) {
         struct pkt_state *ps = bpf_map_lookup_elem(&pkt_state_map, &zero);
         if (ps && ps->budget)
             ps->budget--;

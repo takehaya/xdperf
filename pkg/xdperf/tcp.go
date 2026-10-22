@@ -385,6 +385,9 @@ func (x *Xdperf) updateTCPCfg(fn func(*coreelf.BpfTcpCfg)) error {
 		return err
 	}
 	fn(&cfg)
+	if err := x.bpfobjs.TcpCfgMap.Put(&zero, &cfg); err != nil {
+		return err
+	}
 	for _, id := range x.mixed.templateIDs() {
 		var v coreelf.BpfTcpTemplate
 		if err := x.bpfobjs.TcpTemplateMap.Lookup(id, &v); err != nil {
@@ -395,7 +398,7 @@ func (x *Xdperf) updateTCPCfg(fn func(*coreelf.BpfTcpCfg)) error {
 			return err
 		}
 	}
-	return x.bpfobjs.TcpCfgMap.Put(&zero, &cfg)
+	return nil
 }
 
 // readTCPStats sums tcp_stats_map over all CPUs.
@@ -722,12 +725,14 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 			return
 		}
 		draining = true
-		loadEnded = time.Now()
-		loadStats, err = x.readTCPStats(recs)
-		if err != nil {
-			x.Logger.Warn("failed to read load statistics", zap.Error(err))
+		if loadEnded.IsZero() {
+			loadEnded = time.Now()
+			loadStats, err = x.readTCPStats(recs)
+			if err != nil {
+				x.Logger.Warn("failed to read load statistics", zap.Error(err))
+			}
+			stopReason = reason
 		}
-		stopReason = reason
 		if countReached {
 			lingerCh = nil
 		}
