@@ -21,7 +21,7 @@ for workers in ${MIXED_WORKERS:-1 2}; do
     report="${XDPERF_EXAMPLE_RUNDIR}/mixed-${mode}-${workers}.csv"
     TX_LOG="${XDPERF_EXAMPLE_RUNDIR}/mixed-${mode}-${workers}.log"
     config="$(python3 "${TCP_PY_DIR}/config.py" mixed "$TX_IP4" "$RX_IP4" "$mac" "$small_bytes" "$large_bytes" "$DST_PORT")"
-    run_tcp_plugin "$config" "$report" --recv "${run_args[@]}" --pps 2000 --parallelism "$workers" --tcp-mss 1024 --tcp-window 8
+    run_tcp_plugin "$config" "$report" --recv "${run_args[@]}" --pps 2000 --parallelism "$workers"
     sleep .2
     kill -TERM "$TCP_HELPER_PID"
     wait "$TCP_HELPER_PID"

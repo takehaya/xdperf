@@ -3,9 +3,12 @@ package xdperf
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"testing"
+	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
@@ -301,9 +304,146 @@ func TestTCPTemplateMSS(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = x.templateMSS(target, tc.opts)
+			err = x.templateMSS(target, x.cfg.TCPMSS, tc.opts)
 			if (err != nil) != tc.bad || (!tc.bad && int(target.mss) != tc.want) {
 				t.Fatalf("MSS %d err %v, want %d error %v", target.mss, err, tc.want, tc.bad)
+			}
+		})
+	}
+}
+
+func TestTCPGroupKnobsBPF(t *testing.T) {
+	n, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 2 {
+		t.Skip("requires two possible CPUs for worker completion accounting")
+	}
+	for _, explicitBase := range []bool{false, true} {
+		t.Run(fmt.Sprint("base=", explicitBase), func(t *testing.T) {
+			spec, err := coreelf.LoadBpf()
+			if err != nil {
+				t.Fatal(err)
+			}
+			dev, err := net.InterfaceByName("lo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			dev.MTU = 1500
+			dev.HardwareAddr = net.HardwareAddr{2, 0, 0, 0, 0, 1}
+			x := &Xdperf{cfg: mixedConfig(), Device: dev, bpfSpec: spec, cpus: []int{0, 1}, Logger: zap.NewNop()}
+			x.cfg.Parallelism = 2
+			x.cfg.TCPWindow, x.cfg.TCPMSS, x.cfg.TCPRTO, x.cfg.TCPIPID = 11, 1200, 450*time.Millisecond, "shared"
+			if !explicitBase {
+				x.cfg.TCPDstMAC = "02:00:00:00:00:02"
+			}
+			r := &guest.GeneratorProcessResponse{TemplateType: guest.GeneratorTemplateTypeVariable,
+				VariablePacketTemplate: guest.PacketVariantSet{Pattern: guest.VariantSelectionModeMixed, TCPPortBase: 12001}}
+			for i := range 2 {
+				f := &guest.TCPFlowVariant{Destination: fmt.Sprintf("127.0.0.%d:5201", i+2),
+					DataOptions: []byte{1, 1, 1, 1}, Flows: []guest.TCPFlow{{Bytes: "1000"}}}
+				if i == 0 {
+					f.WindowSegs, f.MSS, f.RTOMillis, f.IPID = 3, 900, 75, "flow"
+				}
+				v := guest.PacketVariant{Kind: "tcp_flow", Weight: 1, TCPFlow: f}
+				if explicitBase {
+					v.Base = tcpTestBase(false, 0)
+					v.Base.Data[33] += byte(i)
+					f.Destination = ""
+				}
+				r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants, v)
+			}
+			if err := x.prepareMixed(r); err != nil {
+				t.Fatal(err)
+			}
+			x.bpfobjs = loadMixedTestObjects(t, x.mixed.features)
+			var target *tcpTarget
+			var frame []byte
+			if explicitBase {
+				target, err = parseTCPBase(x.mixed.groups[0].variant.Base)
+				frame = x.mixed.groups[0].variant.Base.Data
+			} else {
+				resolver := &Xdperf{cfg: x.cfg, Device: dev, bpfSpec: spec, Logger: x.Logger}
+				resolver.cfg.TCPMSS = x.mixed.groups[0].mss
+				target, err = resolver.resolveTCPTarget()
+				if err == nil {
+					frame, err = buildTCPTemplate(target, uint16(x.cfg.TCPPortBase))
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := x.initTCPMaps(target, frame); err != nil {
+				t.Fatal(err)
+			}
+			if err := x.initMixedMaps(); err != nil {
+				t.Fatal(err)
+			}
+			var global coreelf.BpfTcpCfg
+			if err := x.bpfobjs.TcpCfgMap.Lookup(uint32(0), &global); err != nil {
+				t.Fatal(err)
+			}
+			if global.PortBase != 12001 || global.FlowCount != 2 {
+				t.Fatalf("global port range: %+v", global)
+			}
+			for i := uint32(0); i < 2; i++ {
+				var tmpl coreelf.BpfTcpTemplate
+				if err := x.bpfobjs.TcpTemplateMap.Lookup(i, &tmpl); err != nil {
+					t.Fatal(err)
+				}
+				wantMSS, wantWindow, wantRTO, wantID := uint16(896), uint32(3), uint64(75*time.Millisecond), uint8(0)
+				if i == 1 {
+					wantMSS, wantWindow, wantRTO, wantID = 1196, 11, uint64(450*time.Millisecond), 1
+				}
+				if tmpl.Cfg.Mss != wantMSS || tmpl.Cfg.WindowSegs != wantWindow || tmpl.Cfg.RtoNs != wantRTO || tmpl.Cfg.IpIdShared != wantID {
+					t.Fatalf("group %d settings: %+v", i, tmpl.Cfg)
+				}
+				selectMixedTestFlow(t, x.bpfobjs, i)
+				action, out, err := x.bpfobjs.XdpTxTcpMixed.Test(make([]byte, 2049))
+				l4 := int(tmpl.Cfg.L4Off)
+				if err != nil || action != 3 {
+					t.Fatalf("TX %d: action=%d err=%v", i, action, err)
+				}
+				if binary.BigEndian.Uint16(out[l4:]) != 12001+uint16(i) || binary.BigEndian.Uint16(out[l4+22:]) != wantMSS {
+					t.Fatalf("TX %d lost port base or MSS", i)
+				}
+				flows, err := x.readTCPFlows(2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f := flows[i]
+				if f.SrcPort != 12001+uint16(i) {
+					t.Fatalf("flow %d source port: %d", i, f.SrcPort)
+				}
+				// Complete via RX and check PR1's worker slot derived from port base.
+				f.State, f.SndUna, f.SndNxt, f.SndMax, f.RcvNxt = tcpFlowFinWait2, 101, 101, 101, 5001
+				if err := x.bpfobjs.TcpFlowMap.Put(i, f); err != nil {
+					t.Fatal(err)
+				}
+				reply := tcpTestBase(false, 0).Data
+				copy(reply[26:30], out[30:34])
+				copy(reply[30:34], out[26:30])
+				binary.BigEndian.PutUint16(reply[16:], 40)
+				binary.BigEndian.PutUint16(reply[34:], tmpl.Cfg.DstPort)
+				binary.BigEndian.PutUint16(reply[36:], f.SrcPort)
+				binary.BigEndian.PutUint32(reply[38:], 5001)
+				binary.BigEndian.PutUint32(reply[42:], 101)
+				reply[47] = 0x11
+				action, _, err = x.bpfobjs.XdpRxTcpMixed.Test(reply)
+				if err != nil || action != 3 {
+					t.Fatalf("RX %d: action=%d err=%v", i, action, err)
+				}
+				if err := x.bpfobjs.TcpFlowMap.Lookup(i, &f); err != nil {
+					t.Fatal(err)
+				}
+				var closed uint32
+				if err := x.bpfobjs.MixedClosedMap.Lookup(i, &closed); err != nil {
+					t.Fatal(err)
+				}
+				if f.State != tcpFlowDone || closed != 1 {
+					t.Fatalf("RX %d state=%d closed=%d", i, f.State, closed)
+				}
 			}
 		})
 	}

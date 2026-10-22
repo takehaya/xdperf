@@ -20,10 +20,15 @@ func plugin_init(_, _, _, _ uint32) int32 {
 func plugin_process(_, _, _, _ uint32) int32 {
 	req := goshim.PluginGeneratorProcessRequest[struct {
 		guest.BaseGeneratorRequest
-		DstIP   string `json:"dst_ip" default:"192.168.110.2"`
-		TCPPort uint16 `json:"tcp_port" default:"5201"`
-		Flows   uint16 `json:"flows" default:"4"`
-		Bytes   string `json:"bytes" default:"65536"`
+		WindowSegs uint32 `json:"window_segs"`
+		MSS        uint16 `json:"mss"`
+		RTOMillis  uint32 `json:"rto_ms"`
+		IPID       string `json:"ip_id"`
+		PortBase   uint16 `json:"port_base"`
+		DstIP      string `json:"dst_ip" default:"192.168.110.2"`
+		TCPPort    uint16 `json:"tcp_port" default:"5201"`
+		Flows      uint16 `json:"flows" default:"4"`
+		Bytes      string `json:"bytes" default:"65536"`
 	}]()
 	flows := make([]guest.TCPFlow, req.Flows)
 	for i := range flows {
@@ -33,12 +38,14 @@ func plugin_process(_, _, _, _ uint32) int32 {
 	goshim.PluginGeneratorProcessResponse(guest.GeneratorProcessResponse{
 		TemplateType: guest.GeneratorTemplateTypeVariable,
 		VariablePacketTemplate: guest.PacketVariantSet{
-			Pattern: guest.VariantSelectionModeMixed,
+			Pattern:     guest.VariantSelectionModeMixed,
+			TCPPortBase: req.PortBase,
 			Variants: []guest.PacketVariant{{
 				Kind: "tcp_flow", Weight: 1,
 				TCPFlow: &guest.TCPFlowVariant{
 					Destination: net.JoinHostPort(req.DstIP, strconv.Itoa(int(req.TCPPort))),
 					Flows:       flows,
+					WindowSegs:  req.WindowSegs, MSS: req.MSS, RTOMillis: req.RTOMillis, IPID: req.IPID,
 				},
 			}},
 		},

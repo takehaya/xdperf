@@ -127,6 +127,9 @@ type TemplateRange struct {
 // used to select among them. A set containing TCP flows requires mixed mode
 // and at most 16 variants in total. Packet variants are optional.
 type PacketVariantSet struct {
+	// TCPPortBase is shared by all TCP groups; zero uses --tcp-port-base (including its default).
+	TCPPortBase uint16 `json:"tcp_port_base,omitempty"`
+
 	// List of packet variants.
 	Variants []PacketVariant `json:"variants"`
 
@@ -207,6 +210,13 @@ type GeneratorCleanupResponse struct {
 // The engine owns TCP sequence numbers, flags, windows and checksums.
 // Destinations may differ between groups. Byte slices serialize as base64 JSON.
 type TCPFlowVariant struct {
+	// Zero values use the corresponding CLI value, including its default.
+	WindowSegs uint32 `json:"window_segs,omitempty"`
+	MSS        uint16 `json:"mss,omitempty"`
+	RTOMillis  uint32 `json:"rto_ms,omitempty"`
+	// IPID is "flow" or "shared"; empty uses --tcp-ip-id (including its default).
+	IPID string `json:"ip_id,omitempty"`
+
 	// Timestamps offers TCP timestamps on SYN and uses them after negotiation.
 	Timestamps bool `json:"timestamps,omitempty"`
 	// PayloadPattern repeats at the 64-bit stream offset, including retransmits.

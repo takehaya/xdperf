@@ -54,8 +54,8 @@ jobs:
         run: |
           make -C plugins/vxlan.c
           test -s out/bin/vxlan.c.wasm
-      - name: Build mixed variant plugin for integration tests
-        run: make make_outdir mixed.go
+      - name: Build TCP variant plugins for integration tests
+        run: make make_outdir mixed.go tcpflow.go
       - name: go test
         run: go test -exec "sudo -E" -race -covermode=atomic -coverprofile=coverage.out -v ./...
       - name: Upload coverage reports to Codecov

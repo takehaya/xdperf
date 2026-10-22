@@ -34,7 +34,8 @@ def flow_config(dst_mac, src_ip, dst_ip, frame, **features):
 
 def mixed(args):
     return dict(src_ip=args.src_ip, dst_ip=args.dst_ip, dst_mac=args.dst_mac,
-        small_bytes=args.small_bytes, large_bytes=args.large_bytes, tcp_port=int(args.tcp_port))
+        small_bytes=args.small_bytes, large_bytes=args.large_bytes, tcp_port=int(args.tcp_port),
+        window_segs=8, mss=1024)
 
 
 def template(args):

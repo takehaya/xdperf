@@ -224,3 +224,72 @@ func TestMixedCountRange(t *testing.T) {
 		t.Fatalf("expected signed count range error, got %v", err)
 	}
 }
+
+func TestMixedTCPKnobs(t *testing.T) {
+	for name, mutate := range map[string]func(*guest.TCPFlowVariant){
+		"window overflow": func(f *guest.TCPFlowVariant) { f.WindowSegs = 65536 },
+		"small MSS":       func(f *guest.TCPFlowVariant) { f.MSS = 63 },
+		"invalid IP ID":   func(f *guest.TCPFlowVariant) { f.IPID = "invalid" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := mixedResponse()
+			mutate(r.VariablePacketTemplate.Variants[1].TCPFlow)
+			x := &Xdperf{cfg: mixedConfig()}
+			if err := x.prepareMixed(r); err == nil || x.mixed != nil {
+				t.Fatalf("accepted invalid knobs: %v", err)
+			}
+		})
+	}
+	for _, portBase := range []uint16{0, 12001, 65532, 65533} {
+		t.Run(fmt.Sprint(portBase), func(t *testing.T) {
+			r := mixedResponse()
+			r.VariablePacketTemplate.TCPPortBase = portBase
+			f := r.VariablePacketTemplate.Variants[1].TCPFlow
+			f.WindowSegs, f.MSS, f.RTOMillis, f.IPID = 65535, 64, math.MaxUint32, "flow"
+			x := &Xdperf{cfg: mixedConfig(), Logger: zap.NewNop(), cpus: []int{0}}
+			x.cfg.TCPWindow, x.cfg.TCPMSS, x.cfg.TCPRTO, x.cfg.TCPIPID = 9, 1000, time.Second, "shared"
+			err := x.prepareMixed(r)
+			if portBase == 65533 {
+				if err == nil || x.mixed != nil {
+					t.Fatal("accepted overflowing port range")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			g := x.mixed.groups[0]
+			if g.window != 65535 || g.mss != 64 || g.rto != time.Duration(math.MaxUint32)*time.Millisecond || g.ipIDShared != 0 {
+				t.Fatalf("plugin overrides lost: %+v", g)
+			}
+			want := int(portBase)
+			if want == 0 {
+				want = 40000
+			}
+			if x.cfg.TCPPortBase != want {
+				t.Fatalf("port base = %d, want %d", x.cfg.TCPPortBase, want)
+			}
+		})
+	}
+	r := mixedResponse()
+	f := r.VariablePacketTemplate.Variants[1].TCPFlow
+	r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants, guest.PacketVariant{Kind: "tcp_flow", Weight: 1,
+		TCPFlow: &guest.TCPFlowVariant{Destination: f.Destination, WindowSegs: 3, MSS: 512, RTOMillis: 50, IPID: "flow", Flows: f.Flows}})
+	x := &Xdperf{cfg: mixedConfig(), Logger: zap.NewNop(), cpus: []int{0}}
+	x.cfg.TCPWindow, x.cfg.TCPMSS, x.cfg.TCPRTO, x.cfg.TCPIPID = 11, 1200, 450*time.Millisecond, "shared"
+	if err := x.prepareMixed(r); err != nil {
+		t.Fatal(err)
+	}
+	g := x.mixed.groups[0]
+	if g.window != 11 || g.mss != 1200 || g.rto != 450*time.Millisecond || g.ipIDShared != 1 || x.tcpRTO() != g.rto {
+		t.Fatalf("CLI fallback lost: %+v", g)
+	}
+	x.mixed.groups[0].rto = 25 * time.Millisecond
+	if x.tcpRTO() != 50*time.Millisecond {
+		t.Fatal("shutdown uses CLI RTO instead of maximum group RTO")
+	}
+	x.mixed = nil
+	if x.tcpRTO() != x.cfg.TCPRTO {
+		t.Fatal("standalone RTO changed")
+	}
+}
