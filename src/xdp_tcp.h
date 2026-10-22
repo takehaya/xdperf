@@ -663,8 +663,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         return XDP_DROP;
     }
 
-    // Keep scan bounds on stack so older verifiers can prune loop states.
-    volatile __u32 first = cs->first, count = cs->count;
+    __u32 first = cs->first, count = cs->count;
     __u32 *next = &cs->cursor;
     if (mixed->selected_group != 0xffffffff) {
         __u32 key = mixed->selected_group;
@@ -702,6 +701,9 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         if (!tmpl)
             return XDP_ABORTED;
         cfg = &tmpl->cfg;
+        // Do not carry action state between scan attempts into the verifier.
+        decision.act = (struct tcp_tx_action){0};
+        decision.extra = (struct tcp_tx_extra){0};
         kind = tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
         if (kind != TXA_NONE && kind != TXA_CLOSED) {
             sel = f;
