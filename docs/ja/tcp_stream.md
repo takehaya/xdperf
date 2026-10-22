@@ -59,10 +59,13 @@ tcp: est 64 done 0 fail 0 | 9.413 Gbps acked, 812,501 segs/s, 406,114 acks/s, rt
 
 - `est` / `done` / `fail`: 確立中 / 正常終了 (相手の FIN まで ACK した) / 失敗 (RST 受信、SYN/FIN 再送上限) のフロー数
 - `Gbps acked`: 直近 1 秒に相手が ACK したバイト数から求めた goodput (TCP ペイロードのみ)
-- `rtx`: 再送セグメント数、`stalls`: ウィンドウ上限で送れなかった回数
+- `rtx`: 再送セグメント数、`stalls`: 走査したフロー候補の次のデータがウィンドウ上限に収まらなかった回数
 
 終了時に `tcp final statistics` として累積値 (syn_sent, established, done, failed, data_segments,
 bytes_acked, retransmits (timeout / dupack 別), acks_rcvd, acks_sent, window_stalls など) をログに出します。
+
+`window_stalls` は走査した候補ごとの観測数で、送信機会を失った回数ではありません。1 回の送信機会では最大 8 候補を走査し、途中の候補がウィンドウ上限でも後続の候補から送信できます。
+実際に送れなかった機会の割合は、`mixed final statistics` の `1 - tcp_tx / tcp_opportunities` で見ます (drain 中の機会は `drain_opportunities` に別に数えます)。
 
 ### フローごとの記録 (`--tcp-flow-report`)
 
