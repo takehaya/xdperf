@@ -1384,14 +1384,7 @@ int xdp_tx_mixed(struct xdp_md *ctx)
     // Drain/abort uses the legacy all-flow cursor and stops packet traffic.
     if (tcp->drain) {
         st->drain_opportunities++;
-        struct tcp_cpu_state *cs = bpf_map_lookup_elem(&tcp_cpu_state_map, &zero);
-        if (!cs || !cs->count)
-            return XDP_DROP;
-        __u32 cursor = cs->cursor;
-        if (cursor >= cs->count)
-            cursor = 0;
-        cs->cursor = cursor + 1;
-        st->selected_flow = cs->first + cursor * cs->stride;
+        st->selected_group = 0xffffffff;
         bpf_tail_call(ctx, &mixed_progs, 1);
         st->errors++;
         return XDP_ABORTED;
@@ -1449,11 +1442,7 @@ int xdp_tx_mixed(struct xdp_md *ctx)
             continue;
         if (!g->count)
             return XDP_DROP;
-        __u32 cursor = g->cursor;
-        if (cursor >= g->count)
-            cursor = 0;
-        g->cursor = cursor + 1;
-        st->selected_flow = g->first + cursor * cfg->workers;
+        st->selected_group = i;
         bpf_tail_call(ctx, &mixed_progs, 1);
         break;
     }

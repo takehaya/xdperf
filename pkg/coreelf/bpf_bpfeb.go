@@ -85,7 +85,7 @@ type BpfMixedState struct {
 	TcpOpportunities    uint64
 	DrainOpportunities  uint64
 	Errors              uint64
-	SelectedFlow        uint32
+	SelectedGroup       uint32
 	_                   [4]byte
 }
 

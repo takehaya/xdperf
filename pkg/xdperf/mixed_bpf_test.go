@@ -16,26 +16,7 @@ import (
 )
 
 func TestMixedBPFDispatch(t *testing.T) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	var old unix.CPUSet
-	if err := unix.SchedGetaffinity(0, &old); err != nil {
-		t.Fatal(err)
-	}
-	cpu := 0
-	for !old.IsSet(cpu) {
-		cpu++
-	}
-	var pinned unix.CPUSet
-	pinned.Set(cpu)
-	if err := unix.SchedSetaffinity(0, &pinned); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := unix.SchedSetaffinity(0, &old); err != nil {
-			t.Error(err)
-		}
-	}()
+	cpu := pinMixedTestCPU(t)
 	spec, err := coreelf.LoadBpf()
 	if err != nil {
 		t.Fatal(err)
@@ -116,10 +97,7 @@ func TestMixedBPFDispatch(t *testing.T) {
 		t.Fatalf("packet TX and TCP idle budget: %d, want %d", got, before-packets[cpu].Packets)
 	}
 	// A recycled UDP frame must not contaminate TCP's all-zero payload.
-	states[cpu].SelectedFlow = 0
-	if err := objs.MixedStateMap.Put(uint32(0), states); err != nil {
-		t.Fatal(err)
-	}
+	selectMixedTestFlow(t, objs, 0)
 	f := coreelf.BpfTcpFlow{State: tcpFlowEstablished, SrcPort: 40000, Iss: 100, SndUna: 101, SndNxt: 101, SndMax: 101, RcvNxt: 5001, SndWnd: 1 << 30, Mss: 1024, BytesTarget: 1024}
 	if err := objs.TcpFlowMap.Put(uint32(0), f); err != nil {
 		t.Fatal(err)
@@ -335,4 +313,133 @@ func TestMixedBPFDispatch(t *testing.T) {
 		}
 	}
 
+}
+
+func pinMixedTestCPU(t *testing.T) int {
+	t.Helper()
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
+	var old unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &old); err != nil {
+		t.Fatal(err)
+	}
+	cpu := 0
+	for !old.IsSet(cpu) {
+		cpu++
+	}
+	var pinned unix.CPUSet
+	pinned.Set(cpu)
+	if err := unix.SchedSetaffinity(0, &pinned); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := unix.SchedSetaffinity(0, &old); err != nil {
+			t.Error(err)
+		}
+	})
+	return cpu
+}
+
+func TestMixedBPFScan(t *testing.T) {
+	v := extensionVariant(false)
+	x := setupFlowExtensions(t, v)
+	objs := x.bpfobjs
+	n := ebpf.MustPossibleCPU()
+	for _, tc := range []struct {
+		name                            string
+		count, cursor, live, ownerCount uint32
+		wantAction, wantCursor          uint32
+	}{
+		{"eighth", 8, 0, 17, 8, 3, 8},
+		{"ninth waits", 9, 0, 19, 9, 1, 8},
+		{"cursor wraps", 8, 8, 3, 8, 3, 1},
+		{"scan crosses end", 8, 7, 15, 8, 3, 7},
+		{"idle", 8, 0, 1, 8, 1, 8},
+		{"empty group", 0, 0, 1, 8, 1, 0},
+		{"empty worker", 8, 0, 3, 0, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu := pinMixedTestCPU(t)
+			// Group 1 owns odd indices from 3; template 0 and flow 1 are separate.
+			cfg := coreelf.BpfMixedCfg{TotalWeight: 1, Groups: 2, Workers: 2, CountLimited: 1}
+			if err := objs.MixedCfgMap.Put(uint32(0), cfg); err != nil {
+				t.Fatal(err)
+			}
+			groups := make([]coreelf.BpfMixedGroup, n)
+			groups[cpu] = coreelf.BpfMixedGroup{Upper: 1, First: 3, Count: tc.count, Cursor: tc.cursor}
+			if err := objs.MixedGroupMap.Put(uint32(1), groups); err != nil {
+				t.Fatal(err)
+			}
+			owners := make([]coreelf.BpfTcpCpuState, n)
+			owners[cpu] = coreelf.BpfTcpCpuState{First: 1, Stride: 2, Count: tc.ownerCount}
+			if err := objs.TcpCpuStateMap.Put(uint32(0), owners); err != nil {
+				t.Fatal(err)
+			}
+			budgets := make([]coreelf.BpfPktState, n)
+			budgets[cpu].Budget = 1
+			if err := objs.PktStateMap.Put(uint32(0), budgets); err != nil {
+				t.Fatal(err)
+			}
+			if err := objs.MixedBudgetMap.Put(uint32(0), int64(0)); err != nil {
+				t.Fatal(err)
+			}
+			for idx := uint32(0); idx < 21; idx++ {
+				f := coreelf.BpfTcpFlow{State: tcpFlowDone}
+				if idx == tc.live || idx == 1 {
+					f = coreelf.BpfTcpFlow{State: tcpFlowClosed, SrcPort: uint16(40000 + idx), Mss: 1024, BytesTarget: 1024}
+				}
+				if err := objs.TcpFlowMap.Put(idx, f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			action, _, err := objs.XdpTxMixed.Test(make([]byte, 2049))
+			if err != nil || action != tc.wantAction {
+				t.Fatalf("action=%d want=%d: %v", action, tc.wantAction, err)
+			}
+			if err := objs.MixedGroupMap.Lookup(uint32(1), &groups); err != nil {
+				t.Fatal(err)
+			}
+			if groups[cpu].Cursor != tc.wantCursor {
+				t.Fatalf("cursor=%d want=%d", groups[cpu].Cursor, tc.wantCursor)
+			}
+			states := make([]coreelf.BpfMixedState, n)
+			if err := objs.MixedStateMap.Lookup(uint32(0), &states); err != nil {
+				t.Fatal(err)
+			}
+			if tc.ownerCount != 0 && tc.count != 0 && states[cpu].SelectedGroup != 1 {
+				t.Fatalf("selected group=%d", states[cpu].SelectedGroup)
+			}
+			if err := objs.PktStateMap.Lookup(uint32(0), &budgets); err != nil {
+				t.Fatal(err)
+			}
+			wantBudget := uint64(1)
+			if tc.wantAction == 3 {
+				wantBudget = 0
+			}
+			if budgets[cpu].Budget != wantBudget {
+				t.Fatalf("budget=%d want=%d", budgets[cpu].Budget, wantBudget)
+			}
+			var outside coreelf.BpfTcpFlow
+			if err := objs.TcpFlowMap.Lookup(uint32(1), &outside); err != nil {
+				t.Fatal(err)
+			}
+			if outside.TxPkts != 0 {
+				t.Fatal("sent a flow outside the group")
+			}
+			if tc.wantAction == 3 {
+				// One remaining frame permits exactly one send across iterations.
+				action, _, err = objs.XdpTxMixed.Test(make([]byte, 2049))
+				if err != nil || action != 1 {
+					t.Fatalf("exhausted action=%d: %v", action, err)
+				}
+				var sent coreelf.BpfTcpFlow
+				if err := objs.TcpFlowMap.Lookup(tc.live, &sent); err != nil {
+					t.Fatal(err)
+				}
+				if sent.TxPkts != 1 {
+					t.Fatalf("sent %d frames", sent.TxPkts)
+				}
+			}
+		})
+	}
 }

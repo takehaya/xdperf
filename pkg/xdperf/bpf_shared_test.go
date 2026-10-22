@@ -115,7 +115,7 @@ func TestMixedBPFIsolation(t *testing.T) {
 		}
 		states := make([]coreelf.BpfMixedState, ebpf.MustPossibleCPU())
 		for i := range states {
-			states[i].SelectedFlow = 7
+			states[i].SelectedGroup = 7
 		}
 		if err := first.MixedStateMap.Put(uint32(0), states); err != nil {
 			t.Fatal(err)

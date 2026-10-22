@@ -43,11 +43,30 @@ func selectExtensionFlow(t *testing.T, x *Xdperf, idx uint32, f coreelf.BpfTcpFl
 	if err := x.bpfobjs.TcpFlowMap.Put(idx, f); err != nil {
 		t.Fatal(err)
 	}
-	states := make([]coreelf.BpfMixedState, ebpf.MustPossibleCPU())
-	for i := range states {
-		states[i].SelectedFlow = idx
+	selectMixedTestFlow(t, x.bpfobjs, idx)
+}
+
+// Direct TX tests select one flow on every CPU without running the dispatcher.
+func selectMixedTestFlow(t *testing.T, objs *coreelf.BpfObjects, idx uint32) {
+	t.Helper()
+	n := ebpf.MustPossibleCPU()
+	states := make([]coreelf.BpfMixedState, n)
+	groups := make([]coreelf.BpfMixedGroup, n)
+	cpus := make([]coreelf.BpfTcpCpuState, n)
+	if err := objs.TcpCpuStateMap.Lookup(uint32(0), &cpus); err != nil {
+		t.Fatal(err)
 	}
-	if err := x.bpfobjs.MixedStateMap.Put(uint32(0), states); err != nil {
+	for i := range states {
+		groups[i] = coreelf.BpfMixedGroup{First: idx, Count: 1}
+		cpus[i].First, cpus[i].Count, cpus[i].Stride, cpus[i].Cursor = idx, 1, 1, 0
+	}
+	if err := objs.MixedGroupMap.Put(uint32(0), groups); err != nil {
+		t.Fatal(err)
+	}
+	if err := objs.TcpCpuStateMap.Put(uint32(0), cpus); err != nil {
+		t.Fatal(err)
+	}
+	if err := objs.MixedStateMap.Put(uint32(0), states); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -220,5 +239,61 @@ func TestTCPFlowPayloadEncapBPF(t *testing.T) {
 			}
 			verifyTCPEncapFrame(t, reply, tmpl)
 		}
+	}
+}
+
+func TestTCPDrainClearsTimestampState(t *testing.T) {
+	cpu := pinMixedTestCPU(t)
+	timestamped, plain := extensionVariant(false), extensionVariant(false)
+	timestamped.TCPFlow.Timestamps = true
+	plain.TCPFlow.PayloadPattern = []byte{0x12, 0x34, 0xfe}
+	x := setupFlowExtensions(t, timestamped, plain)
+	if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.Drain = 1 }); err != nil {
+		t.Fatal(err)
+	}
+	var now unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
+		t.Fatal(err)
+	}
+	flows := []coreelf.BpfTcpFlow{
+		{TemplateId: 0, State: tcpFlowFinWait1, SrcPort: 40000, TsEnabled: 1, LastSendNs: uint64(now.Nano())},
+		{TemplateId: 1, State: tcpFlowEstablished, SrcPort: 40001, Iss: 100, SndUna: 101, SndNxt: 104, SndMax: 104, RcvNxt: 5001, SndWnd: 65535, Mss: 3, BytesTarget: 3, RtxPending: 1},
+	}
+	for i, f := range flows {
+		if err := x.bpfobjs.TcpFlowMap.Put(uint32(i), f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owners := make([]coreelf.BpfTcpCpuState, ebpf.MustPossibleCPU())
+	owners[cpu] = coreelf.BpfTcpCpuState{Count: 2, Stride: 1}
+	if err := x.bpfobjs.TcpCpuStateMap.Put(uint32(0), owners); err != nil {
+		t.Fatal(err)
+	}
+	cfg := coreelf.BpfMixedCfg{TotalWeight: 2, Groups: 2, Workers: 1, CountLimited: 1}
+	if err := x.bpfobjs.MixedCfgMap.Put(uint32(0), cfg); err != nil {
+		t.Fatal(err)
+	}
+	// No frame budget and no initialized group: drain must use the CPU cursor.
+	action, out, err := x.bpfobjs.XdpTxMixed.Test(make([]byte, 2049))
+	if err != nil || action != 3 || len(out) != 57 {
+		t.Fatalf("drain action=%d len=%d: %v", action, len(out), err)
+	}
+	if out[46]>>4 != 5 || !bytes.Equal(out[54:], plain.TCPFlow.PayloadPattern) {
+		t.Fatalf("stale timestamps or payload: %x", out[34:])
+	}
+	var tmpl coreelf.BpfTcpTemplate
+	if err := x.bpfobjs.TcpTemplateMap.Lookup(uint32(1), &tmpl); err != nil {
+		t.Fatal(err)
+	}
+	verifyTCPEncapFrame(t, out, tmpl)
+	if err := x.bpfobjs.TcpCpuStateMap.Lookup(uint32(0), &owners); err != nil {
+		t.Fatal(err)
+	}
+	if owners[cpu].Cursor != 2 {
+		t.Fatalf("drain cursor=%d", owners[cpu].Cursor)
+	}
+	budgets := make([]coreelf.BpfPktState, len(owners))
+	if err := x.bpfobjs.PktStateMap.Lookup(uint32(0), &budgets); err != nil || budgets[cpu].Budget != 0 {
+		t.Fatalf("drain budget=%d: %v", budgets[cpu].Budget, err)
 	}
 }
