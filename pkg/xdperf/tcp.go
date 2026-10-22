@@ -257,9 +257,6 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 	}
 	if x.mixed.repeat {
 		cfg.SlotCount = uint32(x.mixed.flows)
-		if x.mixed.untilDuration {
-			cfg.UntilDuration = 1
-		}
 	}
 	cfg.IpIdShared = x.mixed.groups[0].ipIDShared
 	copy(cfg.HdrTmpl[:], template[:min(int(t.l4Off), len(cfg.HdrTmpl))])
@@ -678,6 +675,7 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	defer poll.Stop()
 
 	draining := false
+	portExhausted := false
 	var loadEnded time.Time
 	var loadStats coreelf.BpfTcpStats
 	stopReason := "worker stopped"
@@ -793,18 +791,13 @@ loop:
 					durationCh, drainDeadline, abortDeadline = nil, nil, nil
 				}
 			}
-			if !draining && x.mixed.untilDuration {
-				s, err := x.readTCPStats(recs)
-				if err != nil {
-					once.Do(func() { firstErr = err })
-					break loop
-				}
-				if s.PortExhausted > 0 {
-					startDrain("port_exhausted")
-				}
-			}
 			if lingerCh == nil && allClosed() {
-				startDrain("all flows closed")
+				if !draining && x.mixed.untilDuration {
+					portExhausted = true
+					startDrain("port_exhausted")
+				} else {
+					startDrain("all flows closed")
+				}
 				lingerCh = time.After(linger)
 			}
 		case <-lingerCh:
@@ -842,7 +835,7 @@ loop:
 		x.Logger.Warn("failed to detach TCP RX program", zap.Error(err))
 	}
 
-	s, statsErr := x.showTCPFinalStats(recs)
+	s, statsErr := x.showTCPFinalStats(recs, portExhausted)
 	ended := time.Now()
 	if loadEnded.IsZero() {
 		loadEnded, loadStats = ended, s
@@ -875,7 +868,7 @@ loop:
 	}
 	// A run whose flows did not complete is a failed measurement: report it
 	// in the exit status, not only in the log (e.g. every SYN refused).
-	if s.PortExhausted > 0 {
+	if portExhausted {
 		return fmt.Errorf("port_exhausted: fresh TCP source ports exhausted")
 	}
 	if s.Failed > 0 {
@@ -885,7 +878,7 @@ loop:
 	return nil
 }
 
-func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpStats, error) {
+func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats, portExhausted bool) (coreelf.BpfTcpStats, error) {
 	s, err := x.readTCPStats(recs)
 	if err != nil {
 		return s, fmt.Errorf("failed to read tcp stats: %w", err)
@@ -893,7 +886,7 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpSt
 	x.Logger.Info("tcp final statistics",
 		zap.Int("flows", x.mixed.flows),
 		zap.Uint64("started", s.Started),
-		zap.Uint64("port_exhausted", s.PortExhausted),
+		zap.Bool("port_exhausted", portExhausted),
 		zap.Uint64("syn_sent", s.SynSent),
 		zap.Uint64("established", s.Established),
 		zap.Uint64("done", s.Done),

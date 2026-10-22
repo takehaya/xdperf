@@ -115,7 +115,6 @@ type BpfTcpCfg struct {
 	_              structs.HostLayout
 	FlowCount      uint32
 	SlotCount      uint32
-	UntilDuration  uint32
 	WindowSegs     uint32
 	Mss            uint16
 	PortBase       uint16
@@ -136,7 +135,6 @@ type BpfTcpCfg struct {
 	PseudoSum      uint32
 	SrcIp          [4]uint32
 	DstIp          [4]uint32
-	_              [4]byte
 	BytesPerFlow   uint64
 	RtoNs          uint64
 	HdrTmpl        [64]uint8
@@ -265,7 +263,6 @@ type BpfTcpSrvStats struct {
 type BpfTcpStats struct {
 	_                structs.HostLayout
 	Started          uint64
-	PortExhausted    uint64
 	SynSent          uint64
 	SynackRcvd       uint64
 	Established      uint64

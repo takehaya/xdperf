@@ -96,18 +96,17 @@ struct tcp_flow {
 };
 
 struct tcp_cfg {
-    __u32 flow_count;     // retained connection states, including old DONE entries
-    __u32 slot_count;     // nonzero only in connection repetition mode
-    __u32 until_duration; // exhausting fresh ports is a failed measurement
-    __u32 window_segs;    // max segments in flight per flow
-    __u16 mss;            // payload bytes per segment
-    __u16 port_base;      // src port = port_base + flow_idx (host order)
-    __u16 dst_port;       // host order
-    __u16 hdr_len;        // Eth(+VLAN) + IP + TCP(20)
-    __u16 l3_off;         // 14, or 18 with a VLAN tag
-    __u16 l4_off;         // l3_off + 20 (IPv4) / 40 (IPv6)
-    __u16 vlan_id;        // 0 = untagged
-    __u8 ip_version;      // 4 or 6
+    __u32 flow_count;  // retained connection states, including old DONE entries
+    __u32 slot_count;  // nonzero only in connection repetition mode
+    __u32 window_segs; // max segments in flight per flow
+    __u16 mss;         // payload bytes per segment
+    __u16 port_base;   // src port = port_base + flow_idx (host order)
+    __u16 dst_port;    // host order
+    __u16 hdr_len;     // Eth(+VLAN) + IP + TCP(20)
+    __u16 l3_off;      // 14, or 18 with a VLAN tag
+    __u16 l4_off;      // l3_off + 20 (IPv4) / 40 (IPv6)
+    __u16 vlan_id;     // 0 = untagged
+    __u8 ip_version;   // 4 or 6
     __u8 max_syn_retries;
     __u8 max_fin_retries;
     __u8 drain;            // 1 = stop new data, close every flow (Go sets it on --duration / signal)
@@ -203,7 +202,6 @@ struct tcp_cpu_state {
 
 struct tcp_stats {
     __u64 started;
-    __u64 port_exhausted;
     __u64 syn_sent;
     __u64 synack_rcvd;
     __u64 established;
@@ -373,7 +371,7 @@ static __always_inline int mixed_flow_closed(__u8 state)
 }
 
 // A slot is retired once; RX closure counts remain disabled in repetition mode.
-static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cfg *cfg, struct tcp_stats *st)
+static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cfg *cfg)
 {
     __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &slot);
     if (!current || *current >= cfg->flow_count)
@@ -388,8 +386,6 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
         return bpf_map_lookup_elem(&tcp_flow_map, &next);
     }
     *current = 0xffffffff;
-    if (!cfg->drain && !cfg->abort && cfg->until_duration)
-        st->port_exhausted++;
     struct mixed_cfg *mix = bpf_map_lookup_elem(&mixed_cfg_map, &(__u32){0});
     if (mix && mix->workers) {
         __u32 owner = slot % mix->workers;
@@ -743,7 +739,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
             continue;
         struct tcp_flow *f;
         if (global->slot_count)
-            f = tcp_slot_flow(idx, global, st);
+            f = tcp_slot_flow(idx, global);
         else
             f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
         if (!f)

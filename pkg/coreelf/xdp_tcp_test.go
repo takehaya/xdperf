@@ -428,7 +428,6 @@ func clientStats(t *testing.T, objs *BpfObjects) BpfTcpStats {
 	var s BpfTcpStats
 	for _, r := range recs {
 		s.Started += r.Started
-		s.PortExhausted += r.PortExhausted
 		s.RstSent += r.RstSent
 		s.FailedEst += r.FailedEst
 		s.Failed += r.Failed
@@ -1536,17 +1535,15 @@ func TestTcpFlowLedger(t *testing.T) {
 // Retained old tuples must remain reachable after their concurrency slot advances.
 func TestTcpRepeatedConnections(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
-		drain, unlimited bool
-		states           []uint8
-		wantIndex        uint32
-		wantExhausted    uint64
+		name      string
+		drain     bool
+		states    []uint8
+		wantIndex uint32
 	}{
-		{"advance", false, false, []uint8{tfDone, tfClosed}, 1, 0},
-		{"failed attempt", false, false, []uint8{tfFailed, tfClosed}, 1, 0},
-		{"finite end", false, false, []uint8{tfDone}, math.MaxUint32, 0},
-		{"port exhausted", false, true, []uint8{tfDone}, math.MaxUint32, 1},
-		{"drain prevents refill", true, false, []uint8{tfDone, tfClosed}, math.MaxUint32, 0},
+		{"advance", false, []uint8{tfDone, tfClosed}, 1},
+		{"failed attempt", false, []uint8{tfFailed, tfClosed}, 1},
+		{"finite end", false, []uint8{tfDone}, math.MaxUint32},
+		{"drain prevents refill", true, []uint8{tfDone, tfClosed}, math.MaxUint32},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			objs := loadTCPObjs(t)
@@ -1565,9 +1562,6 @@ func TestTcpRepeatedConnections(t *testing.T) {
 			cfg.SlotCount = 1
 			if tc.drain {
 				cfg.Drain = 1
-			}
-			if tc.unlimited {
-				cfg.UntilDuration = 1
 			}
 			if err := objs.TcpCfgMap.Put(uint32(0), cfg); err != nil {
 				t.Fatal(err)
@@ -1631,9 +1625,6 @@ func TestTcpRepeatedConnections(t *testing.T) {
 					t.Fatal("slot retired twice")
 				}
 			}
-			if got := clientStats(t, objs).PortExhausted; got != tc.wantExhausted {
-				t.Fatalf("port_exhausted=%d", got)
-			}
 		})
 	}
 }
@@ -1648,7 +1639,6 @@ func TestTcpRepeatedStopFlags(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.SlotCount = 1
-			cfg.UntilDuration = 1
 			if stopGlobal {
 				cfg.Drain = 1
 			}
@@ -1693,9 +1683,83 @@ func TestTcpRepeatedStopFlags(t *testing.T) {
 			} else if ret != xdpTx || getFlow(t, objs, 1).State != tfSynSent || getFlow(t, objs, 2).State != tfClosed {
 				t.Fatal("template stop flags consumed unstarted connections")
 			}
-			if s := clientStats(t, objs); s.PortExhausted != 0 {
-				t.Fatalf("false port exhaustion: %+v", s)
-			}
 		})
+	}
+}
+
+func TestTcpRepeatedUnevenCompletion(t *testing.T) {
+	objs := loadTCPObjs(t)
+	// Slots 0/1/3 stall while slot 2 finishes its last reserved connection first.
+	flows := []BpfTcpFlow{established(1000), established(2000), {State: tfDone}, established(4000), {State: tfClosed, Iss: 5000}, {State: tfClosed, Iss: 6000}}
+	for i := range flows {
+		flows[i].SndWnd = 0
+	}
+	frame := setupClient(t, objs, clientOpts{}, flows...)
+	var cfg BpfTcpCfg
+	if err := objs.TcpCfgMap.Lookup(uint32(0), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.SlotCount = 4
+	if err := objs.TcpCfgMap.Put(uint32(0), cfg); err != nil {
+		t.Fatal(err)
+	}
+	states := make([]BpfTcpCpuState, ebpf.MustPossibleCPU())
+	for i := range states {
+		states[i] = BpfTcpCpuState{Count: 4, Stride: 1}
+	}
+	if err := objs.TcpCpuStateMap.Put(uint32(0), states); err != nil {
+		t.Fatal(err)
+	}
+	if err := objs.MixedCfgMap.Put(uint32(0), BpfMixedCfg{Workers: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for i := uint32(0); i < 4; i++ {
+		if err := objs.TcpSlotMap.Put(i, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runProg(t, objs.XdpTxTcpMixed, frame)
+	var retired uint32
+	if err := objs.MixedClosedMap.Lookup(uint32(0), &retired); err != nil {
+		t.Fatal(err)
+	}
+	if retired != 1 || getFlow(t, objs, 4).State != tfClosed || getFlow(t, objs, 5).State != tfClosed {
+		t.Fatal("unexpected early completion")
+	}
+	finish := func(idx uint32) {
+		f := getFlow(t, objs, idx)
+		f.State = tfDone
+		if err := objs.TcpFlowMap.Put(idx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish(0)
+	finish(1)
+	ports := map[uint16]bool{}
+	for range 2 {
+		ret, out := runProg(t, objs.XdpTxTcpMixed, frame)
+		if ret != xdpTx {
+			t.Fatal("remaining slots did not replenish")
+		}
+		ports[uint16(decode(t, out).tcp.SrcPort)] = true
+	}
+	if !ports[testPortBase+4] || !ports[testPortBase+5] {
+		t.Fatalf("remaining ports not used: %v", ports)
+	}
+	if err := objs.MixedClosedMap.Lookup(uint32(0), &retired); err != nil {
+		t.Fatal(err)
+	}
+	if retired != 1 {
+		t.Fatal("worker stopped before reserved connections finished")
+	}
+	finish(3)
+	finish(4)
+	finish(5)
+	runProg(t, objs.XdpTxTcpMixed, frame)
+	if err := objs.MixedClosedMap.Lookup(uint32(0), &retired); err != nil {
+		t.Fatal(err)
+	}
+	if retired != 4 {
+		t.Fatalf("slots still active after all six connections finished: %d", retired)
 	}
 }
