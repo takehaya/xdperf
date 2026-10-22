@@ -66,7 +66,8 @@ func prepareMixedRXProgram(p *ebpf.ProgramSpec) error {
 			source = strings.TrimSpace(ins.Source().String())
 		}
 		if mainEnd == 0 && source == condition && ins.OpCode.Class().IsJump() {
-			if ins.OpCode != asm.JGT.Op(asm.RegSource) {
+			expected := []asm.OpCode{asm.JLT.Imm32(asm.R0, 0, "").OpCode, asm.JLT.Reg32(asm.R0, asm.R1, "").OpCode, asm.JGT.Reg32(asm.R0, asm.R1, "").OpCode}
+			if len(edges) >= len(expected) || ins.OpCode != expected[len(edges)] || (len(edges) == 0 && ins.Constant != 20) {
 				return fmt.Errorf("unexpected mixed RX length branch: %s", ins.OpCode)
 			}
 			dest := offset + 1 + int(ins.Offset)
@@ -79,7 +80,7 @@ func prepareMixedRXProgram(p *ebpf.ProgramSpec) error {
 		if mainEnd == 0 && ins.IsFunctionCall() && ins.Reference() == "tcp_parse_timestamp" {
 			timestampCall = true
 		}
-		if mainEnd == 0 && strings.Contains(source, "tcp_parse_timestamp(ctx") && ins.OpCode == asm.JSGT.Op(asm.RegSource) && ins.Dst == asm.R1 && ins.Src == asm.R0 {
+		if mainEnd == 0 && strings.Contains(source, "tcp_parse_timestamp(ctx") && ins.OpCode == asm.JSLT.Imm32(asm.R0, 0, "").OpCode && ins.Dst == asm.R0 && ins.Constant == 0 {
 			if target != offset+1+int(ins.Offset) {
 				return fmt.Errorf("mixed RX timestamp return changed")
 			}
@@ -99,7 +100,7 @@ func prepareMixedRXProgram(p *ebpf.ProgramSpec) error {
 			break
 		}
 	}
-	if returnIndex < 0 || returnIndex+1 >= mainEnd || p.Instructions[returnIndex].OpCode != asm.Mov.Op(asm.RegSource) || p.Instructions[returnIndex].Dst != asm.R0 || p.Instructions[returnIndex+1].OpCode != asm.Exit.Op(asm.ImmSource) {
+	if returnIndex < 0 || returnIndex+1 >= mainEnd || p.Instructions[returnIndex].OpCode != asm.Mov.Op32(asm.RegSource) || p.Instructions[returnIndex].Dst != asm.R0 || p.Instructions[returnIndex+1].OpCode != asm.Exit.Op(asm.ImmSource) {
 		return fmt.Errorf("mixed RX invalid-header return changed")
 	}
 	// All subprogram calls must retain symbolic references so cilium/ebpf can
@@ -143,7 +144,7 @@ func prepareMixedRXDispatcher(spec *ebpf.CollectionSpec) error {
 			return nil
 		}
 	}
-	if p.Instructions[0].OpCode != asm.Mov.Op(asm.ImmSource) || p.Instructions[0].Dst != asm.R0 || p.Instructions[0].Constant != 2 {
+	if p.Instructions[0].OpCode != asm.Mov.Op32(asm.ImmSource) || p.Instructions[0].Dst != asm.R0 || p.Instructions[0].Constant != 2 {
 		return fmt.Errorf("mixed RX dispatcher PASS verdict changed")
 	}
 	offset, target, slots := 0, -1, 0
@@ -223,7 +224,7 @@ func prepareExtendedRXUnmatched(p, legacy *ebpf.ProgramSpec) error {
 		if ins.Source() != nil {
 			source = strings.TrimSpace(ins.Source().String())
 		}
-		if mainEnd == 0 && source == "if (!parsed)" && ins.OpCode == asm.JEq.Op(asm.ImmSource) && ins.Constant == 0 {
+		if mainEnd == 0 && source == "if (!parsed)" && ins.OpCode == asm.JEq.Imm32(asm.R0, 0, "").OpCode && ins.Constant == 0 {
 			target = offset + 1 + int(ins.Offset)
 		}
 		if mainEnd == 0 && ins.OpCode == asm.Call.Op(asm.ImmSource) && ins.Constant == int64(asm.FnTailCall) {

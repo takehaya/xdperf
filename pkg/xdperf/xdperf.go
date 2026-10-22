@@ -274,6 +274,9 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 	if err := x.prepareMixed(resp); err != nil {
 		return err
 	}
+	if err := x.cfg.validateRunBounds(x.mixed); err != nil {
+		return err
+	}
 	if x.mixed != nil {
 		if err := coreelf.LoadMixedProgramsWithFeatures(x.bpfobjs, x.bpfSpec, x.mixed.features); err != nil {
 			return err

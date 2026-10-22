@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/guest"
 )
 
@@ -269,5 +270,48 @@ func TestSafeDelta(t *testing.T) {
 				t.Errorf("safeDelta(%d, %d) = %d, want %d", tt.cur, tt.prev, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidateRunBounds(t *testing.T) {
+	for _, mode := range []struct {
+		name    string
+		plan    *mixedPlan
+		packets bool
+	}{{"packet only", nil, true}, {"packet and TCP", &mixedPlan{packetWeight: 1}, true}, {"TCP only", &mixedPlan{}, false}} {
+		for _, bounds := range []struct {
+			name       string
+			count, pps uint64
+			duration   time.Duration
+		}{{"no bounds", 0, 0, 0}, {"count", 10, 0, 0}, {"duration without PPS", 0, 0, time.Second}, {"derived count and duration", 10, 10, time.Second}} {
+			t.Run(mode.name+"/"+bounds.name, func(t *testing.T) {
+				cfg := Config{Count: bounds.count, PPS: bounds.pps, Duration: bounds.duration}
+				wantErr := mode.packets && (bounds.duration > 0 && bounds.pps == 0 || bounds.count == 0 && bounds.duration == 0)
+				if err := cfg.validateRunBounds(mode.plan); (err != nil) != wantErr {
+					t.Fatalf("error %v, want error %v", err, wantErr)
+				}
+			})
+		}
+	}
+	// Pre-plugin validation must defer run bounds, but retain count and infinite constraints.
+	for _, bounds := range []struct {
+		count    uint64
+		duration time.Duration
+		infinite bool
+		wantErr  bool
+	}{
+		{0, 0, false, false}, {0, time.Second, false, false}, {1, 0, false, true},
+		{2, 0, false, false}, {0, 0, true, true}, {2, 0, true, false}, {2, time.Second, false, true},
+	} {
+		cfg := Config{Device: "eth0", Sender: true, PluginName: "mixed.go", Parallelism: 2, Count: bounds.count, Duration: bounds.duration, Infinite: bounds.infinite}
+		if ebpf.MustPossibleCPU() < 2 {
+			cfg.Parallelism = 1
+			if bounds.count == 1 {
+				continue
+			}
+		}
+		if err := cfg.Validate(); (err != nil) != bounds.wantErr {
+			t.Fatalf("bounds %+v: %v", bounds, err)
+		}
 	}
 }

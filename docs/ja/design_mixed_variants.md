@@ -9,7 +9,7 @@
 `template_type: "variable"` の `PacketVariantSet` に種類を追加する。
 `kind` の省略または `packet` は既存の base_packet / variable_params / checksums を使う。
 `kind: "tcp_flow"` は `tcp_flow: {"destination":"192.0.2.2:5201","flows":[{"bytes":"65536"},{"bytes":"67108864"}]}` を持つ。
-bytes は uint64 の十進文字列で、0 は duration を指定した無制限フローである。
+bytes は uint64 の十進文字列で、0 は count または duration を指定した無制限フローである。
 フローの配列順が送信記録の flow 番号に対応する。
 TCP バリアントを複数指定した場合はバリアント順に連結する。
 
@@ -33,9 +33,18 @@ base_packet を省略したグループは Go が経路と近隣情報を解決�
 variable_params は内側送信元 IP のフロー別変更だけを許し、checksums は受け付けない。
 seq、ack、flags、window、送信元ポート、長さ、チェックサムはエンジンが所有し、IPv4 ID は --tcp-ip-id に従う。
 
-混合集合にはパケットと TCP をそれぞれ 1 種類以上含める。
+TCP バリアントは 1 種類以上とし、パケットバリアントは省略できる。
 バリアント数は最大 16、フロー総数は送信元ポート範囲内、重み合計は uint32 の範囲内とする。
---count はパケットの diff プールサイズとして扱い、終了は全 TCP フローの完了、--duration、シグナルで決める。
+--count は packet と TCP の TX worker 送信フレーム総数の上限とする。
+全 TCP フローが先に完了すれば count 未満で終了する。
+
+共有の送信予算は CPU ごとに小分けで借用し、TCP だけの集合では担当フローがすべて閉じた worker の残りを返却する。
+フロー数が worker 数より少ない場合は Warn を出し、担当のない worker は予算を借りない。
+混合の `--count` の上限は 9223372036854775807 とする。
+時間切れやシグナルで drain / abort する際の閉鎖用フレームは、`--count` の制限に含めない。
+
+count 到達時は drain をせず 2×RTO の linger 後に終了し、未完了フローは Warn、既存の失敗フローがなければ exit 0 とする。
+RX 側の ACK/RST、idle、build 失敗は予算に含めない。
 --infinite、--rx-device、--swap-resp は拒否する。
 --recv を指定するとパケット側の応答も統計に含める。
 
@@ -102,7 +111,7 @@ base_packet、複数宛先、固定オプション、トンネル RX、Timestamp
 (cd plugins/mixed.go && GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ../../out/bin/mixed.go.wasm .)
 sudo out/bin/xdperf run --send --recv --device eth0 --plugin mixed.go --plugin-path out/bin \
   --plugin-config '{"src_ip":"192.0.2.1","dst_ip":"192.0.2.2","dst_mac":"02:00:00:00:00:02"}' \
-  --count 128 --pps 2000 --parallelism 1 --tcp-flow-report flows.csv
+  --count 100000 --pps 2000 --parallelism 1 --tcp-flow-report flows.csv
 sudo examples/mixed/setup.sh
 sudo examples/mixed/test.sh
 sudo examples/mixed/teardown.sh
@@ -112,5 +121,6 @@ sudo examples/mixed/teardown.sh
 既定の TCP 送信量は 3 本が 65,536 バイト、1 本が 67,108,864 バイトである。
 E2E は実行時間を抑えるため最後の 1 本を 262,144 バイトにし、対向 TCP シンクと UDP エコーサーバーで受信を照合する。
 送信機会をパケット 3、TCP 1 に配分しても、TCP の ACK 待ちや完了済みフローの選択により実際の TCP フレーム比率は 25% 未満になる場合がある。
---count はこの混合モードでは送信総数ではなく diff プールサイズである。
---duration を使う場合は既存 CLI に従い --count を省略して --pps を指定する。
+--count は送信上限であり、packet の diff プール長も従来どおりこの値から決める。
+有限の TCP だけの集合では count と duration を省略でき、TCP だけなら duration に pps は不要である。
+packet を含む集合で --duration を使う場合は --count を省略して --pps を指定する。

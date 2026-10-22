@@ -67,6 +67,7 @@ struct checksum_meta {
 
 // Per-CPU packet state
 struct pkt_state {
+    __u64 budget;        // Locally borrowed mixed TX frames (0 initially)
     __u32 count;         // Number of valid diff entries
     __u32 idx;           // Current index (round-robin)
     __u32 last_base_idx; // Last base_idx used (0xFFFFFFFF = none, forces first copy)

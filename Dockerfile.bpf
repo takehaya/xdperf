@@ -14,7 +14,7 @@ WORKDIR /app
 COPY . .
 RUN clang-${LLVM_VERSION} --version
 ARG BPF_CLANG=clang-${LLVM_VERSION}
-ARG BPF_CFLAGS="-O2 -g -Wall -Werror"
+ARG BPF_CFLAGS="-O2 -g -Wall -Werror -mcpu=v3"
 ENV BPF_CLANG=${BPF_CLANG}
 ENV BPF_CFLAGS=${BPF_CFLAGS}
 

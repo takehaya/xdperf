@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestMixedDrainSchedulingGrace(t *testing.T) {
@@ -112,7 +114,7 @@ func TestMixedValidation(t *testing.T) {
 			}
 		})
 	}
-	for _, value := range []string{"", "0", "-1", "+1", " 1", "1e6", "18446744073709551616"} {
+	for _, value := range []string{"", "-1", "+1", " 1", "1e6", "18446744073709551616"} {
 		r := mixedResponse()
 		r.VariablePacketTemplate.Variants[1].TCPFlow.Flows[0].Bytes = value
 		x := &Xdperf{cfg: mixedConfig()}
@@ -141,7 +143,7 @@ func TestTCPOnlyPlan(t *testing.T) {
 				r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants, tcp)
 			}
 			x := &Xdperf{cfg: mixedConfig()}
-			x.cfg.Count = 1
+			x.cfg.Count = 0
 			if err := x.prepareMixed(r); err != nil {
 				t.Fatal(err)
 			}
@@ -157,5 +159,68 @@ func TestTCPOnlyPlan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMixedUnlimitedRunBounds(t *testing.T) {
+	for _, bounds := range []struct {
+		count    uint64
+		duration time.Duration
+		wantErr  bool
+	}{{0, 0, true}, {100, 0, false}, {0, time.Second, false}} {
+		r := mixedResponse()
+		r.VariablePacketTemplate.Variants[1].TCPFlow.Flows[0].Bytes = "0"
+		x := &Xdperf{cfg: mixedConfig()}
+		x.cfg.Count, x.cfg.Duration = bounds.count, bounds.duration
+		if err := x.prepareMixed(r); (err != nil) != bounds.wantErr {
+			t.Fatalf("bounds %+v: %v", bounds, err)
+		}
+	}
+}
+
+func TestMixedCountReached(t *testing.T) {
+	x := &Xdperf{cfg: Config{Count: 5}, mixed: &mixedPlan{}, cpus: []int{2, 0}}
+	states := []coreelf.BpfPktState{{Budget: 0}, {Budget: math.MaxUint64}, {Budget: 1}}
+	if x.mixedCountReached(0, states) {
+		t.Fatal("stopped with an unspent worker budget")
+	}
+	states[2].Budget = 0
+	if x.mixedCountReached(1, states) {
+		t.Fatal("stopped with shared budget remaining")
+	}
+	if !x.mixedCountReached(0, states) {
+		t.Fatal("did not stop after all selected workers exhausted their budgets")
+	}
+	x.cfg.Count = 0
+	if x.mixedCountReached(0, states) {
+		t.Fatal("unbounded run stopped")
+	}
+	x.cfg.Count, x.mixed = 5, nil
+	if x.mixedCountReached(0, states) {
+		t.Fatal("standalone TCP stopped")
+	}
+}
+
+func TestMixedWorkerWarning(t *testing.T) {
+	for _, tt := range []struct {
+		packets                  uint32
+		flows, workers, warnings int
+	}{
+		{0, 1, 2, 1}, {0, 2, 2, 0}, {1, 1, 2, 0},
+	} {
+		core, logs := observer.New(zap.WarnLevel)
+		x := &Xdperf{cfg: Config{TCPFlows: tt.flows}, mixed: &mixedPlan{packetWeight: tt.packets}, cpus: make([]int, tt.workers), Logger: zap.New(core)}
+		x.warnMixedWorkers()
+		if logs.Len() != tt.warnings {
+			t.Fatalf("%+v: got %d warnings", tt, logs.Len())
+		}
+	}
+}
+
+func TestMixedCountRange(t *testing.T) {
+	x := &Xdperf{cfg: mixedConfig()}
+	x.cfg.Count = math.MaxInt64 + 1
+	if err := x.prepareMixed(mixedResponse()); err == nil || !strings.Contains(err.Error(), "mixed --count must be <=") {
+		t.Fatalf("expected signed count range error, got %v", err)
 	}
 }

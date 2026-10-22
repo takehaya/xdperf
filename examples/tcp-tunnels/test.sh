@@ -131,7 +131,7 @@ for kind in ${TUNNEL_CASES:-gre gre-key gretap ip6gre ipip ip6tnl srv6 srv6-two 
         config="$(python3 "${TCP_PY_DIR}/config.py" tunnel "$kind" "$srcmac" "$dstmac" "$osrc" "$odst" "$isrc" "$idst" "$ism" "$idm" "$DST_PORT")"
         report="${XDPERF_EXAMPLE_RUNDIR}/tunnel-${kind}-${inner}.csv"
         TX_LOG="${XDPERF_EXAMPLE_RUNDIR}/tunnel-${kind}-${inner}.log"
-        run_tcp_plugin "$config" "$report" --recv --count 128 --pps 4000 --parallelism 1
+        run_tcp_plugin "$config" "$report" --recv --count 100000 --pps 4000 --parallelism 1
         stop_sink
         python3 "${TCP_PY_DIR}/verify.py" tunnel "$report" "$SINK_LOG" "$TX_LOG"
         completed=$((completed + 1))

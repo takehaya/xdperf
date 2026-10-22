@@ -25,7 +25,7 @@ for version in 4 6; do
         fi
         report="${XDPERF_EXAMPLE_RUNDIR}/payload-${version}-${feature}.csv"
         TX_LOG="${XDPERF_EXAMPLE_RUNDIR}/payload-${version}-${feature}.log"
-        run_tcp_plugin "$config" "$report" --count 128 --pps 4000 --parallelism 1
+        run_tcp_plugin "$config" "$report" --count 100000 --pps 4000 --parallelism 1
         if ! wait "$TCP_HELPER_PID"; then cat "$verifylog"; exit 1; fi
         rm -f "$AUX_PID_FILE"
         if [ "$feature" = loss ]; then ip netns exec "$NS_RX" tc qdisc del dev "$VETH_RX" root; fi

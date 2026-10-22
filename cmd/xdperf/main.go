@@ -102,13 +102,13 @@ func newApp(version string) *cli.App {
 		cli.StringFlag{
 			Name:   "count, c",
 			EnvVar: "XDPERF_COUNT",
-			Usage: "Number of packets to send (e.g., 100k, 1m). " +
-				"With --infinite or mixed TCP variants, this is the packet pool size. Required if --duration not specified.",
+			Usage: "TX worker frame limit (e.g., 100k, 1m); mixed TCP may finish earlier. " +
+				"With --infinite, sets the packet pool size. Finite TCP-only sets may omit count and duration.",
 		},
 		cli.DurationFlag{
 			Name:   "duration, t",
 			EnvVar: "XDPERF_DURATION",
-			Usage:  "duration to send packets (e.g., 10s, 1m). Required if --count not specified",
+			Usage:  "duration to send traffic (e.g., 10s, 1m); with packet variants, --duration requires --pps",
 		},
 		cli.IntFlag{
 			Name:   "debugmode, D",

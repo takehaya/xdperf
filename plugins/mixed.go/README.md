@@ -34,9 +34,12 @@ Otherwise, the host resolves the route and neighbor for `dst_ip:tcp_port`.
 The sample UDP packet uses IPv4 only.
 For TCP over IPv6, supply an IPv6 `tcp_base` and keep the UDP addresses as IPv4.
 
-Currently, when a response includes `tcp_flow`, `--count` only sets the Diff pool size and does not limit transmitted frames, including UDP packets.
-The run ends at the earliest of all TCP flows completing, `--duration` expiring, or a signal starting TCP drain.
-The CLI still requires `--count` or `--duration`.
+`--count N` limits total UDP and TCP frames sent by TX workers, including TCP control frames and retransmissions.
+RX replies, idle iterations, and build failures do not consume the budget.
+All TCP flows completing first ends the run below N.
+At N, the sender skips drain and lingers for 2×RTO; unfinished flows produce a warning and exit 0 unless a flow failed.
+Duration and signals start TCP drain.
+This plugin includes packets, so choose count or duration, and supply PPS with duration.
 Weights do not guarantee actual frame or byte ratios.
 See the [mixed traffic guide](../../docs/ja/mixed_variants.md) for SDK JSON, tunnel limits, startup time, and RX diagnostics.
 

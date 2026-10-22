@@ -668,7 +668,7 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	}
 	x.Logger.Info("TCP stream started", zap.Int("workers", len(x.cpus)), zap.Uint32("repeat", repeat), zap.Duration("interval", interval))
 
-	// Completion: all flows DONE/FAILED/SKIPPED, --duration elapsed (then
+	// Completion: mixed count reached, all flows DONE/FAILED/SKIPPED, --duration elapsed (then
 	// drain), or a signal (drain; a second one aborts).
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -676,6 +676,9 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 
 	recs := make([]coreelf.BpfTcpStats, ebpf.MustPossibleCPU())
 	flows := uint64(x.cfg.TCPFlows)
+	budgetStates := make([]coreelf.BpfPktState, len(recs))
+	packetCounts := make([]coreelf.BpfDatarec, len(recs))
+	countReached := false
 	allClosed := func() bool {
 		s, err := x.readTCPStats(recs)
 		return err == nil && s.Done+s.Failed+s.Skipped >= flows
@@ -733,6 +736,9 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 			return
 		}
 		draining = true
+		if countReached {
+			lingerCh = nil
+		}
 		x.Logger.Info("draining: closing all flows", zap.String("reason", reason))
 		if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.Drain = 1 }); err != nil {
 			x.Logger.Warn("failed to set drain flag", zap.Error(err))
@@ -746,6 +752,43 @@ loop:
 	for {
 		select {
 		case <-poll.C:
+			if x.mixed != nil && x.cfg.Count > 0 && !x.cfg.Infinite && !draining && !countReached {
+				var remaining int64
+				if err := x.bpfobjs.MixedBudgetMap.Lookup(uint32(0), &remaining); err != nil {
+					once.Do(func() { firstErr = fmt.Errorf("read TX count pool: %w", err) })
+					break loop
+				}
+				if err := x.bpfobjs.PktStateMap.Lookup(uint32(0), &budgetStates); err != nil {
+					once.Do(func() { firstErr = fmt.Errorf("read TX budgets: %w", err) })
+					break loop
+				}
+				if x.mixedCountReached(remaining, budgetStates) {
+					// Pool and per-CPU reads can catch a reservation in transit.
+					if err := x.bpfobjs.TxStatsMap.Lookup(uint32(0), &packetCounts); err != nil {
+						once.Do(func() { firstErr = err })
+						break loop
+					}
+					tcpFlows, err := x.readTCPFlows(x.cfg.TCPFlows)
+					if err != nil {
+						once.Do(func() { firstErr = err })
+						break loop
+					}
+					var sent uint64
+					for _, f := range tcpFlows {
+						sent += f.TxPkts
+					}
+					for _, p := range packetCounts {
+						sent += p.Packets
+					}
+					if sent < x.cfg.Count {
+						continue
+					}
+					countReached = true
+					x.Logger.Info("count reached", zap.Uint64("count", x.cfg.Count))
+					lingerCh = time.After(linger)
+					durationCh, drainDeadline, abortDeadline = nil, nil, nil
+				}
+			}
 			if lingerCh == nil && allClosed() {
 				if x.mixed != nil {
 					startDrain("all flows closed")
@@ -806,6 +849,9 @@ loop:
 	}
 	if statsErr != nil {
 		return statsErr
+	}
+	if countReached && s.Done+s.Failed+s.Skipped < flows {
+		x.Logger.Warn(fmt.Sprintf("count reached before %d flows completed", flows-s.Done-s.Failed-s.Skipped))
 	}
 	// A run whose flows did not complete is a failed measurement: report it
 	// in the exit status, not only in the log (e.g. every SYN refused).

@@ -1185,6 +1185,8 @@ static __always_inline void update_stats_and_index(__u32 local_idx, __u16 target
         if (next >= count)
             next = 0;
         state->idx = next;
+        if (state->budget)
+            state->budget--;
     }
 
     // Update stats
@@ -1376,6 +1378,9 @@ int xdp_tx_mixed(struct xdp_md *ctx)
     struct tcp_cfg *tcp = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
     if (!cfg || !st || !tcp || !cfg->total_weight)
         return XDP_ABORTED;
+    struct pkt_state *ps = bpf_map_lookup_elem(&pkt_state_map, &zero);
+    if (!ps)
+        return XDP_ABORTED;
     // Drain/abort uses the legacy all-flow cursor and stops packet traffic.
     if (tcp->drain) {
         st->drain_opportunities++;
@@ -1391,12 +1396,41 @@ int xdp_tx_mixed(struct xdp_md *ctx)
         st->errors++;
         return XDP_ABORTED;
     }
+    struct tcp_cpu_state *cs = bpf_map_lookup_elem(&tcp_cpu_state_map, &zero);
+    __s64 *remaining = bpf_map_lookup_elem(&mixed_budget_map, &zero);
+    if (!cs || !remaining || !cfg->workers)
+        return XDP_ABORTED;
+    if (!cfg->packet_weight) {
+        if (!cs->count)
+            return XDP_DROP;
+        __u32 slot = cs->first % cfg->workers;
+        __u32 *closed = bpf_map_lookup_elem(&mixed_closed_map, &slot);
+        if (closed && *closed >= cs->count) {
+            if (ps->budget) {
+                __sync_fetch_and_add(remaining, (__s64)ps->budget);
+                ps->budget = 0;
+            }
+            return XDP_DROP;
+        }
+    }
+    if (cfg->count_limited && !ps->budget) {
+        __s64 estimate = *remaining;
+        __s64 chunk = estimate > 0 ? estimate / ((__s64)cfg->workers * 16) : 1;
+        if (chunk < 1)
+            chunk = 1;
+        __s64 old = __sync_fetch_and_add(remaining, -chunk);
+        __s64 got = old > 0 ? (old < chunk ? old : chunk) : 0;
+        // Undo the unfilled reservation so returned chunks cannot cancel debt.
+        if (got < chunk)
+            __sync_fetch_and_add(remaining, chunk - got);
+        ps->budget = got;
+        if (!got)
+            return XDP_DROP;
+    }
     __u32 pick = (__u64)bpf_get_prandom_u32() * cfg->total_weight >> 32;
     if (pick < cfg->packet_weight) {
         st->packet_opportunities++;
-        struct pkt_state *ps = bpf_map_lookup_elem(&pkt_state_map, &zero);
-        if (ps)
-            ps->last_base_idx = 0xffffffff;
+        ps->last_base_idx = 0xffffffff;
         bpf_tail_call(ctx, &mixed_progs, 0);
         st->errors++;
         return XDP_ABORTED;
