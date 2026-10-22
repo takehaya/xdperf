@@ -184,12 +184,12 @@ func newApp(version string) *cli.App {
 		cli.IntFlag{
 			Name:   "tcp-vlan-id",
 			EnvVar: "XDPERF_TCP_VLAN_ID",
-			Usage:  "TCP responder: 802.1Q VLAN id (0 = untagged)",
+			Usage:  "TCP responder: 802.1Q VLAN ID; tag replies even to untagged frames (veth/rx offload; 0 = untagged)",
 		},
 		cli.IntFlag{
 			Name:   "tcp-vlan-pcp",
 			EnvVar: "XDPERF_TCP_VLAN_PCP",
-			Usage:  "TCP responder: 802.1Q priority (0..7)",
+			Usage:  "TCP responder: PCP for reply tags even to untagged frames (veth/rx offload; requires --tcp-vlan-id; 0..7)",
 		},
 		cli.StringFlag{
 			Name:   "tcp-flow-report",

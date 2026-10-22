@@ -1,5 +1,5 @@
 // xdperf-sink is a small TCP/UDP receiver that counts connections and bytes.
-// It is the measurement endpoint for xdperf's --tcp mode on a veth test bed
+// It is the measurement endpoint for xdperf's TCP flow plugins on a veth test bed
 // and is meant to run unchanged as a backend Pod in a Kubernetes cluster.
 //
 // It prints a one-line summary every --interval and a final JSON line on

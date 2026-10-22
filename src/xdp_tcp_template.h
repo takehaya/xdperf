@@ -3,7 +3,7 @@
 
 #include "xdp_tcp_encap.h"
 
-// Mixed TCP has a separate builder, leaving standalone TCP's instructions intact.
+// Build mixed TCP frames from templates with an all-zero payload.
 static __noinline int tcp_template_build(struct xdp_md *ctx, const struct tcp_template *t, struct tcp_cpu_state *cs,
                                          const struct tcp_tx_action *a)
 {

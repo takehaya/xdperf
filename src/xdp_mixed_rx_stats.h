@@ -1,7 +1,7 @@
 #ifndef XDP_MIXED_RX_STATS_H
 #define XDP_MIXED_RX_STATS_H
 
-// Keep diagnostics separate from tcp_stats: standalone TCP must stay identical.
+// Keep RX classification counters separate from TCP flow statistics.
 enum mixed_rx_reason {
     MIXED_RX_PARSE_FAILED,
     MIXED_RX_PORT_OUTSIDE,
