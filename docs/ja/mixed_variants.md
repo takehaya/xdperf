@@ -1,8 +1,8 @@
 # パケットと TCP フローを混合して送信する
 
 `--plugin` で読み込む Wasm プラグインは、パケットと TCP フローを一つの `PacketVariantSet` として返せます。
-`--tcp` は付けません。
-単独の `--tcp` と `--tcp-server` の使い方は [TCP ストリームガイド](tcp_stream.md) を参照してください。
+TCP だけを送る場合は `tcpflow.go` を使えます (単独 `--tcp` は廃止済み)。
+TCP 送信と `--tcp-server` の使い方は [TCP ストリームガイド](tcp_stream.md) を参照してください。
 
 ## サンプルを動かす
 
@@ -78,7 +78,7 @@ packet 側は有限の重み付き Diff プールを使うため、丸めも生�
 `flows[].bytes` は uint64 の十進文字列です。
 `"65536"` のように指定し、CLI の `1g` のような接尾辞は使えません。
 `"0"` は `--count` または `--duration` が必要な無制限フローです。
-フロー番号は TCP バリアント順、各 `flows` 配列順に割り当て、送信元ポートは `--tcp-port-base + フロー番号` になります。
+フロー番号は TCP バリアント順、各 `flows` 配列順に割り当て、送信元ポートは `tcp_port_base + フロー番号` (省略時の先頭は 10000) になります。
 全フローでポートを共有せず、ポート範囲は 65535 以下に収めます。
 
 ## TCP ひな型と追加フィールドを指定する
@@ -96,7 +96,9 @@ packet 側は有限の重み付き Diff プールを使うため、丸めも生�
 
 TCP の seq、ack、flags、window、data offset、送信元ポート、長さ、チェックサムはエンジンが更新します。
 ひな型の MAC、IP、DSCP、TTL、IPv6 flow label などは保持しますが、ECN は 0 にします。
-ひな型を指定した場合、`--tcp-src-ip`、`--tcp-dst-mac`、`--tcp-vlan-id`、`--tcp-vlan-pcp` による上書きは使えません。
+送信元 IP、MAC、VLAN を固定する場合はひな型に指定します。
+宛先だけのグループでは経路から解決し、802.1Q VLAN 子を通る場合はタグを自動で付けます (PCP 0)。
+802.1ad などは `base_packet` に指定し、自動生成では拒否します。
 固定オプションの上限は通常 SYN 32 バイト、データ 40 バイトで、Timestamps 有効時はそれぞれ 20、28 バイトです。
 これらはユーザー指定の固定オプションに使える長さです。
 エンジンが付ける Timestamps の 12 バイトと、SYN の MSS/WS の 8 バイトを合わせた TCP オプション全体は 40 バイト以下に収めます。
@@ -157,7 +159,7 @@ RX は内側の IP、TCP ポートで照合し、外側 IP、MAC、VNI、GRE key
 送信と異なるトンネルや、カプセル化が外れた応答も受理します。
 ACK/RST は受信した外側ヘッダのスワップではなく、送信テンプレートから再構築します。
 トンネル内の ARP/ND はホストへ渡します。
-この対応範囲は混合モードのもので、単独 `--tcp` と `--tcp-server` のトンネル対応を意味しません。
+この対応範囲は混合モードのもので、`--tcp-server` のトンネル対応を意味しません。
 Linux 対向の例は [tcp-vxlan](../../examples/tcp-vxlan/README.md) と [tcp-tunnels](../../examples/tcp-tunnels/README.md) を参照してください。
 
 ## 終了条件と起動時間を確認する
@@ -189,8 +191,10 @@ sequential の複数パラメータは同時に進み、それぞれの範囲の
 混合では TCP も同じ予算を消費するため、パケット列の到達範囲は TCP との配分に依存します。
 
 `--infinite`、`--rx-device`、`--swap-resp` は混合モードでは使えません。
-宛先、接続数、バイト数はプラグインから渡し、`--tcp-dst`、`--tcp-flows`、`--tcp-bytes` は指定しません。
-共通の window、MSS、RTO、送信元ポート先頭、IPv4 ID の方式は TCP フラグで設定できます。
+宛先、接続数、バイト数、TCP 設定はプラグインから渡します。
+`window_segs`、`mss`、`rto_ms` の 0 は既定値 (32、自動、200 ms)、空の `ip_id` は `flow` を使います。
+`--tcp-mss`、`--tcp-rto`、`--tcp-vlan-id`、`--tcp-vlan-pcp` は responder 専用です。
+window、MSS、RTO、IPv4 ID は各 TCP グループの設定、送信元ポート先頭は集合の `tcp_port_base` で指定します。
 
 起動時は基底 BPF をロードした後、プラグイン応答を検証し、混合専用の 4 プログラムを追加ロードします。
 送信テンプレートから外側ヘッダ修正の上限と LCO の有無を設定し、Timestamps または非ゼロパターンがあれば拡張 TX/RX 入口を選びます。

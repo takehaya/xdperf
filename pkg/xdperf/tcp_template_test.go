@@ -5,12 +5,16 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"go.uber.org/zap"
 )
 
@@ -79,8 +83,8 @@ func TestTCPBaseValidation(t *testing.T) {
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
 	}
-	if x.cfg.TCPDst != "192.0.2.2:5201" {
-		t.Fatal(x.cfg.TCPDst)
+	if x.mixed.destination != "192.0.2.2:5201" {
+		t.Fatal(x.mixed.destination)
 	}
 	v.TCPFlow.Destination = "192.0.2.3:5201"
 	x = &Xdperf{cfg: mixedConfig()}
@@ -322,11 +326,47 @@ func TestTCPGroupKnobsBPF(t *testing.T) {
 	}
 	for _, explicitBase := range []bool{false, true} {
 		t.Run(fmt.Sprint("base=", explicitBase), func(t *testing.T) {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			original, err := netns.Get()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer original.Close()
+			ns, err := netns.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ns.Close()
+			defer func() {
+				if err := netns.Set(original); err != nil {
+					t.Fatal(err)
+				}
+			}()
+			link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "tcp-knobs", HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 1}, MTU: 1500}}
+			if err := netlink.LinkAdd(link); err != nil {
+				t.Fatal(err)
+			}
+			if err := netlink.LinkSetUp(link); err != nil {
+				t.Fatal(err)
+			}
+			addr, err := netlink.ParseAddr("192.0.2.1/24")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := netlink.AddrAdd(link, addr); err != nil {
+				t.Fatal(err)
+			}
+			for _, ip := range []string{"192.0.2.2", "192.0.2.3"} {
+				if err := netlink.NeighSet(&netlink.Neigh{LinkIndex: link.Index, State: netlink.NUD_PERMANENT, IP: net.ParseIP(ip), HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 2}}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			spec, err := coreelf.LoadBpf()
 			if err != nil {
 				t.Fatal(err)
 			}
-			dev, err := net.InterfaceByName("lo")
+			dev, err := net.InterfaceByName("tcp-knobs")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -334,14 +374,40 @@ func TestTCPGroupKnobsBPF(t *testing.T) {
 			dev.HardwareAddr = net.HardwareAddr{2, 0, 0, 0, 0, 1}
 			x := &Xdperf{cfg: mixedConfig(), Device: dev, bpfSpec: spec, cpus: []int{0, 1}, Logger: zap.NewNop()}
 			x.cfg.Parallelism = 2
-			x.cfg.TCPWindow, x.cfg.TCPMSS, x.cfg.TCPRTO, x.cfg.TCPIPID = 11, 1200, 450*time.Millisecond, "shared"
 			if !explicitBase {
-				x.cfg.TCPDstMAC = "02:00:00:00:00:02"
+				for i, protocol := range []netlink.VlanProtocol{netlink.VLAN_PROTOCOL_8021Q, netlink.VLAN_PROTOCOL_8021AD} {
+					vlan := &netlink.Vlan{LinkAttrs: netlink.LinkAttrs{Name: fmt.Sprintf("vlan%d", i), ParentIndex: link.Index}, VlanId: 110 + i, VlanProtocol: protocol}
+					if err := netlink.LinkAdd(vlan); err != nil {
+						t.Fatal(err)
+					}
+					if err := netlink.LinkSetUp(vlan); err != nil {
+						t.Fatal(err)
+					}
+					addr, err := netlink.ParseAddr(fmt.Sprintf("192.0.%d.1/24", 3+i))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := netlink.AddrAdd(vlan, addr); err != nil {
+						t.Fatal(err)
+					}
+					peer := net.ParseIP(fmt.Sprintf("192.0.%d.2", 3+i))
+					if err := netlink.NeighSet(&netlink.Neigh{LinkIndex: vlan.Index, State: netlink.NUD_PERMANENT, IP: peer, HardwareAddr: net.HardwareAddr{2, 0, 0, 0, 0, 2}}); err != nil {
+						t.Fatal(err)
+					}
+					target, err := x.resolveTCPTarget(net.JoinHostPort(peer.String(), "5201"), 0)
+					if protocol == netlink.VLAN_PROTOCOL_8021AD {
+						if err == nil || !strings.Contains(err.Error(), "requires an 802.1Q VLAN child") {
+							t.Fatalf("802.1ad route accepted: %v", err)
+						}
+					} else if err != nil || target.vlanID != 110 || target.vlanPCP != 0 {
+						t.Fatalf("802.1Q route: target=%+v err=%v", target, err)
+					}
+				}
 			}
 			r := &guest.GeneratorProcessResponse{TemplateType: guest.GeneratorTemplateTypeVariable,
 				VariablePacketTemplate: guest.PacketVariantSet{Pattern: guest.VariantSelectionModeMixed, TCPPortBase: 12001}}
 			for i := range 2 {
-				f := &guest.TCPFlowVariant{Destination: fmt.Sprintf("127.0.0.%d:5201", i+2),
+				f := &guest.TCPFlowVariant{Destination: fmt.Sprintf("192.0.2.%d:5201", i+2),
 					DataOptions: []byte{1, 1, 1, 1}, Flows: []guest.TCPFlow{{Bytes: "1000"}}}
 				if i == 0 {
 					f.WindowSegs, f.MSS, f.RTOMillis, f.IPID = 3, 900, 75, "flow"
@@ -364,11 +430,9 @@ func TestTCPGroupKnobsBPF(t *testing.T) {
 				target, err = parseTCPBase(x.mixed.groups[0].variant.Base)
 				frame = x.mixed.groups[0].variant.Base.Data
 			} else {
-				resolver := &Xdperf{cfg: x.cfg, Device: dev, bpfSpec: spec, Logger: x.Logger}
-				resolver.cfg.TCPMSS = x.mixed.groups[0].mss
-				target, err = resolver.resolveTCPTarget()
+				target, err = x.resolveTCPTarget(x.mixed.destination, x.mixed.groups[0].mss)
 				if err == nil {
-					frame, err = buildTCPTemplate(target, uint16(x.cfg.TCPPortBase))
+					frame, err = buildTCPTemplate(target, uint16(x.mixed.portBase))
 				}
 			}
 			if err != nil {
@@ -394,7 +458,7 @@ func TestTCPGroupKnobsBPF(t *testing.T) {
 				}
 				wantMSS, wantWindow, wantRTO, wantID := uint16(896), uint32(3), uint64(75*time.Millisecond), uint8(0)
 				if i == 1 {
-					wantMSS, wantWindow, wantRTO, wantID = 1196, 11, uint64(450*time.Millisecond), 1
+					wantMSS, wantWindow, wantRTO, wantID = 1444, 32, uint64(200*time.Millisecond), 0
 				}
 				if tmpl.Cfg.Mss != wantMSS || tmpl.Cfg.WindowSegs != wantWindow || tmpl.Cfg.RtoNs != wantRTO || tmpl.Cfg.IpIdShared != wantID {
 					t.Fatalf("group %d settings: %+v", i, tmpl.Cfg)

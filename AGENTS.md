@@ -50,8 +50,8 @@ CLI (cmd/xdperf/main.go) → 設定パース → Xdperf初期化
   │   → 全TCPフロー完了、count上限、duration、シグナルで終了 (count到達は短いlinger、duration/シグナルのdrain中はTCPだけを駆動)
   └── サーバー: eBPF読込 → 受信、オプションでswap応答
 
-(--tcp 指定時) プラグインを使わず Go がテンプレートフレームを生成 → tcp_cfg/tcp_flow マップ初期化
-  → xdp_rx_tcp を attach → xdp_tx_tcp を live frames で駆動 (SYN/データ/FIN/再送) → 相手の ACK を xdp_rx_tcp が処理
+(tcpflow.go 使用時) プラグインが宛先とフロー設定を返す → Go が経路からテンプレートを生成
+  → 混合 TCP の xdp_rx_mixed / xdp_tx_mixed で SYN/データ/FIN/再送を処理
 
 (--tcp-server 指定時) tcp_srv_cfg マップ初期化 → xdp_rx_tcp_server を attach (worker 無し)
   → SYN/データ/FIN に XDP_TX で応答、フロー状態は tcp_srv_flow_map (LRU_HASH) → Go のスイーパが古いエントリを回収
@@ -62,14 +62,14 @@ CLI (cmd/xdperf/main.go) → 設定パース → Xdperf初期化
 ### 主要パッケージ
 
 - **cmd/xdperf/** — urfave/cliを使用したCLIエントリポイント。`run` (トラフィック生成/受信) と `probe` (XDP機能検出) の2コマンド。
-- **cmd/xdperf-sink/** — TCP/UDP を受けてコネクション数・バイト数を数える小さなシンク。`--tcp` モードの対向や、Kubernetes 上のバックエンド Pod として使う。veth 向けに pass-through XDP を attach する `-xdp-pass-dev` を持つ。
+- **cmd/xdperf-sink/** — TCP/UDP を受けてコネクション数・バイト数を数える小さなシンク。TCP フロー送信の対向や、Kubernetes 上のバックエンド Pod として使う。veth 向けに pass-through XDP を attach する `-xdp-pass-dev` を持つ。
 - **pkg/xdperf/** — コアロジック: `Xdperf`構造体がライフサイクル全体を管理。設定バリデーション、eBPFアタッチ、Diff生成、PPSレート制限、統計収集。
   - `generator.go` — Diffベースパケット生成のコア。プラグインからの`PacketVariantSet`をBPF用の`DiffEntry`に変換。Sequential/Mixedの2つのバリアント選択モード、重み付き分配をサポート。
   - `bpf.go` — BPFマップ初期化 (`initBasePacketMaps`, `initDiffMap`, `initChecksumMetaMaps`, `initPktStateMap`)。エントリをCPUごとに分配。
   - `stats.go` — リアルタイム統計表示。diff_errorsとchecksum_errorsの追跡を含む。
-  - `tcp.go` — TCP ストリームモード (`--tcp`)。XDP だけで TCP クライアントを実装する (SYN/データ/再送/FIN)。テンプレート生成、`tcp_*` マップ初期化、worker 駆動、統計。設計は [docs/ja/design_xdp_tcp.md](docs/ja/design_xdp_tcp.md)、使い方は [docs/ja/tcp_stream.md](docs/ja/tcp_stream.md)。
+  - `tcp.go` — プラグインの TCP フロー送信。XDP だけで TCP クライアントを実装する (SYN/データ/再送/FIN)。テンプレート生成、`tcp_*` マップ初期化、worker 駆動、統計。設計は [docs/ja/design_xdp_tcp.md](docs/ja/design_xdp_tcp.md)、使い方は [docs/ja/tcp_stream.md](docs/ja/tcp_stream.md)。
   - `mixed.go`、`tcp_template.go`、`tcp_encap.go`、`tcp_flow_params.go`：混合バリアントの検証、配分、TCPひな型、外側ヘッダ修正、フロー別送信元IPを管理。`timestamps` と `payload_pattern` を指定した場合は拡張TCP入口を選択する。使い方は [docs/ja/mixed_variants.md](docs/ja/mixed_variants.md)。
-  - `tcp_flowreport.go`：`--tcp-flow-report` で単独TCPと混合TCPのフロー別記録をCSVへ出力する。
+  - `tcp_flowreport.go`：`--tcp-flow-report` でTCPのフロー別記録をCSVへ出力する。
   - `veth.go`：worker数が送信側vethの使用中RXキュー数を超えると警告する。examplesは `VETH_QUEUES` でキュー数を設定できる。
   - `tcp_server.go` — XDP TCP レスポンダ (`--tcp-server`)。UDP の `--swap-resp` の TCP 版で、待ち受けアドレスの解釈、`tcp_srv_cfg` 初期化、統計、古い LAST_ACK / SYN_RCVD エントリを回収するスイーパ。設計は design_xdp_tcp.md の 12 節。
   - `metrics.go` — OTLPメトリクス送信の計装。`ObservableCounter` のコールバックでBPF統計マップとNIC sysfsカウンタを累積値として読む (stdout表示系とは独立)。
@@ -103,7 +103,7 @@ Cソースは`src/`に配置:
 - `xdp_packet.h` — データ構造定義 (`base_packet`, `diff_entry`, `diff_value`, `checksum_meta`, `pkt_state`)
 - `xdp_checksum.h` — IPv4/IPv6/TCP/UDP/ICMPv6チェックサム計算。`bpf_loop`とsafeコールバックでverifier制約を回避。
 - `xdp_utils.h` — ユーティリティマクロ
-- `xdp_tcp.h` — TCP ストリームモードのデータ構造・マップと `xdp_tx_tcp` / `xdp_rx_tcp` プログラム。フロー状態は `tcp_flow_map` (ARRAY + `bpf_spin_lock`) に置き、TX/RX 間で共有する。受信フレームをその場で応答に書き換える `tcp_reply_inplace` もここ (レスポンダと共有)。
+- `xdp_tcp.h` — TCP ストリームモードのデータ構造・マップと `xdp_tx_tcp_mixed` プログラムと共有状態機械。フロー状態は `tcp_flow_map` (ARRAY + `bpf_spin_lock`) に置き、TX/RX 間で共有する。受信フレームをその場で応答に書き換える `tcp_reply_inplace` もここ (レスポンダと共有)。
 - `xdp_mixed.h`：混合送信の配分テーブルとtail call先マップ。入口の `xdp_tx_mixed` / `xdp_rx_mixed` は `xdp_prog.c` にある。
 - `xdp_tcp_template.h`、`xdp_tcp_template_rx.h`：混合TCPのテンプレート生成とRX照合。`xdp_tcp_encap.h` は外側ヘッダの長さとチェックサムを更新する。
 - `xdp_tcp_decap.h`：VXLAN、GENEVE、SRv6、GTP-U、GRE、IPIP、MPLSの受信解析。

@@ -170,75 +170,26 @@ func newApp(version string) *cli.App {
 			EnvVar: "XDPERF_OTLP_INSECURE",
 			Usage:  "use insecure (plaintext) gRPC connection for OTLP export",
 		},
-		cli.BoolFlag{
-			Name:   "tcp",
-			EnvVar: "XDPERF_TCP",
-			Usage:  "TCP stream mode: open --tcp-flows connections to --tcp-dst from XDP and stream data; use packet variants for mixed traffic. See docs/ja/design_xdp_tcp.md",
-		},
-		cli.StringFlag{
-			Name:   "tcp-dst",
-			EnvVar: "XDPERF_TCP_DST",
-			Usage:  "TCP stream destination host:port ([v6]:port for IPv6)",
-		},
-		cli.StringFlag{
-			Name:   "tcp-src-ip",
-			EnvVar: "XDPERF_TCP_SRC_IP",
-			Usage:  "TCP stream source address (default: the route's preferred source on --device)",
-		},
-		cli.StringFlag{
-			Name:   "tcp-dst-mac",
-			EnvVar: "XDPERF_TCP_DST_MAC",
-			Usage:  "TCP stream next-hop MAC override (default: ARP/NDP via the kernel neighbor cache)",
-		},
-		cli.IntFlag{
-			Name:   "tcp-flows",
-			EnvVar: "XDPERF_TCP_FLOWS",
-			Value:  1,
-			Usage:  "TCP stream concurrent connections (1..65536)",
-		},
-		cli.IntFlag{
-			Name:   "tcp-port-base",
-			EnvVar: "XDPERF_TCP_PORT_BASE",
-			Value:  10000,
-			Usage:  "TCP stream first source port; flows use port-base..port-base+flows-1",
-		},
-		cli.IntFlag{
-			Name:   "tcp-window",
-			EnvVar: "XDPERF_TCP_WINDOW",
-			Value:  32,
-			Usage:  "TCP stream max segments in flight per flow (fixed window)",
-		},
 		cli.IntFlag{
 			Name:   "tcp-mss",
 			EnvVar: "XDPERF_TCP_MSS",
-			Usage:  "TCP stream payload bytes per segment, 64..65535 (default: MTU-sized, 1448 for IPv4 / 1428 for IPv6)",
-		},
-		cli.StringFlag{
-			Name:   "tcp-bytes",
-			EnvVar: "XDPERF_TCP_BYTES",
-			Usage:  "TCP stream bytes to send per flow (e.g. 100m, 1g); 0 = stream until --duration",
+			Usage:  "TCP responder: payload bytes per segment (0 = MTU-sized default)",
 		},
 		cli.DurationFlag{
 			Name:   "tcp-rto",
 			EnvVar: "XDPERF_TCP_RTO",
 			Value:  200 * time.Millisecond,
-			Usage:  "TCP stream retransmission timeout",
+			Usage:  "TCP responder: retransmission timeout (also controls stale-flow retention)",
 		},
 		cli.IntFlag{
 			Name:   "tcp-vlan-id",
 			EnvVar: "XDPERF_TCP_VLAN_ID",
-			Usage:  "TCP stream 802.1Q VLAN id (0 = untagged)",
+			Usage:  "TCP responder: 802.1Q VLAN id (0 = untagged)",
 		},
 		cli.IntFlag{
 			Name:   "tcp-vlan-pcp",
 			EnvVar: "XDPERF_TCP_VLAN_PCP",
-			Usage:  "TCP stream 802.1Q priority",
-		},
-		cli.StringFlag{
-			Name:   "tcp-ip-id",
-			EnvVar: "XDPERF_TCP_IP_ID",
-			Value:  "flow",
-			Usage:  "TCP stream IPv4 ID: flow (per connection, like Linux: GRO can merge a flow's segments) or shared (one counter per TX CPU: interleaved flows reach the peer unmerged)",
+			Usage:  "TCP responder: 802.1Q priority (0..7)",
 		},
 		cli.StringFlag{
 			Name:   "tcp-flow-report",
@@ -344,33 +295,16 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.OTLPInsecure = ctx.Bool("otlp-insecure")
 	c.OTLPAttributes = ctx.String("otlp-attributes")
 	c.Version = version
-	c.TCP = ctx.Bool("tcp")
-	// The default packet plugin does not apply to standalone TCP.
-	if c.TCP && !ctx.IsSet("plugin") && !ctx.IsSet("p") {
-		c.PluginName = ""
-	}
-	c.TCPDst = ctx.String("tcp-dst")
-	c.TCPSrcIP = ctx.String("tcp-src-ip")
-	c.TCPDstMAC = ctx.String("tcp-dst-mac")
-	c.TCPFlows = ctx.Int("tcp-flows")
-	c.TCPPortBase = ctx.Int("tcp-port-base")
-	c.TCPWindow = ctx.Int("tcp-window")
 	c.TCPMSS = ctx.Int("tcp-mss")
 	c.TCPRTO = ctx.Duration("tcp-rto")
 	c.TCPVlanID = ctx.Int("tcp-vlan-id")
 	c.TCPVlanPCP = ctx.Int("tcp-vlan-pcp")
-	c.TCPIPID = ctx.String("tcp-ip-id")
 	c.TCPFlowReport = ctx.String("tcp-flow-report")
 	c.TCPServer = ctx.Bool("tcp-server")
 	c.TCPListen = ctx.String("tcp-listen")
 	c.TCPMaxConns = ctx.Int("tcp-max-conns")
 	c.TCPAckEvery = ctx.Int("tcp-ack-every")
 	c.TCPSweepAfter = ctx.Duration("tcp-sweep-after")
-	tcpBytes, err := xdperf.ParseCount(ctx.String("tcp-bytes"))
-	if err != nil {
-		return xdperf.Config{}, fmt.Errorf("invalid --tcp-bytes value: %w", err)
-	}
-	c.TCPBytes = tcpBytes
 
 	// Parse count
 	countStr := ctx.String("count")
@@ -393,8 +327,10 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 		c.LoggerConfig.Verbose = 1
 	}
 
-	if c.TCP && c.PluginName != "" {
-		return xdperf.Config{}, fmt.Errorf("--tcp cannot be combined with --plugin; use TCP flow variants")
+	for _, flag := range []string{"tcp-mss", "tcp-rto", "tcp-vlan-id", "tcp-vlan-pcp"} {
+		if !c.TCPServer && ctx.IsSet(flag) {
+			return xdperf.Config{}, fmt.Errorf("--%s requires --tcp-server", flag)
+		}
 	}
 
 	// Derive computed fields (e.g. PluginLanguage) before validating.
@@ -406,9 +342,8 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	}
 
 	// Calculate count from duration if specified (after validation)
-	// The TCP modes do not use Count: --duration and --pps are applied
-	// directly (with fractional per-worker rates).
-	tcpMode := c.TCP || c.TCPServer
+	// The responder does not use Count.
+	tcpMode := c.TCPServer
 	if c.Sender && !tcpMode && c.Duration > 0 && c.PPS > 0 {
 		// Divide the full 128-bit product to floor the budget exactly, including
 		// sub-second durations. Div64 requires hi < divisor for a uint64 result.

@@ -3,7 +3,7 @@
 # Shared implementation for the tcpstream scenario (meant to be sourced)
 #
 # Topology: two netns connected by a veth pair. The sender runs
-# `xdperf run --tcp` (an XDP-implemented TCP client: SYN / data / FIN all
+# `xdperf run --plugin tcpflow.go` (an XDP-implemented TCP client: SYN / data / FIN all
 # from XDP, see docs/ja/design_xdp_tcp.md); the receiver is either
 # xdperf-sink (a plain kernel-TCP sink that counts connections and bytes) or
 # `xdperf run --tcp-server` (the XDP responder, design doc section 12). The
@@ -14,15 +14,15 @@
 # Overridable via environment variables:
 #   FLOWS (16) / BYTES (1m) / WINDOW (16) / PARALLELISM (1) / DST_PORT (5201)
 #   CASES — which cases to run (default: all of the below)
-#     v4 v6 v4vlan v6vlan          --tcp client -> xdperf-sink (kernel TCP)
+#     v4 v6 v4vlan v6vlan          tcpflow.go client -> xdperf-sink (kernel TCP)
 #     v4srv v6srv v4vlansrv v6vlansrv v4ack2srv
-#                                  --tcp client -> --tcp-server (XDP responder)
+#                                  tcpflow.go client -> --tcp-server (XDP responder)
 #     linux4 linux6                socat (kernel TCP) -> --tcp-server
-#     v4loss                       --tcp client -> xdperf-sink with ~1% loss each way
+#     v4loss                       tcpflow.go client -> xdperf-sink with ~1% loss each way
 #     linux4loss                   socat -> --tcp-server with ~1% loss each way
-#     v4bigsrv                     --tcp -> --tcp-server, 1 flow x BIG_BYTES (5g):
+#     v4bigsrv                     tcpflow.go -> --tcp-server, 1 flow x BIG_BYTES (5g):
 #                                  past 4 GiB, the 32-bit sequence space wraps
-#     v6manysrv                    --tcp -> --tcp-server over IPv6, MANY_FLOWS (64)
+#     v6manysrv                    tcpflow.go -> --tcp-server over IPv6, MANY_FLOWS (64)
 #                                  x MANY_BYTES (64m) concurrently
 #   LOSS_PCT (1) — loss for the *loss cases
 #   BIG_BYTES (5g) / MANY_FLOWS (64) / MANY_BYTES (64m) / BIG_WINDOW (64) —
@@ -316,10 +316,13 @@ run_tcp_case() {
 
     local expected_bytes
     expected_bytes=$(( $(to_number "${BYTES}") * FLOWS ))
-    if ! ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --tcp --device "${VETH_TX}" \
-        --tcp-dst "$dst" --tcp-flows "${FLOWS}" --tcp-bytes "${BYTES}" \
-        --tcp-window "${WINDOW}" --parallelism "${PARALLELISM}" "$@" > "${TX_LOG}" 2>&1; then
-        print_error "xdperf --tcp failed (log: ${TX_LOG})"
+    local dst_ip="${dst%:*}" config
+    dst_ip="${dst_ip#[}"; dst_ip="${dst_ip%]}"
+    config="{\"dst_ip\":\"${dst_ip}\",\"tcp_port\":${dst##*:},\"flows\":${FLOWS},\"bytes\":\"$(to_number "${BYTES}")\",\"window_segs\":${WINDOW}}"
+    if ! ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
+        --plugin tcpflow.go --plugin-path "${PLUGIN_PATH}" --plugin-config "$config" \
+        --parallelism "${PARALLELISM}" "$@" > "${TX_LOG}" 2>&1; then
+        print_error "xdperf TCP flow failed (log: ${TX_LOG})"
         tail -n 20 "${TX_LOG}"
         stop_sink
         return 1
@@ -358,10 +361,13 @@ run_tcp_server_case() {
 
     local expected_bytes
     expected_bytes=$(( $(to_number "${BYTES}") * FLOWS ))
-    if ! ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --tcp --device "${VETH_TX}" \
-        --tcp-dst "$dst" --tcp-flows "${FLOWS}" --tcp-bytes "${BYTES}" \
-        --tcp-window "${WINDOW}" --parallelism "${PARALLELISM}" "$@" > "${TX_LOG}" 2>&1; then
-        print_error "xdperf --tcp failed (log: ${TX_LOG})"
+    local dst_ip="${dst%:*}" config
+    dst_ip="${dst_ip#[}"; dst_ip="${dst_ip%]}"
+    config="{\"dst_ip\":\"${dst_ip}\",\"tcp_port\":${dst##*:},\"flows\":${FLOWS},\"bytes\":\"$(to_number "${BYTES}")\",\"window_segs\":${WINDOW}}"
+    if ! ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
+        --plugin tcpflow.go --plugin-path "${PLUGIN_PATH}" --plugin-config "$config" \
+        --parallelism "${PARALLELISM}" "$@" > "${TX_LOG}" 2>&1; then
+        print_error "xdperf TCP flow failed (log: ${TX_LOG})"
         tail -n 20 "${TX_LOG}"
         stop_xdp_server
         return 1
@@ -484,12 +490,12 @@ run_tcp_test() {
         case "$c" in
             v4) run_tcp_case v4 "${RX_IP4}:${DST_PORT}" "${RX_IP4}:${DST_PORT}" || failed=1 ;;
             v6) run_tcp_case v6 "[${RX_IP6}]:${DST_PORT}" "[${RX_IP6}]:${DST_PORT}" || failed=1 ;;
-            v4vlan) run_tcp_case v4vlan "${RX_VIP4}:${DST_PORT}" "${RX_VIP4}:${DST_PORT}" --tcp-vlan-id "${VLAN_ID}" || failed=1 ;;
-            v6vlan) run_tcp_case v6vlan "[${RX_VIP6}]:${DST_PORT}" "[${RX_VIP6}]:${DST_PORT}" --tcp-vlan-id "${VLAN_ID}" --tcp-vlan-pcp 3 || failed=1 ;;
+            v4vlan) run_tcp_case v4vlan "${RX_VIP4}:${DST_PORT}" "${RX_VIP4}:${DST_PORT}" || failed=1 ;;
+            v6vlan) run_tcp_case v6vlan "[${RX_VIP6}]:${DST_PORT}" "[${RX_VIP6}]:${DST_PORT}" || failed=1 ;;
             v4srv) run_tcp_server_case v4srv "${RX_IP4}:${DST_PORT}" "${RX_IP4}:${DST_PORT}" "" || failed=1 ;;
             v6srv) run_tcp_server_case v6srv "[${RX_IP6}]:${DST_PORT}" "[${RX_IP6}]:${DST_PORT}" "" || failed=1 ;;
-            v4vlansrv) run_tcp_server_case v4vlansrv "${RX_VIP4}:${DST_PORT}" "${RX_VIP4}:${DST_PORT}" "--tcp-vlan-id ${VLAN_ID}" --tcp-vlan-id "${VLAN_ID}" || failed=1 ;;
-            v6vlansrv) run_tcp_server_case v6vlansrv "[${RX_VIP6}]:${DST_PORT}" "[${RX_VIP6}]:${DST_PORT}" "--tcp-vlan-id ${VLAN_ID} --tcp-vlan-pcp 3" --tcp-vlan-id "${VLAN_ID}" --tcp-vlan-pcp 3 || failed=1 ;;
+            v4vlansrv) run_tcp_server_case v4vlansrv "${RX_VIP4}:${DST_PORT}" "${RX_VIP4}:${DST_PORT}" "--tcp-vlan-id ${VLAN_ID}" || failed=1 ;;
+            v6vlansrv) run_tcp_server_case v6vlansrv "[${RX_VIP6}]:${DST_PORT}" "[${RX_VIP6}]:${DST_PORT}" "--tcp-vlan-id ${VLAN_ID} --tcp-vlan-pcp 3" || failed=1 ;;
             v4ack2srv) run_tcp_server_case v4ack2srv ":${DST_PORT}" "${RX_IP4}:${DST_PORT}" "--tcp-ack-every 2" || failed=1 ;;
             linux4) run_linux_client_case linux4 "${RX_IP4}:${DST_PORT}" "TCP4:${RX_IP4}:${DST_PORT}" || failed=1 ;;
             linux6) run_linux_client_case linux6 "[${RX_IP6}]:${DST_PORT}" "TCP6:[${RX_IP6}]:${DST_PORT}" || failed=1 ;;

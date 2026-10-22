@@ -125,7 +125,7 @@ func (x *Xdperf) templateMSS(t *tcpTarget, mss, options int) error {
 	return nil
 }
 
-// initTCPTemplates also handles destination-only groups for backwards compatibility.
+// initTCPTemplates also handles destination-only groups for plugins such as tcpflow.go.
 func (x *Xdperf) initTCPTemplates(fallback *tcpTarget, frame []byte, cfg coreelf.BpfTcpCfg) error {
 	for i, group := range x.mixed.groups {
 		payload, err := tcpPayload(group.variant.TCPFlow.PayloadPattern)
@@ -157,16 +157,13 @@ func (x *Xdperf) initTCPTemplates(fallback *tcpTarget, frame []byte, cfg coreelf
 					return err
 				}
 				b = append([]byte(nil), g.variant.Base.Data...)
-			} else if f.Destination != x.cfg.TCPDst || len(x.mixed.groups[0].variant.Base.Data) != 0 {
-				copyCfg := x.cfg
-				copyCfg.TCPDst, copyCfg.TCPMSS = f.Destination, g.mss
-				resolver := &Xdperf{cfg: copyCfg, Device: x.Device, bpfSpec: x.bpfSpec, Logger: x.Logger}
+			} else if f.Destination != x.mixed.destination || len(x.mixed.groups[0].variant.Base.Data) != 0 {
 				var err error
-				t, err = resolver.resolveTCPTarget()
+				t, err = x.resolveTCPTarget(f.Destination, g.mss)
 				if err != nil {
 					return err
 				}
-				b, err = buildTCPTemplate(t, uint16(x.cfg.TCPPortBase))
+				b, err = buildTCPTemplate(t, uint16(x.mixed.portBase))
 				if err != nil {
 					return err
 				}

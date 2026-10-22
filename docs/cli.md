@@ -33,8 +33,8 @@ A required option such as `--device` can be supplied through its environment var
 
 Values use the same formats and validation as CLI flags, including count/PPS suffixes and Go durations.
 Set booleans to `true` or `false`; a CLI flag such as `--recv=false` overrides an environment value of `true`.
-For `--tcp`, a nonempty `XDPERF_PLUGIN` counts as an explicit plugin selection and is rejected just like `--plugin`.
-Unset `XDPERF_PLUGIN` or override it with `--plugin=` to use standalone TCP.
+Explicit `--tcp-mss`, `--tcp-rto`, `--tcp-vlan-id`, or `--tcp-vlan-pcp` requires `--tcp-server`, including when supplied through `XDPERF_TCP_*`.
+Even explicit zero or default values are rejected without the responder.
 
 ```shell
 # Set variables in the privileged process so sudo does not filter them out.
@@ -58,8 +58,8 @@ All logger settings default to `false` or `0`; `--debugmode` greater than zero s
 
 ### Run Command - Operating Modes
 
-For packet traffic, `xdperf run` uses the modes below. Standalone `--tcp`,
-`--tcp-server`, and plugin-driven mixed traffic have additional rules described
+For packet traffic, `xdperf run` uses the modes below.
+`--tcp-server` and plugin-driven TCP traffic have additional rules described
 in [TCP and mixed modes](#tcp-and-mixed-modes).
 
 | Mode | Flags | Description |
@@ -112,34 +112,25 @@ in [TCP and mixed modes](#tcp-and-mixed-modes).
 
 ### TCP and Mixed Modes
 
-`--tcp` uses CLI settings and no plugin. `--tcp-server` receives without a
-plugin or TX workers. A plugin response containing `kind: "tcp_flow"` selects
-mixed mode without `--tcp`; at least one `packet` variant is also required.
+TCP senders use `--plugin tcpflow.go` or another plugin returning `kind: "tcp_flow"`.
+TCP-only sets and mixed packet/TCP sets share the mixed engine.
+Standalone `--tcp` and its client flags have been removed.
+`--tcp-server` receives without a plugin or TX workers.
+See [tcpflow.go settings](../plugins/tcpflow.go/README.md) for window, MSS, RTO, IP ID and source-port defaults.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `--tcp` | `false` | Standalone TCP sender; implies `--send` |
-| `--tcp-dst` | required for `--tcp` | Destination IP literal and port (`[v6]:port` for IPv6) |
-| `--tcp-src-ip` | route preferred source | Source IP on the device |
-| `--tcp-dst-mac` | ARP/NDP | Next-hop MAC override |
-| `--tcp-flows` | `1` | Concurrent flows; 1..65536, within source-port capacity |
-| `--tcp-port-base` | `10000` | First source port; base + flow count must be <= 65536 |
-| `--tcp-window` | `32` | Maximum in-flight segments per flow, 1..65535 |
-| `--tcp-mss` | MTU-sized, 1448 IPv4 / 1428 IPv6 | Payload size, minimum 64; extra headers/options reduce the default |
-| `--tcp-bytes` | `0` | Bytes per flow (`k`/`m`/`g`); zero requires duration |
-| `--tcp-rto` | `200ms` | Retransmission timeout |
-| `--tcp-vlan-id` / `--tcp-vlan-pcp` | `0` / `0` | VLAN ID (0 = no tag) and priority |
-| `--tcp-ip-id` | `flow` | Per-flow IPv4 ID, or `shared` per TX CPU |
-| `--tcp-flow-report` | disabled | CSV path for each TCP flow’s final ledger in standalone or mixed mode |
+| `--tcp-flow-report` | disabled | CSV path for each TCP flow’s final ledger |
 | `--tcp-server` | `false` | XDP responder; implies receive-only mode |
 | `--tcp-listen` | `:5201` | Responder address; omitted IP = any IPv4, `[::]:port` = any IPv6 |
 | `--tcp-max-conns` | `262144` | Responder LRU flow-table size |
 | `--tcp-sweep-after` | `max(65*rto, 2s)` | Retire idle SYN_RCVD/LAST_ACK entries |
 | `--tcp-ack-every` | `1` | ACK every N in-order data segments (1..255); PSH/FIN/out-of-order get immediate ACKs |
+| `--tcp-mss` | MTU-sized, 1448 IPv4 / 1428 IPv6 | Responder only: advertised MSS, minimum 64 |
+| `--tcp-rto` | `200ms` | Responder only: stale-flow retention timeout basis |
+| `--tcp-vlan-id` / `--tcp-vlan-pcp` | `0` / `0` | Responder only: VLAN ID and priority |
 
-Standalone TCP needs `--tcp-bytes` and/or `--duration`, accepts duration without
-PPS, and rejects `--plugin`, `--recv`, `--count`, `--infinite`, and `--rx-device`.
-The responder accepts duration without PPS and rejects `--tcp`, `--swap-resp`,
+The responder accepts duration without PPS and rejects `--swap-resp`,
 `--rx-device`, `--count`, and `--infinite`.
 
 Mixed mode uses `--count` as a TX worker frame limit across packets and TCP, including SYN, data, FIN, retransmissions, probes, and RST.
@@ -154,8 +145,7 @@ Sets containing packets require count or duration, and PPS with duration.
 PPS limits TX iterations, including TCP iterations that send nothing.
 Mixed mode rejects `--infinite`, `--rx-device`, and `--swap-resp`.
 The packet Diff pool remains `min(count, 131072 × parallelism)` and count must be at least parallelism when specified.
-The plugin supplies destinations, flow counts, and byte targets; do not set
-`--tcp-dst`, `--tcp-flows`, or `--tcp-bytes` for mixed traffic.
+The plugin supplies destinations, flow counts, byte targets and TCP tuning settings.
 Use `--recv` to count packet replies; TCP replies are always processed.
 
 The CSV columns are `flow,src_port,state,tx_pkts,tx_data,tx_rtx,rx_pkts,rx_replies,bytes_acked`.
@@ -174,7 +164,7 @@ measurement of lost replies.
 ### Option Details
 
 The count/duration/PPS constraints below apply to the plugin packet and mixed
-sender modes. Receive-only and standalone TCP modes use the rules above.
+sender modes. Receive-only and TCP-only modes use the rules above.
 
 #### `--device`, `-d` (Required)
 

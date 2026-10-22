@@ -115,8 +115,8 @@ func readCollection(constants map[string]any, sizes map[string]uint32, mixed boo
 			MaxDiffsPerPacket: base.MaxDiffsPerPacket, MaxPacketSize: base.MaxPacketSize,
 			MinPacketSize: base.MinPacketSize, SwapResp: base.SwapResp,
 		}
-		objs.XdpPassDummy, objs.XdpRx, objs.XdpRxTcp, objs.XdpRxTcpServer = base.XdpPassDummy, base.XdpRx, base.XdpRxTcp, base.XdpRxTcpServer
-		objs.XdpTx, objs.XdpTxChecksum, objs.XdpTxCsumDiff, objs.XdpTxCsumRecalc, objs.XdpTxTcp = base.XdpTx, base.XdpTxChecksum, base.XdpTxCsumDiff, base.XdpTxCsumRecalc, base.XdpTxTcp
+		objs.XdpPassDummy, objs.XdpRx, objs.XdpRxTcpServer = base.XdpPassDummy, base.XdpRx, base.XdpRxTcpServer
+		objs.XdpTx, objs.XdpTxChecksum, objs.XdpTxCsumDiff, objs.XdpTxCsumRecalc = base.XdpTx, base.XdpTxChecksum, base.XdpTxCsumDiff, base.XdpTxCsumRecalc
 	}
 
 	// Populate the prog_array for tail calls
@@ -235,13 +235,11 @@ type baseObjects struct {
 	SwapResp           *ebpf.Variable `ebpf:"swap_resp"`
 	XdpPassDummy       *ebpf.Program  `ebpf:"xdp_pass_dummy"`
 	XdpRx              *ebpf.Program  `ebpf:"xdp_rx"`
-	XdpRxTcp           *ebpf.Program  `ebpf:"xdp_rx_tcp"`
 	XdpRxTcpServer     *ebpf.Program  `ebpf:"xdp_rx_tcp_server"`
 	XdpTx              *ebpf.Program  `ebpf:"xdp_tx"`
 	XdpTxChecksum      *ebpf.Program  `ebpf:"xdp_tx_checksum"`
 	XdpTxCsumDiff      *ebpf.Program  `ebpf:"xdp_tx_csum_diff"`
 	XdpTxCsumRecalc    *ebpf.Program  `ebpf:"xdp_tx_csum_recalc"`
-	XdpTxTcp           *ebpf.Program  `ebpf:"xdp_tx_tcp"`
 }
 
 // LoadMixedPrograms adds mixed dispatch/TCP programs to an existing collection.

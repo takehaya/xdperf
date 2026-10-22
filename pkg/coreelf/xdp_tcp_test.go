@@ -59,13 +59,17 @@ var (
 
 func loadTCPObjs(t *testing.T) *BpfObjects {
 	t.Helper()
-	objs, _, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1, "tcp_srv_flow_map": 1024})
+	objs, spec, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1, "tcp_srv_flow_map": 1024})
 	if err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
 			t.Fatalf("ReadBaseCollectionWithSizes failed: %+v", ve)
 		}
 		t.Fatalf("ReadBaseCollectionWithSizes failed: %v", err)
+	}
+	if err := LoadMixedProgramsWithFeatures(objs, spec, MixedProgramFeatures{}); err != nil {
+		objs.Close()
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { objs.Close() })
 	return objs
@@ -272,7 +276,7 @@ func ipWords(ip net.IP) [4]uint32 {
 }
 
 // ---------------------------------------------------------------------------
-// client (xdp_tx_tcp / xdp_rx_tcp)
+// client (xdp_tx_tcp_mixed / xdp_rx_tcp_mixed)
 // ---------------------------------------------------------------------------
 
 type clientOpts struct {
@@ -299,6 +303,9 @@ func clientTemplate(t *testing.T, o clientOpts) (cfg BpfTcpCfg, frame []byte) {
 		s.src, s.dst = ipA6, ipB6
 	}
 	frame = buildSeg(t, s)
+	if o.vlan != 0 {
+		binary.BigEndian.PutUint16(frame[14:], o.vlan|3<<13)
+	}
 	l3 := uint16(14)
 	if o.vlan != 0 {
 		l3 = 18
@@ -360,6 +367,14 @@ func setupClient(t *testing.T, objs *BpfObjects, o clientOpts, flows ...BpfTcpFl
 	if err := objs.TcpCfgMap.Put(&zero, &cfg); err != nil {
 		t.Fatal(err)
 	}
+	tmpl := BpfTcpTemplate{Cfg: cfg, SynLen: 8}
+	copy(tmpl.Prefix[:], frame[:cfg.L4Off])
+	copy(tmpl.TcpHeader[:], frame[cfg.L4Off:cfg.HdrLen])
+	copy(tmpl.SynOptions[:], []byte{2, 4, byte(cfg.Mss >> 8), byte(cfg.Mss), 1, 3, 3, 7})
+	tmpl.SynSum = sum16(tmpl.SynOptions[:])
+	if err := objs.TcpTemplateMap.Put(zero, tmpl); err != nil {
+		t.Fatal(err)
+	}
 	for i := range flows {
 		k := uint32(i)
 		flows[i].SrcPort = testPortBase + uint16(i)
@@ -378,6 +393,13 @@ func setupClient(t *testing.T, objs *BpfObjects, o clientOpts, flows ...BpfTcpFl
 		states[i] = BpfTcpCpuState{First: 0, Stride: 1, Count: uint32(len(flows))}
 	}
 	if err := objs.TcpCpuStateMap.Put(&zero, states); err != nil {
+		t.Fatal(err)
+	}
+	selected := make([]BpfMixedState, n)
+	for i := range selected {
+		selected[i].SelectedGroup = 0xffffffff // use the worker's full scan
+	}
+	if err := objs.MixedStateMap.Put(zero, selected); err != nil {
 		t.Fatal(err)
 	}
 	return frame
@@ -443,7 +465,7 @@ func TestTcpRxSynAckEstablishes(t *testing.T) {
 				{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{7}},
 			}
 			// rx-vlan-offload: the frame arrives untagged even when a VLAN is configured
-			ret, out := runProg(t, objs.XdpRxTcp, buildSeg(t, s))
+			ret, out := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, s))
 			if ret != xdpTx {
 				t.Fatalf("ret = %d, want XDP_TX", ret)
 			}
@@ -479,7 +501,7 @@ func TestTcpRxDropsBadLength(t *testing.T) {
 	// SYN-ACK whose IP header claims 1000 bytes that are not in the frame.
 	frame := buildSeg(t, fromPeer(false, 0, 5000, 1001, tcpSYN|tcpACK))
 	binary.BigEndian.PutUint16(frame[14+2:], 20+20+1000)
-	if ret, _ := runProg(t, objs.XdpRxTcp, frame); ret != xdpDrop {
+	if ret, _ := runProg(t, objs.XdpRxTcpMixed, frame); ret != xdpDrop {
 		t.Fatalf("ret = %d, want XDP_DROP", ret)
 	}
 	if f := getFlow(t, objs, 0); f.State != tfSynSent {
@@ -492,7 +514,7 @@ func TestTcpRxSynSentStaleAckIsReset(t *testing.T) {
 	setupClient(t, objs, clientOpts{}, synSent(1000))
 	// The peer still holds a connection from an earlier run: challenge ACK.
 	in := buildSeg(t, fromPeer(false, 0, 7777, 424242, tcpACK))
-	ret, out := runProg(t, objs.XdpRxTcp, in)
+	ret, out := runProg(t, objs.XdpRxTcpMixed, in)
 	if ret != xdpTx {
 		t.Fatalf("ret = %d, want XDP_TX (RST)", ret)
 	}
@@ -510,7 +532,7 @@ func TestTcpRxSynSentStaleAckIsReset(t *testing.T) {
 	if err := objs.TcpFlowMap.Put(&k, &f); err != nil {
 		t.Fatal(err)
 	}
-	runProg(t, objs.XdpRxTcp, in)
+	runProg(t, objs.XdpRxTcpMixed, in)
 	if f := getFlow(t, objs, 0); f.SynRst != 2 {
 		t.Fatalf("syn_rst = %d, want 2 (no second immediate resend)", f.SynRst)
 	}
@@ -520,13 +542,13 @@ func TestTcpRxSynSentRstAcceptance(t *testing.T) {
 	objs := loadTCPObjs(t)
 	setupClient(t, objs, clientOpts{}, synSent(1000))
 	// A RST that does not ack our SYN (leftover of an earlier run) is ignored.
-	if ret, _ := runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 0, 999, tcpRST|tcpACK))); ret != xdpDrop {
+	if ret, _ := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 0, 999, tcpRST|tcpACK))); ret != xdpDrop {
 		t.Fatalf("ret = %d, want XDP_DROP", ret)
 	}
 	if f := getFlow(t, objs, 0); f.State != tfSynSent {
 		t.Fatalf("state = %d, want SYN_SENT", f.State)
 	}
-	runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 0, 1001, tcpRST|tcpACK)))
+	runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 0, 1001, tcpRST|tcpACK)))
 	if f := getFlow(t, objs, 0); f.State != tfFailed {
 		t.Fatalf("state = %d, want FAILED", f.State)
 	}
@@ -543,7 +565,7 @@ func TestTcpRxAcceptsAckAboveRewoundSndNxt(t *testing.T) {
 	setupClient(t, objs, clientOpts{}, f)
 
 	s := fromPeer(false, 0, 5001, 1+5*1000, tcpACK)
-	if ret, _ := runProg(t, objs.XdpRxTcp, buildSeg(t, s)); ret != xdpDrop {
+	if ret, _ := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, s)); ret != xdpDrop {
 		t.Fatalf("pure ACK must not be answered, ret = %d", ret)
 	}
 	got := getFlow(t, objs, 0)
@@ -551,7 +573,7 @@ func TestTcpRxAcceptsAckAboveRewoundSndNxt(t *testing.T) {
 		t.Fatalf("flow = una %d nxt %d acked %d rtx_pending %d dup %d", got.SndUna, got.SndNxt, got.BytesAcked, got.RtxPending, got.DupAcks)
 	}
 	// Beyond snd_max: ignored.
-	runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 5001, 1+11*1000, tcpACK)))
+	runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 5001, 1+11*1000, tcpACK)))
 	if got := getFlow(t, objs, 0); got.SndUna != 5001 {
 		t.Fatalf("ACK beyond snd_max accepted: una %d", got.SndUna)
 	}
@@ -566,7 +588,7 @@ func TestTcpRxDupAckIgnoresWindowUpdates(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		s := fromPeer(false, 0, 5001, 1, tcpACK)
 		s.win = uint16(60000 + i) // window update: not a duplicate ACK
-		runProg(t, objs.XdpRxTcp, buildSeg(t, s))
+		runProg(t, objs.XdpRxTcpMixed, buildSeg(t, s))
 	}
 	if got := getFlow(t, objs, 0); got.DupAcks != 0 || got.RtxPending != 0 {
 		t.Fatalf("window updates counted as dup ACKs: %d", got.DupAcks)
@@ -574,7 +596,7 @@ func TestTcpRxDupAckIgnoresWindowUpdates(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		s := fromPeer(false, 0, 5001, 1, tcpACK)
 		s.win = 60002
-		runProg(t, objs.XdpRxTcp, buildSeg(t, s))
+		runProg(t, objs.XdpRxTcpMixed, buildSeg(t, s))
 	}
 	if got := getFlow(t, objs, 0); got.RtxPending != 1 {
 		t.Fatalf("3 dup ACKs did not trigger fast retransmit (dup=%d)", got.DupAcks)
@@ -584,7 +606,7 @@ func TestTcpRxDupAckIgnoresWindowUpdates(t *testing.T) {
 func TestTcpRxFinMustBeInSequence(t *testing.T) {
 	objs := loadTCPObjs(t)
 	setupClient(t, objs, clientOpts{}, established(0))
-	ret, out := runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 6000, 1, tcpFIN|tcpACK)))
+	ret, out := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 6000, 1, tcpFIN|tcpACK)))
 	if ret != xdpTx {
 		t.Fatalf("ret = %d", ret)
 	}
@@ -600,7 +622,7 @@ func TestTcpRxRstSeqCheck(t *testing.T) {
 	objs := loadTCPObjs(t)
 	setupClient(t, objs, clientOpts{}, established(1000))
 	// RST off rcv_nxt: challenge ACK, flow stays established.
-	ret, out := runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 9999, 0, tcpRST)))
+	ret, out := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 9999, 0, tcpRST)))
 	if ret != xdpTx {
 		t.Fatalf("RST off rcv_nxt: ret %d", ret)
 	}
@@ -614,7 +636,7 @@ func TestTcpRxRstSeqCheck(t *testing.T) {
 		t.Fatalf("challenge_acks = %d", st.ChallengeAcks)
 	}
 	// RST at rcv_nxt: flow failed.
-	runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 5001, 0, tcpRST)))
+	runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 5001, 0, tcpRST)))
 	if f := getFlow(t, objs, 0); f.State != tfFailed {
 		t.Fatalf("state %d after an RST at rcv_nxt, want failed", f.State)
 	}
@@ -628,14 +650,14 @@ func TestTcpRxOldAckDoesNotShrinkWindow(t *testing.T) {
 	setupClient(t, objs, clientOpts{}, f)
 	ack := fromPeer(false, 0, 5001, 2001, tcpACK)
 	ack.win = 40000
-	runProg(t, objs.XdpRxTcp, buildSeg(t, ack))
+	runProg(t, objs.XdpRxTcpMixed, buildSeg(t, ack))
 	// A reordered older ACK with a closed window arrives afterwards.
 	old := fromPeer(false, 0, 5001, 1001, tcpACK)
 	old.win = 0
-	runProg(t, objs.XdpRxTcp, buildSeg(t, old))
+	runProg(t, objs.XdpRxTcpMixed, buildSeg(t, old))
 	beyond := fromPeer(false, 0, 5001, 9001, tcpACK)
 	beyond.win = 0
-	runProg(t, objs.XdpRxTcp, buildSeg(t, beyond))
+	runProg(t, objs.XdpRxTcpMixed, buildSeg(t, beyond))
 	if got := getFlow(t, objs, 0); got.SndUna != 2001 || got.SndWnd != 40000 {
 		t.Fatalf("snd_una %d snd_wnd %d, want 2001 / 40000", got.SndUna, got.SndWnd)
 	}
@@ -731,7 +753,7 @@ func TestTcpRxFailedFlowIsReset(t *testing.T) {
 	f := established(0)
 	f.State = tfFailed
 	setupClient(t, objs, clientOpts{}, f)
-	ret, out := runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 5001, 777, tcpACK)))
+	ret, out := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 5001, 777, tcpACK)))
 	if ret != xdpTx {
 		t.Fatalf("ret = %d", ret)
 	}
@@ -775,23 +797,13 @@ func TestTcpRxPassesForeignTraffic(t *testing.T) {
 		}},
 		{"ipv4 while ipv6 configured", true, 0, func(t *testing.T) []byte { return buildSeg(t, fromPeer(false, 0, 1, 1, tcpACK)) }},
 		{"ipv6 extension header", true, 0, ip6ext},
-		{"other vlan", false, testVlanID, func(t *testing.T) []byte {
-			s := fromPeer(false, 0, 1, 1, tcpACK)
-			s.vlan = testVlanID + 1
-			return buildSeg(t, s)
-		}},
-		{"tagged while untagged configured", false, 0, func(t *testing.T) []byte {
-			s := fromPeer(false, 0, 1, 1, tcpACK)
-			s.vlan = testVlanID
-			return buildSeg(t, s)
-		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			objs := loadTCPObjs(t)
 			setupClient(t, objs, clientOpts{v6: tc.v6, vlan: tc.vlan}, established(0))
 			in := tc.pkt(t)
-			ret, out := runProg(t, objs.XdpRxTcp, in)
+			ret, out := runProg(t, objs.XdpRxTcpMixed, in)
 			if ret != xdpPass {
 				t.Fatalf("ret = %d, want XDP_PASS", ret)
 			}
@@ -802,10 +814,28 @@ func TestTcpRxPassesForeignTraffic(t *testing.T) {
 	}
 }
 
-// txOnce runs xdp_tx_tcp once (non-live) on the template frame.
+// Mixed RX matches the inner TCP tuple even if VLAN tags differ or were stripped.
+func TestTcpRxMixedMatchesAcrossVLANStyles(t *testing.T) {
+	for _, vlan := range []uint16{0, testVlanID} {
+		objs := loadTCPObjs(t)
+		setupClient(t, objs, clientOpts{vlan: vlan}, established(0))
+		for _, received := range []uint16{0, testVlanID, testVlanID + 1} {
+			s := fromPeer(false, 0, 5001, 1, tcpACK)
+			s.vlan = received
+			if ret, _ := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, s)); ret != xdpDrop {
+				t.Fatalf("configured VLAN %d, received %d: ret=%d, want DROP (consumed ACK)", vlan, received, ret)
+			}
+		}
+		if f := getFlow(t, objs, 0); f.RxPkts != 3 || f.State != tfEstablished {
+			t.Fatalf("VLAN %d: tuple not matched: %+v", vlan, f)
+		}
+	}
+}
+
+// txOnce runs xdp_tx_tcp_mixed once (non-live) on the template frame.
 func txOnce(t *testing.T, objs *BpfObjects, frame []byte) (uint32, []byte) {
 	t.Helper()
-	return runProg(t, objs.XdpTxTcp, frame)
+	return runProg(t, objs.XdpTxTcpMixed, frame)
 }
 
 func TestTcpTxFinAfterMoreThan4GiB(t *testing.T) {
@@ -961,7 +991,7 @@ func TestTcpRxFinWait1Close(t *testing.T) {
 	f.BytesAcked = 3000
 	setupClient(t, objs, clientOpts{}, f)
 	// ACK of the FIN together with the peer's FIN: DONE, FIN not counted as data.
-	ret, out := runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 5001, 1+3001, tcpFIN|tcpACK)))
+	ret, out := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 5001, 1+3001, tcpFIN|tcpACK)))
 	if ret != xdpTx {
 		t.Fatalf("ret = %d", ret)
 	}
@@ -977,7 +1007,7 @@ func TestTcpRxFinWait1Close(t *testing.T) {
 func TestTcpRxEstablishedReAcksRetransmittedSynAck(t *testing.T) {
 	objs := loadTCPObjs(t)
 	setupClient(t, objs, clientOpts{}, established(1000))
-	ret, out := runProg(t, objs.XdpRxTcp, buildSeg(t, fromPeer(false, 0, 5000, 1001, tcpSYN|tcpACK)))
+	ret, out := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 5000, 1001, tcpSYN|tcpACK)))
 	if ret != xdpTx {
 		t.Fatalf("ret = %d, want the handshake ACK again", ret)
 	}
@@ -1489,7 +1519,7 @@ func TestTcpFlowLedger(t *testing.T) {
 		setupClient(t, objs, clientOpts{}, synSent(1000))
 		s := fromPeer(false, 0, 5000, 1001, tcpSYN|tcpACK)
 		s.win = 1000
-		if ret, _ := runProg(t, objs.XdpRxTcp, buildSeg(t, s)); ret != xdpTx {
+		if ret, _ := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, s)); ret != xdpTx {
 			t.Fatalf("ret %d", ret)
 		}
 		if f := getFlow(t, objs, 0); f.RxPkts != 1 || f.RxReplies != 1 || f.TxPkts != 0 {

@@ -83,7 +83,7 @@ sudo xdperf run --device ens4 --count 100k --parallelism 10 \
 
 ### TCP Stream Mode
 
-`--tcp` opens real TCP connections entirely from XDP (SYN, data, retransmissions, FIN) against any
+`--plugin tcpflow.go` opens real TCP connections entirely from XDP (SYN, data, retransmissions, FIN) against any
 TCP server, iperf3-style, without using a kernel socket on the sender. See
 [docs/ja/tcp_stream.md](docs/ja/tcp_stream.md) and the design notes in
 [docs/ja/design_xdp_tcp.md](docs/ja/design_xdp_tcp.md).
@@ -93,21 +93,22 @@ TCP server, iperf3-style, without using a kernel socket on the sender. See
 xdperf-sink -listen 10.0.0.2:5201
 
 # sender: 64 connections x 1 GB over 4 CPUs
-sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.0.2:5201 --tcp-flows 64 --tcp-bytes 1g --parallelism 4
+sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin --parallelism 4 \
+  --cfg '{"dst_ip":"10.0.0.2","tcp_port":5201,"flows":64,"bytes":"1000000000"}'
 
-# IPv6 / VLAN-tagged / time-bounded
-sudo xdperf run --tcp --device eth0 --tcp-dst '[fd00::2]:5201' --tcp-flows 16 --duration 30s
-sudo xdperf run --tcp --device eth0 --tcp-dst 10.0.100.2:5201 --tcp-vlan-id 100 --tcp-flows 8 --tcp-bytes 100m
+# IPv6, time-bounded; VLAN tags are inferred when the route uses an 802.1Q VLAN child.
+sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin --duration 30s \
+  --cfg '{"dst_ip":"fd00::2","tcp_port":5201,"flows":16,"bytes":"0"}'
 
 # XDP responder: answer SYN / data / FIN from XDP too (no kernel socket on either side).
-# Works with the --tcp client above or with any one-way Linux TCP sender (socat, nc).
+# Works with the tcpflow.go client above or with any one-way Linux TCP sender (socat, nc).
 # It never sends data back, so request/response clients (iperf3 -c, curl) do not work.
 sudo xdperf run --tcp-server --device eth0 --tcp-listen 10.0.0.2:5201
 ```
 
 ### Mixed Packet and TCP Variants
 
-Use `--plugin mixed.go` without `--tcp` to combine packet templates and TCP flows.
+Use `--plugin mixed.go` to combine packet templates and TCP flows.
 Weights allocate TX iterations; TCP waits can make the actual frame ratio differ.
 `--count` limits TX worker frames across packet and TCP variants, including retransmissions.
 The run can finish below this limit when all TCP flows complete first.
@@ -124,7 +125,7 @@ The peer must provide a TCP sink at port 5201.
 See the [sample plugin](plugins/mixed.go/README.md) and
 [Japanese mixed-traffic guide](docs/ja/mixed_variants.md) for TCP templates,
 tunnels, timestamps, payload patterns, per-flow parameters, RX diagnostics,
-and startup behavior. `--tcp-flow-report` also works with standalone `--tcp`.
+and startup behavior. Use `tcpflow.go` for TCP-only traffic; standalone `--tcp` has been removed.
 For veth tests with several workers, set `VETH_QUEUES` when creating the pair;
 see [examples](examples/README.md#veth-queues).
 

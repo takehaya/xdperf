@@ -36,16 +36,29 @@ type Xdperf struct {
 	RxDevice        *net.Interface // RX attach target; == Device unless --rx-device splits it off
 	cfg             Config
 	bpfSpec         *ebpf.CollectionSpec
-	tcpVariantBytes []uint64 // validated per-flow targets, nil for the legacy CLI mode
+	tcpVariantBytes []uint64 // validated per-flow targets
+	pluginResponse  *guest.GeneratorProcessResponse
 	mixed           *mixedPlan
 	otlpMeter       metric.Meter
 	cpus            []int // resolved CPU list for workers
 }
 
 // calculateDiffMapSize requires a validated config with positive Parallelism.
-func calculateDiffMapSize(cfg Config) uint32 {
-	if !cfg.Sender || cfg.TCP {
+func calculateDiffMapSize(cfg Config, resp *guest.GeneratorProcessResponse) uint32 {
+	if !cfg.Sender {
 		return 1
+	}
+	if resp != nil && resp.TemplateType == guest.GeneratorTemplateTypeVariable && len(resp.VariablePacketTemplate.Variants) > 0 {
+		tcpOnly := true
+		for _, variant := range resp.VariablePacketTemplate.Variants {
+			if variant.Kind != "tcp_flow" {
+				tcpOnly = false
+				break
+			}
+		}
+		if tcpOnly {
+			return 1
+		}
 	}
 	// Clamp before adding the spare entry and narrowing, avoiding both uint64
 	// overflow at MaxUint64 and uint32 truncation for large packet budgets.
@@ -83,7 +96,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	}
 	cleanupFnList = append(cleanupFnList, cleanup)
 	var pm *plugin.Manager
-	if cfg.Sender && !cfg.TCP {
+	if cfg.Sender {
 		managerOpts := []plugin.ManagerOption{plugin.WithLogger(logger)}
 		if cfg.WasmCacheDir != "" {
 			managerOpts = append(managerOpts, plugin.WithCacheDir(cfg.WasmCacheDir))
@@ -108,6 +121,25 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 		logger.Info("xdperf wasm plugin loader initialized")
 	}
 
+	if cfg.Device == "" {
+		return nil, fmt.Errorf("device is required")
+	}
+	dev, err := net.InterfaceByName(cfg.Device)
+	if err != nil {
+		return nil, fmt.Errorf("failed get device %s: %w", cfg.Device, err)
+	}
+
+	// Generate once before loading maps so TCP-only plugins do not allocate an
+	// unused packet diff pool. Union/bounds validation remains in StartClient.
+	var resp *guest.GeneratorProcessResponse
+	if cfg.Sender {
+		client := &Xdperf{Logger: logger, PluginManager: pm, cfg: cfg, Device: dev}
+		resp, err = client.callPlugin(context.Background())
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	consts := map[string]interface{}{
 		"swap_resp": func() uint32 {
 			if cfg.Receiver && cfg.SwapResp {
@@ -120,7 +152,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	// Calculate diff_map size based on mode. The kernel hard-caps the per-CPU
 	// round-robin pool to coreelf.MaxDiffEntries (= MAX_DIFF_ENTRIES); sizing the
 	// map beyond that just wastes entries the data plane never reads, so clamp here.
-	diffMapSize := calculateDiffMapSize(cfg)
+	diffMapSize := calculateDiffMapSize(cfg, resp)
 	logger.Info("calculated diff_map size",
 		zap.Uint32("diff_map_size", diffMapSize),
 		zap.Uint32("max_diff_entries", coreelf.MaxDiffEntries),
@@ -142,13 +174,6 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	})
 	logger.Info("xdperf xdp code loader initialized")
 
-	if cfg.Device == "" {
-		return nil, fmt.Errorf("device is required")
-	}
-	dev, err := net.InterfaceByName(cfg.Device)
-	if err != nil {
-		return nil, fmt.Errorf("failed get device %s: %w", cfg.Device, err)
-	}
 	rxdev := dev
 	if cfg.RxDevice != "" && cfg.RxDevice != cfg.Device {
 		rxdev, err = net.InterfaceByName(cfg.RxDevice)
@@ -175,15 +200,16 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	}
 
 	xd = &Xdperf{
-		Logger:        logger,
-		PluginManager: pm,
-		cleanupFnList: cleanupFnList,
-		bpfobjs:       obj,
-		cfg:           cfg,
-		Device:        dev,
-		RxDevice:      rxdev,
-		bpfSpec:       bpfSpec,
-		cpus:          cpus,
+		Logger:         logger,
+		PluginManager:  pm,
+		pluginResponse: resp,
+		cleanupFnList:  cleanupFnList,
+		bpfobjs:        obj,
+		cfg:            cfg,
+		Device:         dev,
+		RxDevice:       rxdev,
+		bpfSpec:        bpfSpec,
+		cpus:           cpus,
 	}
 
 	if cfg.OTLPEndpoint != "" {
@@ -258,15 +284,8 @@ func (x *Xdperf) setupOTLPMetrics() error {
 
 func (x *Xdperf) StartClient(ctx context.Context) error {
 	x.Logger.Info("start client mode")
-	if x.cfg.TCP {
-		return x.runTCP(ctx)
-	}
 
-	resp, err := x.callPlugin(ctx)
-	if err != nil {
-		x.Logger.Error("failed to load plugin", zap.Error(err))
-		return err
-	}
+	resp := x.pluginResponse
 	x.Logger.Info("plugin call successful")
 
 	x.Logger.Debug("plugin call successful for verbose logging", zap.Any("response", resp))

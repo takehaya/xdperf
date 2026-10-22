@@ -22,8 +22,8 @@ func TestMixedBPFDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfSpec: spec, cpus: []int{cpu}, Logger: zap.NewNop()}
-	x.cfg.TCPMSS = 1024
 	r := mixedResponse()
+	r.VariablePacketTemplate.Variants[1].TCPFlow.MSS = 1024
 	r.VariablePacketTemplate.Variants[1].TCPFlow.Flows[0].Bytes = "18446744073709551615"
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
