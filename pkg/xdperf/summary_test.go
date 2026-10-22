@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,6 +86,21 @@ func TestSummaryJSON(t *testing.T) {
 			}
 			if _, ok := got["nic"]; ok {
 				t.Fatal("unexpected NIC stats")
+			}
+			if mode == "client" {
+				x.Logger = zap.NewNop()
+				x.Device = &net.Interface{Name: "xdperf-summary-missing"}
+				x.cfg.ShowNICStats = true
+				if _, err := x.readNICStats(); err == nil {
+					t.Fatal("missing initial NIC stats accepted")
+				}
+				if err := x.ShowFinalStats(NICStats{}); err == nil {
+					t.Fatal("missing final NIC stats accepted")
+				}
+				after, err := os.ReadFile(path)
+				if err != nil || string(after) != string(data) {
+					t.Fatal("NIC read failure changed the summary file")
+				}
 			}
 			x.cfg.SummaryJSON = filepath.Join(path, "missing.json")
 			if err := x.writeSummary(); err == nil {

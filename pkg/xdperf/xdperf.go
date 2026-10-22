@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"github.com/takehaya/xdperf/pkg/logger"
@@ -475,6 +476,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		ttype = TrafficTypeBoth
 		rxprog = x.bpfobjs.XdpRx
 	}
+	var rxLink link.Link
 	if x.RxDevice.Index != x.Device.Index {
 		// Split mode: xdp_rx counts on the dedicated RX device, while the TX
 		// device keeps a dummy program so its own veth XDP_TX path stays alive.
@@ -483,6 +485,7 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 			return err
 		}
 		defer lrx.Close()
+		rxLink = lrx
 		rxprog = x.bpfobjs.XdpPassDummy
 	}
 	// dummy XDP Prog attachment
@@ -491,6 +494,9 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 		return err
 	}
 	defer l.Close()
+	if rxLink == nil && x.cfg.Receiver {
+		rxLink = l
+	}
 
 	xdpmd := coreelf.XdpMd{
 		DataEnd:        uint32(len(in)),
@@ -510,7 +516,14 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	// Get NIC stats before sending (only if flag is set)
 	var nicStatsBefore NICStats
 	if x.cfg.ShowNICStats {
-		nicStatsBefore = x.GetNICStats()
+		if x.cfg.SummaryJSON != "" {
+			nicStatsBefore, err = x.readNICStats()
+			if err != nil {
+				return fmt.Errorf("initial NIC stats: %w", err)
+			}
+		} else {
+			nicStatsBefore = x.GetNICStats()
+		}
 	}
 
 	x.beginSummary()
@@ -593,8 +606,15 @@ func (x *Xdperf) runTXPacket(ctx context.Context) error {
 	cancel()
 	wg.Wait()
 
+	if x.summary != nil && rxLink != nil {
+		if err := rxLink.Close(); err != nil {
+			return fmt.Errorf("detach RX before summary JSON: %w", err)
+		}
+	}
 	// Show final statistics with NIC stats comparison
-	x.ShowFinalStats(nicStatsBefore)
+	if err := x.ShowFinalStats(nicStatsBefore); err != nil && x.summary != nil {
+		return err
+	}
 
 	if firstErr != nil {
 		return fmt.Errorf("worker failed: %w", firstErr)
