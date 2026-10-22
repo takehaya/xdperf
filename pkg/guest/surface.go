@@ -210,6 +210,9 @@ type GeneratorCleanupResponse struct {
 // The engine owns TCP sequence numbers, flags, windows and checksums.
 // Destinations may differ between groups. Byte slices serialize as base64 JSON.
 type TCPFlowVariant struct {
+	// Connections repeats the Flows slots: nil = once, positive = total attempts,
+	// zero = until --duration. Each attempt uses a fresh source port.
+	Connections *uint32 `json:"connections,omitempty"`
 	// Zero values use defaults: window 32, MSS sized for MTU, RTO 200ms.
 	WindowSegs uint32 `json:"window_segs,omitempty"`
 	MSS        uint16 `json:"mss,omitempty"`

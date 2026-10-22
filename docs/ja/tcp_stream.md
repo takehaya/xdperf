@@ -211,3 +211,38 @@ ND は直接 ICMPv6 に到達できる形式が対象で、未対応の拡張ヘ
 `--otlp-endpoint` 指定時は混合モードで `xdperf.mixed.rx` を出力する (単位 `{packet}`、累積単調増加カウンタ)。
 `reason` 属性はフィールド名から `rx_` を除いた `parse_failed`、`port_outside`、`tuple_mismatch`、`neighbor`、`other`、`invalid_tcp`。
 このメトリクスはプラグインを検証して混合モードを選択した後に登録する。
+
+## 接続の繰り返しと達成 CPS
+
+`tcpflow.go` の `connections` は、バリアント全体で試行する接続数です。
+省略すると従来どおり各フローを一度実行し、正数 M を指定すると最大 M 回を試行します。
+`flows` の要素数 N が同時実行枠数になり、各枠は接続の完了または失敗後に、同じ `bytes` とテンプレートで次の接続を開始します。
+失敗も1回の試行として消費します。
+
+```bash
+sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
+  --parallelism 1 --tcp-flow-report connections.csv \
+  --cfg '{"dst_ip":"192.0.2.2","flows":4,"bytes":"1024","connections":1000}'
+```
+
+`connections: 0` は `--duration` が必須です。
+時間またはシグナルで新規接続を止め、開始済みの接続を既存の drain 処理で閉じます。
+この途中 close は、最終ログの `reason` (`duration elapsed` / `signal`) で、予定数の完了 (`all flows closed`) と区別できます。
+初版では TCP バリアント1つだけを使用でき、packet との混合、複数 TCP バリアント、`bytes: "0"`、`--count` との併用は拒否します。
+
+枠 i の接続番号は `j = i + k * N`、送信元ポートは `port_base + j` です。
+ポートは周回せず、終了済み接続の状態も実行終了まで保持します。
+容量は `65536 - port_base`、既定の10000では55,536接続です。
+有限 M が容量を超える場合は開始前に拒否し、時間指定中に枯渇した場合は `port_exhausted` を記録して drain 後に失敗終了します。
+実行をまたいで同じ tuple をすぐに再利用しないよう、専用 netns と未使用のポート範囲または別の送信元 IP を使用してください。
+共有環境での `ip_local_reserved_ports` は自動割り当てを防ぎますが、明示 bind との競合は防ぎません。
+接続枠数は対向の TIME_WAIT や LB の conntrack 残留数を制限しません。
+外側 UDP entropy は既存どおり接続番号 j に基づき、フロー別テンプレートは枠 i の設定を繰り返します。
+
+`started` は初回 SYN の構築に成功した接続数で、再送を含む `syn_sent` とは別の値です。
+周期表示の CPS は、開始・確立・正常完了の各カウンタ差分を実測経過秒で割ります。
+最終ログの `started_cps`、`established_cps`、`done_cps` は負荷投入期間だけの値で、`load_seconds` と `drain_linger_seconds` を分けて表示します。
+`--tcp-flow-report` は開始済み接続ごとに1行を出力し、`flow` は接続番号 j です。
+
+このモードは完了を待って接続を補充するため、遅延が増えると接続発生率も下がります。
+目標 CPS を指定する機能はなく、`--pps` やバリアントの weight もその代用にはなりません。

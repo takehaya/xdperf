@@ -114,6 +114,8 @@ type BpfTailCallCtx struct {
 type BpfTcpCfg struct {
 	_              structs.HostLayout
 	FlowCount      uint32
+	SlotCount      uint32
+	UntilDuration  uint32
 	WindowSegs     uint32
 	Mss            uint16
 	PortBase       uint16
@@ -167,7 +169,10 @@ type BpfTcpFlow struct {
 	Mss         uint16
 	SynRst      uint8
 	TsEnabled   uint8
+	Started     uint8
+	StartedPad  uint8
 	IpId        uint16
+	_           [2]byte
 	Iss         uint32
 	SndUna      uint32
 	SndNxt      uint32
@@ -177,6 +182,7 @@ type BpfTcpFlow struct {
 	TemplateId  uint32
 	TsRecent    uint32
 	TsClock     uint32
+	_           [4]byte
 	TsRecentNs  uint64
 	BytesTarget uint64
 	BytesAcked  uint64
@@ -258,6 +264,8 @@ type BpfTcpSrvStats struct {
 
 type BpfTcpStats struct {
 	_                structs.HostLayout
+	Started          uint64
+	PortExhausted    uint64
 	SynSent          uint64
 	SynackRcvd       uint64
 	Established      uint64
@@ -410,6 +418,7 @@ type BpfMapSpecs struct {
 	TcpCpuStateMap  *ebpf.MapSpec `ebpf:"tcp_cpu_state_map"`
 	TcpFlowMap      *ebpf.MapSpec `ebpf:"tcp_flow_map"`
 	TcpPayloadMap   *ebpf.MapSpec `ebpf:"tcp_payload_map"`
+	TcpSlotMap      *ebpf.MapSpec `ebpf:"tcp_slot_map"`
 	TcpSrvCfgMap    *ebpf.MapSpec `ebpf:"tcp_srv_cfg_map"`
 	TcpSrvFlowMap   *ebpf.MapSpec `ebpf:"tcp_srv_flow_map"`
 	TcpSrvStatsMap  *ebpf.MapSpec `ebpf:"tcp_srv_stats_map"`
@@ -474,6 +483,7 @@ type BpfMaps struct {
 	TcpCpuStateMap  *ebpf.Map `ebpf:"tcp_cpu_state_map"`
 	TcpFlowMap      *ebpf.Map `ebpf:"tcp_flow_map"`
 	TcpPayloadMap   *ebpf.Map `ebpf:"tcp_payload_map"`
+	TcpSlotMap      *ebpf.Map `ebpf:"tcp_slot_map"`
 	TcpSrvCfgMap    *ebpf.Map `ebpf:"tcp_srv_cfg_map"`
 	TcpSrvFlowMap   *ebpf.Map `ebpf:"tcp_srv_flow_map"`
 	TcpSrvStatsMap  *ebpf.Map `ebpf:"tcp_srv_stats_map"`
@@ -502,6 +512,7 @@ func (m *BpfMaps) Close() error {
 		m.TcpCpuStateMap,
 		m.TcpFlowMap,
 		m.TcpPayloadMap,
+		m.TcpSlotMap,
 		m.TcpSrvCfgMap,
 		m.TcpSrvFlowMap,
 		m.TcpSrvStatsMap,

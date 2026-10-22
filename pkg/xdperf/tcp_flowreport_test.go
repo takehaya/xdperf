@@ -14,7 +14,7 @@ func TestWriteTCPFlowLedger(t *testing.T) {
 		{SrcPort: 20002, State: 42, TxPkts: 3, TxData: 1, TxRtx: 1},
 	}
 	var buf bytes.Buffer
-	if err := writeTCPFlowLedger(&buf, flows); err != nil {
+	if err := writeTCPFlowLedger(&buf, flows, false); err != nil {
 		t.Fatal(err)
 	}
 	want := "flow,src_port,state,tx_pkts,tx_data,tx_rtx,rx_pkts,rx_replies,bytes_acked\n" +
@@ -23,5 +23,17 @@ func TestWriteTCPFlowLedger(t *testing.T) {
 		"2,20002,42,3,1,1,0,0,0\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("csv =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestWriteTCPConnectionsLedger(t *testing.T) {
+	flows := []coreelf.BpfTcpFlow{{SrcPort: 10000}, {SrcPort: 10001, Started: 1, State: tcpFlowDone}, {SrcPort: 10002, State: tcpFlowSkipped}}
+	var buf bytes.Buffer
+	if err := writeTCPFlowLedger(&buf, flows, true); err != nil {
+		t.Fatal(err)
+	}
+	want := "flow,src_port,state,tx_pkts,tx_data,tx_rtx,rx_pkts,rx_replies,bytes_acked\n1,10001,done,0,0,0,0,0,0\n"
+	if buf.String() != want {
+		t.Fatal(buf.String())
 	}
 }

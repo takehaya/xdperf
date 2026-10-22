@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -235,7 +236,7 @@ func ipTo4Words(ip net.IP) [4]uint32 {
 
 func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 	cfg := coreelf.BpfTcpCfg{
-		FlowCount:      uint32(x.mixed.flows),
+		FlowCount:      uint32(x.mixed.connections),
 		WindowSegs:     uint32(x.mixed.groups[0].window),
 		Mss:            t.mss,
 		PortBase:       uint16(x.mixed.portBase),
@@ -254,6 +255,12 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 		DstIp:          ipTo4Words(t.dstIP),
 		RtoNs:          uint64(x.mixed.groups[0].rto),
 	}
+	if x.mixed.repeat {
+		cfg.SlotCount = uint32(x.mixed.flows)
+		if x.mixed.untilDuration {
+			cfg.UntilDuration = 1
+		}
+	}
 	cfg.IpIdShared = x.mixed.groups[0].ipIDShared
 	copy(cfg.HdrTmpl[:], template[:min(int(t.l4Off), len(cfg.HdrTmpl))])
 	zero := uint32(0)
@@ -264,7 +271,7 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 	if err := x.initTCPTemplates(t, template, cfg); err != nil {
 		return err
 	}
-	flows := x.mixed.flows
+	flows := x.mixed.connections
 	keys := make([]uint32, flows)
 	vals := make([]coreelf.BpfTcpFlow, flows)
 	for i := 0; i < flows; i++ {
@@ -273,7 +280,7 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 			State:       tcpFlowClosed,
 			SrcPort:     uint16(x.mixed.portBase + i),
 			Iss:         rand.Uint32(),
-			BytesTarget: x.tcpVariantBytes[i],
+			BytesTarget: x.tcpVariantBytes[i%x.mixed.flows],
 		}
 	}
 	for j, g := range x.mixed.groups {
@@ -288,8 +295,10 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 			}
 		}
 		for i := g.first; i < g.first+g.count; i++ {
-			vals[i].TemplateId = g.templateID(i, j)
-			vals[i].IpId = id
+			for k := int(i); k < flows; k += x.mixed.flows {
+				vals[k].TemplateId = g.templateID(i, j)
+				vals[k].IpId = id
+			}
 		}
 	}
 	if _, err := x.bpfobjs.TcpFlowMap.BatchUpdate(keys, vals, nil); err != nil {
@@ -302,6 +311,28 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 		}
 	}
 
+	if x.mixed.repeat {
+		for i := 0; i < x.mixed.flows; i++ {
+			current := uint32(i)
+			if i >= flows {
+				current = math.MaxUint32
+			}
+			if err := x.bpfobjs.TcpSlotMap.Put(uint32(i), current); err != nil {
+				return err
+			}
+			if i >= flows {
+				owner := uint32(i % len(x.cpus))
+				var closed uint32
+				if err := x.bpfobjs.MixedClosedMap.Lookup(owner, &closed); err != nil {
+					return err
+				}
+				if err := x.bpfobjs.MixedClosedMap.Put(owner, closed+1); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	flows = x.mixed.flows
 	// Flow ownership: worker slot k drives flows k, k+P, k+2P, ...
 	numCPU, err := ebpf.PossibleCPU()
 	if err != nil {
@@ -337,7 +368,7 @@ func (x *Xdperf) warnEphemeralPortOverlap() {
 	if _, err := fmt.Sscan(string(b), &lo, &hi); err != nil {
 		return
 	}
-	first, last := x.mixed.portBase, x.mixed.portBase+x.mixed.flows-1
+	first, last := x.mixed.portBase, x.mixed.portBase+x.mixed.connections-1
 	if first <= hi && last >= lo {
 		x.Logger.Warn("TCP source ports overlap the kernel's ephemeral port range; host connections to the same destination may be captured by xdp_rx_mixed. Change tcp_port_base or reserve the ports with net.ipv4.ip_local_reserved_ports",
 			zap.Int("first_port", first), zap.Int("last_port", last),
@@ -401,12 +432,13 @@ func tcpActiveFlows(s coreelf.BpfTcpStats) uint64 {
 	return s.Established - gone
 }
 
-func (x *Xdperf) showTCPStats(ctx context.Context) {
+func (x *Xdperf) showTCPStats(ctx context.Context, started time.Time) {
 	recs := make([]coreelf.BpfTcpStats, ebpf.MustPossibleCPU())
 	p := message.NewPrinter(message.MatchLanguage("en"))
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var prev coreelf.BpfTcpStats
+	previous := started
 	for {
 		select {
 		case <-ctx.Done():
@@ -417,12 +449,15 @@ func (x *Xdperf) showTCPStats(ctx context.Context) {
 				x.Logger.Warn("failed to read tcp stats", zap.Error(err))
 				continue
 			}
-			gbps := float64(safeDelta(cur.BytesAcked, prev.BytesAcked)*8) / 1e9
-			p.Printf("tcp: est %d done %d fail %d | %.3f Gbps acked, %d segs/s, %d acks/s, rtx %d/s, stalls %d/s\n",
-				tcpActiveFlows(cur), cur.Done, cur.Failed, gbps,
+			now := time.Now()
+			seconds := now.Sub(previous).Seconds()
+			gbps := float64(safeDelta(cur.BytesAcked, prev.BytesAcked)*8) / 1e9 / seconds
+			p.Printf("tcp: est %d done %d fail %d | CPS start %.1f est %.1f done %.1f | %.3f Gbps acked, %d segs/s, %d acks/s, rtx %d/s, stalls %d/s\n",
+				tcpActiveFlows(cur), cur.Done, cur.Failed,
+				float64(safeDelta(cur.Started, prev.Started))/seconds, float64(safeDelta(cur.Established, prev.Established))/seconds, float64(safeDelta(cur.Done, prev.Done))/seconds, gbps,
 				safeDelta(cur.DataSegs, prev.DataSegs), safeDelta(cur.AcksRcvd, prev.AcksRcvd),
 				safeDelta(cur.RtxSegs, prev.RtxSegs), safeDelta(cur.WindowStalls, prev.WindowStalls))
-			prev = cur
+			prev, previous = cur, now
 		}
 	}
 }
@@ -575,7 +610,8 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	statsDone := make(chan struct{})
-	go func() { defer close(statsDone); x.showTCPStats(ctx) }()
+	started := time.Now()
+	go func() { defer close(statsDone); x.showTCPStats(ctx, started) }()
 
 	var wg sync.WaitGroup
 	var once sync.Once
@@ -613,7 +649,23 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	countReached := false
 	allClosed := func() bool {
 		s, err := x.readTCPStats(recs)
-		return err == nil && s.Done+s.Failed+s.Skipped >= flows
+		if err != nil {
+			return false
+		}
+		if !x.mixed.repeat {
+			return s.Done+s.Failed+s.Skipped >= flows
+		}
+		for owner := range x.cpus {
+			var closed uint32
+			if err := x.bpfobjs.MixedClosedMap.Lookup(uint32(owner), &closed); err != nil {
+				return false
+			}
+			count := (x.mixed.flows + len(x.cpus) - 1 - owner) / len(x.cpus)
+			if closed < uint32(count) {
+				return false
+			}
+		}
+		return true
 	}
 	var durationCh <-chan time.Time
 	if x.cfg.Duration > 0 {
@@ -623,6 +675,9 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 	defer poll.Stop()
 
 	draining := false
+	var loadEnded time.Time
+	var loadStats coreelf.BpfTcpStats
+	stopReason := "worker stopped"
 	var drainDeadline <-chan time.Time
 	// After the last flow closes, keep the RX program attached for a while so
 	// that a retransmitted FIN from the peer is still answered instead of
@@ -643,6 +698,7 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 			return
 		}
 		aborting = true
+		stopReason = reason
 		x.Logger.Warn("aborting: resetting open flows", zap.String("reason", reason))
 		if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.Drain = 1; c.Abort = 1 }); err != nil {
 			x.Logger.Warn("failed to set abort flag", zap.Error(err))
@@ -666,6 +722,12 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 			return
 		}
 		draining = true
+		loadEnded = time.Now()
+		loadStats, err = x.readTCPStats(recs)
+		if err != nil {
+			x.Logger.Warn("failed to read load statistics", zap.Error(err))
+		}
+		stopReason = reason
 		if countReached {
 			lingerCh = nil
 		}
@@ -698,7 +760,7 @@ loop:
 						once.Do(func() { firstErr = err })
 						break loop
 					}
-					tcpFlows, err := x.readTCPFlows(x.mixed.flows)
+					tcpFlows, err := x.readTCPFlows(x.mixed.connections)
 					if err != nil {
 						once.Do(func() { firstErr = err })
 						break loop
@@ -714,9 +776,26 @@ loop:
 						continue
 					}
 					countReached = true
+					loadEnded = time.Now()
+					loadStats, err = x.readTCPStats(recs)
+					if err != nil {
+						once.Do(func() { firstErr = err })
+						break loop
+					}
+					stopReason = "count reached"
 					x.Logger.Info("count reached", zap.Uint64("count", x.cfg.Count))
 					lingerCh = time.After(linger)
 					durationCh, drainDeadline, abortDeadline = nil, nil, nil
+				}
+			}
+			if !draining && x.mixed.untilDuration {
+				s, err := x.readTCPStats(recs)
+				if err != nil {
+					once.Do(func() { firstErr = err })
+					break loop
+				}
+				if s.PortExhausted > 0 {
+					startDrain("port_exhausted")
 				}
 			}
 			if lingerCh == nil && allClosed() {
@@ -759,6 +838,16 @@ loop:
 	}
 
 	s, statsErr := x.showTCPFinalStats(recs)
+	ended := time.Now()
+	if loadEnded.IsZero() {
+		loadEnded, loadStats = ended, s
+	}
+	seconds := loadEnded.Sub(started).Seconds()
+	x.Logger.Info("tcp connection rates", zap.String("reason", stopReason),
+		zap.Float64("load_seconds", seconds), zap.Float64("drain_linger_seconds", ended.Sub(loadEnded).Seconds()),
+		zap.Float64("started_cps", float64(loadStats.Started)/seconds),
+		zap.Float64("established_cps", float64(loadStats.Established)/seconds),
+		zap.Float64("done_cps", float64(loadStats.Done)/seconds))
 	if err := x.showMixedStats(); err != nil && statsErr == nil {
 		statsErr = err
 	}
@@ -781,9 +870,12 @@ loop:
 	}
 	// A run whose flows did not complete is a failed measurement: report it
 	// in the exit status, not only in the log (e.g. every SYN refused).
+	if s.PortExhausted > 0 {
+		return fmt.Errorf("port_exhausted: fresh TCP source ports exhausted")
+	}
 	if s.Failed > 0 {
 		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d)",
-			s.Failed, x.mixed.flows, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts)
+			s.Failed, x.mixed.connections, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts)
 	}
 	return nil
 }
@@ -795,6 +887,8 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpSt
 	}
 	x.Logger.Info("tcp final statistics",
 		zap.Int("flows", x.mixed.flows),
+		zap.Uint64("started", s.Started),
+		zap.Uint64("port_exhausted", s.PortExhausted),
 		zap.Uint64("syn_sent", s.SynSent),
 		zap.Uint64("established", s.Established),
 		zap.Uint64("done", s.Done),

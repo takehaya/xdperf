@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
 	"net"
 	"runtime"
 	"testing"
@@ -424,6 +425,8 @@ func clientStats(t *testing.T, objs *BpfObjects) BpfTcpStats {
 	}
 	var s BpfTcpStats
 	for _, r := range recs {
+		s.Started += r.Started
+		s.PortExhausted += r.PortExhausted
 		s.RstSent += r.RstSent
 		s.FailedEst += r.FailedEst
 		s.Failed += r.Failed
@@ -1526,4 +1529,109 @@ func TestTcpFlowLedger(t *testing.T) {
 			t.Fatalf("ledger rx=%d replies=%d tx=%d, want 1/1/0", f.RxPkts, f.RxReplies, f.TxPkts)
 		}
 	})
+}
+
+// Retained old tuples must remain reachable after their concurrency slot advances.
+func TestTcpRepeatedConnections(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		drain, unlimited bool
+		states           []uint8
+		wantIndex        uint32
+		wantExhausted    uint64
+	}{
+		{"advance", false, false, []uint8{tfDone, tfClosed}, 1, 0},
+		{"failed attempt", false, false, []uint8{tfFailed, tfClosed}, 1, 0},
+		{"finite end", false, false, []uint8{tfDone}, math.MaxUint32, 0},
+		{"port exhausted", false, true, []uint8{tfDone}, math.MaxUint32, 1},
+		{"drain prevents refill", true, false, []uint8{tfDone, tfClosed}, math.MaxUint32, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objs := loadTCPObjs(t)
+			flows := make([]BpfTcpFlow, len(tc.states))
+			for i, s := range tc.states {
+				flows[i] = BpfTcpFlow{State: s, Iss: 1000 + uint32(i), SndNxt: 1001, SndMax: 1001, RcvNxt: 5002, Started: 1}
+			}
+			if len(flows) > 1 {
+				flows[1].Started = 0
+			}
+			frame := setupClient(t, objs, clientOpts{}, flows...)
+			var cfg BpfTcpCfg
+			if err := objs.TcpCfgMap.Lookup(uint32(0), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			cfg.SlotCount = 1
+			if tc.drain {
+				cfg.Drain = 1
+			}
+			if tc.unlimited {
+				cfg.UntilDuration = 1
+			}
+			if err := objs.TcpCfgMap.Put(uint32(0), cfg); err != nil {
+				t.Fatal(err)
+			}
+			n := ebpf.MustPossibleCPU()
+			cpus := make([]BpfTcpCpuState, n)
+			for i := range cpus {
+				cpus[i] = BpfTcpCpuState{Stride: 1, Count: 1}
+			}
+			if err := objs.TcpCpuStateMap.Put(uint32(0), cpus); err != nil {
+				t.Fatal(err)
+			}
+			if err := objs.MixedCfgMap.Put(uint32(0), BpfMixedCfg{Workers: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if err := objs.TcpSlotMap.Put(uint32(0), uint32(0)); err != nil {
+				t.Fatal(err)
+			}
+			ret, out := runProg(t, objs.XdpTxTcpMixed, frame)
+			var current uint32
+			if err := objs.TcpSlotMap.Lookup(uint32(0), &current); err != nil {
+				t.Fatal(err)
+			}
+			if current != tc.wantIndex {
+				t.Fatalf("current=%d want=%d", current, tc.wantIndex)
+			}
+			if current != math.MaxUint32 {
+				if ret != xdpTx || uint16(decode(t, out).tcp.SrcPort) != testPortBase+1 {
+					t.Fatal("next connection did not use fresh port")
+				}
+				if clientStats(t, objs).Started != 1 {
+					t.Fatal("initial SYN not counted")
+				}
+				runProg(t, objs.XdpTxTcpMixed, frame)
+				if clientStats(t, objs).Started != 1 {
+					t.Fatal("SYN counted twice")
+				}
+				before := getFlow(t, objs, 1)
+				for _, flags := range []uint8{tcpFIN | tcpACK, tcpACK, tcpRST | tcpACK} {
+					ret, _ := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 5001, 1001, flags)))
+					if flags == tcpFIN|tcpACK && ret != xdpTx {
+						t.Fatal("old FIN was not ACKed")
+					}
+					if got := getFlow(t, objs, 1); got != before {
+						t.Fatal("old packet changed new connection")
+					}
+				}
+			} else {
+				var closed uint32
+				if err := objs.MixedClosedMap.Lookup(uint32(0), &closed); err != nil {
+					t.Fatal(err)
+				}
+				if closed != 1 {
+					t.Fatalf("retired slots=%d", closed)
+				}
+				runProg(t, objs.XdpTxTcpMixed, frame)
+				if err := objs.MixedClosedMap.Lookup(uint32(0), &closed); err != nil {
+					t.Fatal(err)
+				}
+				if closed != 1 {
+					t.Fatal("slot retired twice")
+				}
+			}
+			if got := clientStats(t, objs).PortExhausted; got != tc.wantExhausted {
+				t.Fatalf("port_exhausted=%d", got)
+			}
+		})
+	}
 }
