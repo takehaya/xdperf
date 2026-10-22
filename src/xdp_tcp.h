@@ -663,7 +663,8 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         return XDP_DROP;
     }
 
-    __u32 first = cs->first, count = cs->count;
+    // Keep scan bounds on stack so older verifiers can prune loop states.
+    volatile __u32 first = cs->first, count = cs->count;
     __u32 *next = &cs->cursor;
     if (mixed->selected_group != 0xffffffff) {
         __u32 key = mixed->selected_group;
