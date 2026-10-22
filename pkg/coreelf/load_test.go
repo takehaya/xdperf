@@ -43,8 +43,6 @@ func TestBpfProgramsLoad(t *testing.T) {
 		{"xdp_tx_csum_recalc", objs.XdpTxCsumRecalc},
 		{"xdp_rx", objs.XdpRx},
 		{"xdp_pass_dummy", objs.XdpPassDummy},
-		{"xdp_tx_tcp", objs.XdpTxTcp},
-		{"xdp_rx_tcp", objs.XdpRxTcp},
 		{"xdp_rx_tcp_server", objs.XdpRxTcpServer},
 		{"xdp_tx_mixed", objs.XdpTxMixed},
 		{"xdp_rx_mixed", objs.XdpRxMixed},

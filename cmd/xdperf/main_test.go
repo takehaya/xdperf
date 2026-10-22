@@ -14,43 +14,42 @@ import (
 	"github.com/urfave/cli"
 )
 
-func TestTCPPluginSelection(t *testing.T) {
+func TestRemovedTCPFlags(t *testing.T) {
 	clearConfigEnv(t)
-	cases := []struct {
-		name    string
-		args    []string
-		plugin  string
-		wantErr bool
-	}{
-		{"legacy TCP", []string{"--tcp", "--tcp-dst", "192.0.2.1:5201", "--tcp-bytes", "1k"}, "", false},
-		{"removed scenario", []string{"--tcp", "--plugin", "mixed.go"}, "", true},
-		{"short plugin flag", []string{"--tcp", "-p", "mixed.go"}, "", true},
-		{"explicit default flows", []string{"--tcp", "--plugin", "mixed.go", "--tcp-flows", "1"}, "", true},
-		{"explicit zero bytes", []string{"--tcp", "--plugin", "mixed.go", "--tcp-bytes", "0"}, "", true},
-		{"conflicting dst", []string{"--tcp", "--plugin", "mixed.go", "--tcp-dst", "192.0.2.1:5201"}, "", true},
-		{"packet mode default", []string{"--count", "1k"}, "simpleudp.tinygo", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			app := newApp("test")
-			app.Writer, app.ErrWriter = io.Discard, io.Discard
-			var cfg xdperf.Config
-			app.Commands[0].Action = func(ctx *cli.Context) error {
-				var err error
-				cfg, err = ParseArgs(ctx)
-				return err
-			}
-			err := app.Run(append([]string{"xdperf", "run", "--device", "lo"}, tc.args...))
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
-			}
-			if err == nil && cfg.PluginName != tc.plugin {
-				t.Fatalf("plugin = %q, want %q", cfg.PluginName, tc.plugin)
-			}
-			if err == nil && tc.plugin == "mixed.go" && cfg.PluginLanguage != "go" {
-				t.Fatalf("language = %q", cfg.PluginLanguage)
+	for _, flag := range []string{"tcp", "tcp-dst", "tcp-src-ip", "tcp-dst-mac", "tcp-flows", "tcp-port-base", "tcp-window", "tcp-bytes", "tcp-ip-id"} {
+		t.Run(flag, func(t *testing.T) {
+			if _, err := parseRunArgs("--device", "lo", "--"+flag); err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+				t.Fatalf("removed flag accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestTCPResponderOnlyFlags(t *testing.T) {
+	clearConfigEnv(t)
+	for flag, values := range map[string][]string{
+		"tcp-mss": {"0", "1000"}, "tcp-rto": {"0s", "200ms"},
+		"tcp-vlan-id": {"0", "110"}, "tcp-vlan-pcp": {"0", "3"},
+	} {
+		for _, value := range values {
+			t.Run(flag+"="+value, func(t *testing.T) {
+				for _, env := range []bool{false, true} {
+					args := []string{"--device", "lo"}
+					if env {
+						t.Setenv("XDPERF_"+strings.ToUpper(strings.ReplaceAll(flag, "-", "_")), value)
+					} else {
+						args = append(args, "--"+flag+"="+value)
+					}
+					if _, err := parseRunArgs(args...); err == nil || !strings.Contains(err.Error(), "--"+flag+" requires --tcp-server") {
+						t.Fatalf("env=%v: explicit responder flag accepted: %v", env, err)
+					}
+					_, err := parseRunArgs(append(args, "--tcp-server")...)
+					if (err != nil) != (flag == "tcp-rto" && value == "0s") {
+						t.Fatalf("env=%v: responder validation: %v", env, err)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -205,27 +204,6 @@ func TestParseArgsEnvOnly(t *testing.T) {
 	}
 	if cfg.Device != "cli0" || cfg.Duration != time.Second || cfg.Count != 10000 || cfg.Receiver {
 		t.Fatalf("flags did not override environment: %+v", cfg)
-	}
-}
-
-func TestTCPEnvPluginSelection(t *testing.T) {
-	clearConfigEnv(t)
-	t.Setenv("XDPERF_DEVICE", "lo")
-	t.Setenv("XDPERF_TCP", "true")
-	t.Setenv("XDPERF_TCP_DST", "192.0.2.1:5201")
-	t.Setenv("XDPERF_TCP_BYTES", "1k")
-	cfg, err := parseRunArgs()
-	if err != nil || cfg.PluginName != "" || !cfg.TCP || cfg.TCPBytes != 1000 {
-		t.Fatalf("standalone TCP: config = %+v, err = %v", cfg, err)
-	}
-	for _, plugin := range []string{"mixed.go", "simpleudp.tinygo"} {
-		t.Setenv("XDPERF_PLUGIN", plugin)
-		if _, err := parseRunArgs(); err == nil || !strings.Contains(err.Error(), "--tcp cannot be combined with --plugin") {
-			t.Fatalf("plugin %q from environment was not treated as explicit: %v", plugin, err)
-		}
-	}
-	if cfg, err := parseRunArgs("--plugin="); err != nil || cfg.PluginName != "" {
-		t.Fatalf("empty CLI plugin override: config = %+v, err = %v", cfg, err)
 	}
 }
 

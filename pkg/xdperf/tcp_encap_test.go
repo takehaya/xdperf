@@ -201,7 +201,6 @@ func testTCPEncapBPF(t *testing.T, profile string) {
 		t.Fatal(err)
 	}
 	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{MTU: 1500}, bpfSpec: spec, cpus: []int{0}, Logger: zap.NewNop()}
-	x.cfg.TCPIPID = "shared"
 	r := mixedResponse()
 	r.VariablePacketTemplate.Variants = r.VariablePacketTemplate.Variants[:1]
 	for _, name := range []string{"vxlan", "geneve"} {
@@ -222,6 +221,11 @@ func testTCPEncapBPF(t *testing.T, profile string) {
 		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], tcpTestTunnel("vxlan", false, false, "zero"))
 	} else if profile == "mpls" {
 		r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants[:1], tcpOtherTunnel("mpls"))
+	}
+	for i := range r.VariablePacketTemplate.Variants {
+		if f := r.VariablePacketTemplate.Variants[i].TCPFlow; f != nil {
+			f.IPID = "shared"
+		}
 	}
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)

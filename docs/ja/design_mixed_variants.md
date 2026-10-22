@@ -1,5 +1,7 @@
 # パケットと TCP フローの混合バリアント
 
+> 単独 `--tcp` と `xdp_tx_tcp` / `xdp_rx_tcp` は廃止済み。現在は `tcpflow.go` などのプラグインで混合経路を使用し、TCP 設定の 0 は既定値を使う。以下の単独入口と CLI 設定の記述は設計時点の記録である。
+
 この文書は混合配分の設計を示す。
 現在の SDK の使い方は [混合送信ガイド](mixed_variants.md)、ひな型とトンネルの詳細は [TCP フローひな型](design_tcp_flow_template.md) を参照する。
 ひな型、複数宛先、Timestamps、ペイロードパターン、フロー別 variable_params は実装済みである。

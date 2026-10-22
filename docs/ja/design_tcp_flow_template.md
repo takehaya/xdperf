@@ -1,5 +1,7 @@
 # TCP フローのパケットひな型とカプセル化
 
+> 単独 `--tcp` と `xdp_tx_tcp` / `xdp_rx_tcp` は廃止済み。現在は `tcpflow.go` などのプラグインで混合経路を使用し、TCP 設定の 0 は既定値を使う。以下の単独入口と CLI 設定の記述は設計時点の記録である。
+
 ## 対象と段階
 
 `PacketVariantSet` の `kind: "tcp_flow"` に、プラグインが生成する Ethernet フレームを渡せるようにする。

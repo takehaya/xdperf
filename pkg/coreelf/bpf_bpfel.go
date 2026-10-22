@@ -377,7 +377,6 @@ type BpfProgramSpecs struct {
 	XdpPassDummy      *ebpf.ProgramSpec `ebpf:"xdp_pass_dummy"`
 	XdpRx             *ebpf.ProgramSpec `ebpf:"xdp_rx"`
 	XdpRxMixed        *ebpf.ProgramSpec `ebpf:"xdp_rx_mixed"`
-	XdpRxTcp          *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp"`
 	XdpRxTcpMixed     *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_mixed"`
 	XdpRxTcpMixedExt  *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_mixed_ext"`
 	XdpRxTcpServer    *ebpf.ProgramSpec `ebpf:"xdp_rx_tcp_server"`
@@ -386,7 +385,6 @@ type BpfProgramSpecs struct {
 	XdpTxCsumDiff     *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_diff"`
 	XdpTxCsumRecalc   *ebpf.ProgramSpec `ebpf:"xdp_tx_csum_recalc"`
 	XdpTxMixed        *ebpf.ProgramSpec `ebpf:"xdp_tx_mixed"`
-	XdpTxTcp          *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp"`
 	XdpTxTcpMixed     *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed"`
 	XdpTxTcpMixedExt  *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed_ext"`
 }
@@ -540,7 +538,6 @@ type BpfPrograms struct {
 	XdpPassDummy      *ebpf.Program `ebpf:"xdp_pass_dummy"`
 	XdpRx             *ebpf.Program `ebpf:"xdp_rx"`
 	XdpRxMixed        *ebpf.Program `ebpf:"xdp_rx_mixed"`
-	XdpRxTcp          *ebpf.Program `ebpf:"xdp_rx_tcp"`
 	XdpRxTcpMixed     *ebpf.Program `ebpf:"xdp_rx_tcp_mixed"`
 	XdpRxTcpMixedExt  *ebpf.Program `ebpf:"xdp_rx_tcp_mixed_ext"`
 	XdpRxTcpServer    *ebpf.Program `ebpf:"xdp_rx_tcp_server"`
@@ -549,7 +546,6 @@ type BpfPrograms struct {
 	XdpTxCsumDiff     *ebpf.Program `ebpf:"xdp_tx_csum_diff"`
 	XdpTxCsumRecalc   *ebpf.Program `ebpf:"xdp_tx_csum_recalc"`
 	XdpTxMixed        *ebpf.Program `ebpf:"xdp_tx_mixed"`
-	XdpTxTcp          *ebpf.Program `ebpf:"xdp_tx_tcp"`
 	XdpTxTcpMixed     *ebpf.Program `ebpf:"xdp_tx_tcp_mixed"`
 	XdpTxTcpMixedExt  *ebpf.Program `ebpf:"xdp_tx_tcp_mixed_ext"`
 }
@@ -560,7 +556,6 @@ func (p *BpfPrograms) Close() error {
 		p.XdpPassDummy,
 		p.XdpRx,
 		p.XdpRxMixed,
-		p.XdpRxTcp,
 		p.XdpRxTcpMixed,
 		p.XdpRxTcpMixedExt,
 		p.XdpRxTcpServer,
@@ -569,7 +564,6 @@ func (p *BpfPrograms) Close() error {
 		p.XdpTxCsumDiff,
 		p.XdpTxCsumRecalc,
 		p.XdpTxMixed,
-		p.XdpTxTcp,
 		p.XdpTxTcpMixed,
 		p.XdpTxTcpMixedExt,
 	)

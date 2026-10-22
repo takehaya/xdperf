@@ -57,6 +57,6 @@ At N, it skips drain and lingers for 2×RTO; unfinished flows produce a warning 
 Duration or a signal starts drain: UDP stops while TCP closes.
 Choose `--count` or `--duration`; because this set contains packets, duration requires PPS.
 
-The standalone `--tcp` mode sends TCP using CLI flags without a plugin.
-This example supplies both variant types from Wasm, so omit `--tcp`, `--tcp-dst`, `--tcp-flows`, and `--tcp-bytes`.
+This plugin supplies both variant types from Wasm.
+Standalone `--tcp` has been removed; use `tcpflow.go` for TCP-only traffic.
 See the [variant guide](../../docs/ja/mixed_variants.md) for SDK details.

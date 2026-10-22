@@ -54,30 +54,22 @@ func TestMixedDrainSchedulingGrace(t *testing.T) {
 
 func TestMixedRejectsOtherRouteDevice(t *testing.T) {
 	// Loopback has a deterministic local route and requires no test topology.
-	x := &Xdperf{cfg: tcpTestConfig(), Device: &net.Interface{Index: -1, Name: "mixed-test"}, Logger: zap.NewNop()}
+	x := &Xdperf{cfg: mixedConfig(), Device: &net.Interface{Index: -1, Name: "mixed-test"}, Logger: zap.NewNop()}
 	x.cfg.PluginName = "mixed.go"
-	x.cfg.TCPDst = "127.0.0.1:5201"
-	_, err := x.resolveTCPTarget()
+	_, err := x.resolveTCPTarget("127.0.0.1:5201", 0)
 	if err == nil || !strings.Contains(err.Error(), "does not use device mixed-test") {
 		t.Fatalf("route mismatch: %v", err)
 	}
 }
 
 func mixedResponse() *guest.GeneratorProcessResponse {
-	return &guest.GeneratorProcessResponse{TemplateType: guest.GeneratorTemplateTypeVariable, VariablePacketTemplate: guest.PacketVariantSet{Pattern: guest.VariantSelectionModeMixed, Variants: []guest.PacketVariant{
+	return &guest.GeneratorProcessResponse{TemplateType: guest.GeneratorTemplateTypeVariable, VariablePacketTemplate: guest.PacketVariantSet{Pattern: guest.VariantSelectionModeMixed, TCPPortBase: 40000, Variants: []guest.PacketVariant{
 		{Weight: 3, Base: guest.BasePacket{Data: make([]byte, 64), Length: 64}},
 		{Kind: "tcp_flow", Weight: 1, TCPFlow: &guest.TCPFlowVariant{Destination: "192.0.2.2:5201", Flows: []guest.TCPFlow{{Bytes: "65536"}, {Bytes: "65536"}, {Bytes: "65536"}, {Bytes: "67108864"}}}},
 	}}}
 }
 func mixedConfig() Config {
-	c := tcpTestConfig()
-	c.TCP = false
-	c.TCPDst = ""
-	c.TCPBytes = 0
-	c.TCPFlows = 1
-	c.Count = 100
-	c.PluginName = "mixed.go"
-	return c
+	return Config{Device: "lo", Sender: true, Parallelism: 1, XDPMode: "auto", Count: 100, PluginName: "mixed.go"}
 }
 func TestMixedValidation(t *testing.T) {
 	for name, mutate := range map[string]func(*guest.GeneratorProcessResponse){
@@ -128,7 +120,7 @@ func TestMixedValidation(t *testing.T) {
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
 	}
-	if x.tcpVariantBytes[0] != math.MaxUint64 || x.cfg.TCPFlows != 4 || x.mixed.packetWeight != 3 || x.mixed.totalWeight != 4 {
+	if x.tcpVariantBytes[0] != math.MaxUint64 || x.mixed.flows != 4 || x.mixed.packetWeight != 3 || x.mixed.totalWeight != 4 {
 		t.Fatalf("bad plan: %+v", x)
 	}
 }
@@ -150,7 +142,7 @@ func TestTCPOnlyPlan(t *testing.T) {
 			if len(x.mixed.packets.VariablePacketTemplate.Variants) != 0 || x.mixed.packetWeight != 0 || x.mixed.totalWeight != uint32(groups) {
 				t.Fatalf("unexpected packet plan: %+v", x.mixed)
 			}
-			if x.cfg.TCPFlows != 4*groups || len(x.tcpVariantBytes) != 4*groups || len(x.mixed.groups) != groups {
+			if x.mixed.flows != 4*groups || len(x.tcpVariantBytes) != 4*groups || len(x.mixed.groups) != groups {
 				t.Fatalf("unexpected TCP plan: %+v", x.mixed)
 			}
 			for i, g := range x.mixed.groups {
@@ -197,7 +189,7 @@ func TestMixedCountReached(t *testing.T) {
 	}
 	x.cfg.Count, x.mixed = 5, nil
 	if x.mixedCountReached(0, states) {
-		t.Fatal("standalone TCP stopped")
+		t.Fatal("packet mode stopped")
 	}
 }
 
@@ -209,7 +201,7 @@ func TestMixedWorkerWarning(t *testing.T) {
 		{0, 1, 2, 1}, {0, 2, 2, 0}, {1, 1, 2, 0},
 	} {
 		core, logs := observer.New(zap.WarnLevel)
-		x := &Xdperf{cfg: Config{TCPFlows: tt.flows}, mixed: &mixedPlan{packetWeight: tt.packets}, cpus: make([]int, tt.workers), Logger: zap.New(core)}
+		x := &Xdperf{mixed: &mixedPlan{flows: tt.flows, packetWeight: tt.packets}, cpus: make([]int, tt.workers), Logger: zap.New(core)}
 		x.warnMixedWorkers()
 		if logs.Len() != tt.warnings {
 			t.Fatalf("%+v: got %d warnings", tt, logs.Len())
@@ -247,7 +239,6 @@ func TestMixedTCPKnobs(t *testing.T) {
 			f := r.VariablePacketTemplate.Variants[1].TCPFlow
 			f.WindowSegs, f.MSS, f.RTOMillis, f.IPID = 65535, 64, math.MaxUint32, "flow"
 			x := &Xdperf{cfg: mixedConfig(), Logger: zap.NewNop(), cpus: []int{0}}
-			x.cfg.TCPWindow, x.cfg.TCPMSS, x.cfg.TCPRTO, x.cfg.TCPIPID = 9, 1000, time.Second, "shared"
 			err := x.prepareMixed(r)
 			if portBase == 65533 {
 				if err == nil || x.mixed != nil {
@@ -264,10 +255,10 @@ func TestMixedTCPKnobs(t *testing.T) {
 			}
 			want := int(portBase)
 			if want == 0 {
-				want = 40000
+				want = 10000
 			}
-			if x.cfg.TCPPortBase != want {
-				t.Fatalf("port base = %d, want %d", x.cfg.TCPPortBase, want)
+			if x.mixed.portBase != want {
+				t.Fatalf("port base = %d, want %d", x.mixed.portBase, want)
 			}
 		})
 	}
@@ -276,20 +267,15 @@ func TestMixedTCPKnobs(t *testing.T) {
 	r.VariablePacketTemplate.Variants = append(r.VariablePacketTemplate.Variants, guest.PacketVariant{Kind: "tcp_flow", Weight: 1,
 		TCPFlow: &guest.TCPFlowVariant{Destination: f.Destination, WindowSegs: 3, MSS: 512, RTOMillis: 50, IPID: "flow", Flows: f.Flows}})
 	x := &Xdperf{cfg: mixedConfig(), Logger: zap.NewNop(), cpus: []int{0}}
-	x.cfg.TCPWindow, x.cfg.TCPMSS, x.cfg.TCPRTO, x.cfg.TCPIPID = 11, 1200, 450*time.Millisecond, "shared"
 	if err := x.prepareMixed(r); err != nil {
 		t.Fatal(err)
 	}
 	g := x.mixed.groups[0]
-	if g.window != 11 || g.mss != 1200 || g.rto != 450*time.Millisecond || g.ipIDShared != 1 || x.tcpRTO() != g.rto {
-		t.Fatalf("CLI fallback lost: %+v", g)
+	if g.window != 32 || g.mss != 0 || g.rto != 200*time.Millisecond || g.ipIDShared != 0 || x.tcpRTO() != g.rto {
+		t.Fatalf("default settings lost: %+v", g)
 	}
 	x.mixed.groups[0].rto = 25 * time.Millisecond
 	if x.tcpRTO() != 50*time.Millisecond {
-		t.Fatal("shutdown uses CLI RTO instead of maximum group RTO")
-	}
-	x.mixed = nil
-	if x.tcpRTO() != x.cfg.TCPRTO {
-		t.Fatal("standalone RTO changed")
+		t.Fatal("shutdown uses default RTO instead of maximum group RTO")
 	}
 }

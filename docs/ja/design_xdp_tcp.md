@@ -175,6 +175,8 @@ TIME_WAIT は持たない。DONE になったフローのポートに遅延パ�
 
 ## 6. Go 側 (pkg/xdperf/tcp.go)
 
+この節のクライアント CLI 表は歴史的記録であり、PR4 で単独 `--tcp` を廃止した。移行先は末尾の第 17 節を参照。
+
 ### CLI フラグ
 
 | フラグ | 既定 | 意味 |
@@ -555,3 +557,18 @@ JSON、送信機会の重み、受信の振り分けは [混合バリアント�
 
 TCP グループ別の base_packet、カプセル化、Timestamps、ペイロードパターン、フロー別 variable_params は実装済みである。
 詳細は [TCP フローひな型の設計](design_tcp_flow_template.md)を参照。
+
+## 17. 単独 `--tcp` の廃止と混合経路への統合
+
+TCP 送信をプラグイン設定と混合エンジンへ統合し、単独クライアントと混合クライアントの実装重複を解消した。
+`tcpflow.go` は宛先とフロー設定を返し、ホストが経路からテンプレートを生成する。
+`xdp_tx_tcp`、`xdp_rx_tcp` と専用の `tcp_tx_build` は削除した。
+`tcp_tx_run`、`tcp_rx_update`、`tcp_parse_syn_opts`、responder が使う `tcp_reply_inplace` は残す。
+count の共有予算と lease、完了フローの照合、duration とシグナルの drain は混合経路で維持する。
+`--tcp-flow-report` は引き続きフロー別の CSV を出力する。
+
+TCP 設定は `window_segs`、`mss`、`rto_ms`、`ip_id`、集合単位の `tcp_port_base` に移した。
+既定値は順に 32、MTU に合わせて自動、200 ms、`flow`、10000 である。
+`tcpflow.go` での設定名と使用例は [プラグイン README](../../plugins/tcpflow.go/README.md) を参照。
+`--tcp-mss`、`--tcp-rto`、`--tcp-vlan-id`、`--tcp-vlan-pcp` は responder 専用として残し、`--tcp-server` なしの明示指定は拒否する。
+送信側の VLAN は経路の VLAN 子から自動で決まり、詳細の固定は `base_packet` に指定する。

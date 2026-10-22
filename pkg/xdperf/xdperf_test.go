@@ -14,7 +14,6 @@ func TestCalculateDiffMapSize(t *testing.T) {
 		want uint32
 	}{
 		{name: "receiver", cfg: Config{Count: math.MaxUint64, Parallelism: 1}, want: 1},
-		{name: "TCP sender", cfg: Config{Sender: true, TCP: true, Count: math.MaxUint64, Parallelism: 1}, want: 1},
 		{name: "worker share", cfg: Config{Sender: true, Count: 101, Parallelism: 3}, want: 34},
 		{name: "below cap", cfg: Config{Sender: true, Count: uint64(coreelf.MaxDiffEntries) - 2, Parallelism: 1}, want: coreelf.MaxDiffEntries - 1},
 		{name: "at cap", cfg: Config{Sender: true, Count: uint64(coreelf.MaxDiffEntries) - 1, Parallelism: 1}, want: coreelf.MaxDiffEntries},

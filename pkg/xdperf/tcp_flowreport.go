@@ -72,7 +72,7 @@ func (x *Xdperf) writeTCPFlowReport() error {
 	if x.cfg.TCPFlowReport == "" {
 		return nil
 	}
-	flows, err := x.readTCPFlows(x.cfg.TCPFlows)
+	flows, err := x.readTCPFlows(x.mixed.flows)
 	if err != nil {
 		return err
 	}

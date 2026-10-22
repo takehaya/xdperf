@@ -48,7 +48,7 @@ Always run teardown after a failed test as well.
 | [simpleudp-xdp-generic](simpleudp-xdp-generic/) | Forced generic (SKB) mode via `--xdp-mode generic` on both sides. Verifies the attach mode and end-to-end delivery |
 | [simpleudp-split-rx](simpleudp-split-rx/) | One process with `--rx-device`: TX on one veth, forwarded by a middle "DUT" netns, counted by `xdp_rx` on a second veth |
 | [srv6](srv6/) | SRv6 (RFC 8754) traffic via the srv6.go plugin, all three encapsulation modes (`l3vpn_ipv4`/`l2vpn_eth`/`ipv6`). Verifies rx counter == packets sent per mode |
-| [tcpstream](tcpstream/) | `xdperf run --tcp` (XDP-implemented TCP client) streaming into `xdperf-sink` (kernel TCP) and into `xdperf run --tcp-server` (XDP responder) over IPv4, IPv6 and both with an 802.1Q tag, plus `socat` (kernel TCP) into the XDP responder. Verifies sender `bytes_acked` == receiver bytes and connection counts |
+| [tcpstream](tcpstream/) | `xdperf run --plugin tcpflow.go` (XDP-implemented TCP client) streaming into `xdperf-sink` (kernel TCP) and into `xdperf run --tcp-server` (XDP responder) over IPv4, IPv6 and both with an 802.1Q tag, plus `socat` (kernel TCP) into the XDP responder. Verifies sender `bytes_acked` == receiver bytes and connection counts |
 | [mixed](mixed/README.md) | Weighted DNS-style UDP packets and unequal TCP byte targets, with TCP flow CSV and UDP echo verification |
 | [tcp-template](tcp-template/README.md) | TCP base frames, IPv4/IPv6, VLAN/QinQ, and static options |
 | [tcp-vxlan](tcp-vxlan/README.md) | TCP through Linux VXLAN with IPv4/IPv6 and outer UDP zero/LCO checksums |

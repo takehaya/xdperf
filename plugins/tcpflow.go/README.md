@@ -14,16 +14,15 @@ Pass these fields as JSON with `--cfg`:
 | `flows` | `4` | Number of connections; each uses a distinct source port |
 | `bytes` | `"65536"` | Bytes per connection as a uint64 decimal string; `"0"` requires `--count` or `--duration` |
 
-Zero or omitted tuning fields use the corresponding CLI value, including its default.
-Plugin values take precedence over CLI values.
+Zero or omitted tuning fields use the defaults below.
 
-| Field | CLI fallback | Meaning |
+| Field | Default | Meaning |
 | --- | --- | --- |
-| `window_segs` | `--tcp-window` (32) | Maximum segments in flight per flow, 1..65535 |
-| `mss` | `--tcp-mss` (automatic) | MSS before subtracting TCP data options, 64..65535; automatic sizing respects MTU/frame limits |
-| `rto_ms` | `--tcp-rto` (200ms) | Positive retransmission timeout in milliseconds |
-| `ip_id` | `--tcp-ip-id` (`flow`) | IPv4 ID mode: `flow` or `shared`; empty uses CLI fallback |
-| `port_base` | `--tcp-port-base` (10000) | First source port for the entire set; all flows must fit through port 65535 |
+| `window_segs` | 32 | Maximum segments in flight per flow, 1..65535 |
+| `mss` | automatic | MSS before subtracting TCP data options, 64..65535; automatic sizing respects MTU/frame limits |
+| `rto_ms` | 200 | Positive retransmission timeout in milliseconds |
+| `ip_id` | `flow` | IPv4 ID mode: `flow` or `shared`; empty uses the default |
+| `port_base` | 10000 | First source port for the entire set; all flows must fit through port 65535 |
 
 The host uses the largest group RTO for linger and drain timeout.
 Retry counts remain engine constants.
@@ -62,6 +61,5 @@ At the limit, the sender skips drain, lingers for 2×RTO, and warns about unfini
 To stream for a fixed duration, add `--duration 10s` and set `"bytes":"0"`; TCP-only duration needs no PPS.
 Count and duration cannot be explicitly combined.
 
-The standalone `--tcp` mode creates flows from CLI flags without a plugin.
-This example supplies them from Wasm, so omit `--tcp`, `--tcp-dst`, `--tcp-flows`, and `--tcp-bytes`.
+Standalone `--tcp` has been removed; use this plugin to send TCP flows.
 See the [variant guide](../../docs/ja/mixed_variants.md) for SDK details.

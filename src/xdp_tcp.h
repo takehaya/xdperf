@@ -5,10 +5,10 @@
 // XDP TCP stream mode: a minimal TCP client (SYN / data / FIN, go-back-N
 // retransmission, fixed window) implemented entirely in XDP.
 //
-//   xdp_tx_tcp  runs under BPF_PROG_RUN live frames; every invocation picks one
+//   xdp_tx_tcp_mixed runs under BPF_PROG_RUN live frames; every invocation picks one
 //               flow owned by the current CPU and emits SYN / data / FIN /
 //               retransmission for it, or returns XDP_DROP when nothing to send.
-//   xdp_rx_tcp  is attached to the device; it consumes every packet that
+//   xdp_rx_tcp_mixed is reached from the attached xdp_rx_mixed; it consumes every packet that
 //               belongs to an experiment flow (XDP_TX an ACK or XDP_DROP) and
 //               passes everything else untouched (XDP_PASS).
 //
@@ -626,122 +626,6 @@ out:
     return kind;
 }
 
-// Build the frame for action a into the live frame (template already holds
-// MACs, IP addresses, dst port, TTL, ...). Returns 0 on success.
-static __always_inline int tcp_tx_build(struct xdp_md *ctx, const struct tcp_cfg *cfg, struct tcp_cpu_state *cs,
-                                        const struct tcp_tx_action *a)
-{
-    __u32 l3_off = cfg->l3_off;
-    __u32 l4_off = cfg->l4_off;
-    __u32 opt_len = (a->flags & TCPF_SYN) ? TCP_SYN_OPT_LEN : 0;
-    __u32 tcp_len = TCP_HDR_LEN + opt_len + a->len;
-    __u32 target_len = l4_off + tcp_len;
-
-    if (l4_off > TCP_MAX_L4_OFF || l3_off > 18 || l3_off + 40 < l4_off)
-        return -1;
-    if (target_len > MAX_PACKET_SIZE)
-        return -1;
-
-    // 1. size the frame.
-    // Live frames are recycled, so a previous SYN may have left its options in
-    // the 8 bytes after the TCP header; every non-SYN segment must zero them
-    // because the checksum below assumes an all-zero payload. Segments shorter
-    // than 8 bytes cannot do that with a constant-size store after shrinking,
-    // so grow to cover the option area first, zero it, then shrink.
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-    __u32 cur_len = data_end - data;
-    if (!opt_len && a->len > 0 && a->len < TCP_SYN_OPT_LEN) {
-        __u32 opt_end = l4_off + TCP_HDR_LEN + TCP_SYN_OPT_LEN;
-        if (cur_len < opt_end) {
-            if (bpf_xdp_adjust_tail(ctx, (int)opt_end - (int)cur_len) < 0)
-                return -1;
-            cur_len = opt_end;
-        }
-        __u8 z[TCP_SYN_OPT_LEN] = {0};
-        if (bpf_xdp_store_bytes(ctx, l4_off + TCP_HDR_LEN, z, TCP_SYN_OPT_LEN) < 0)
-            return -1;
-    }
-    if (cur_len != target_len) {
-        if (bpf_xdp_adjust_tail(ctx, (int)target_len - (int)cur_len) < 0)
-            return -1;
-    }
-
-    // 2. TCP header (+ options)
-    __u8 th[TCP_HDR_LEN + TCP_SYN_OPT_LEN] = {0};
-    put_be16(th + 0, a->src_port);
-    put_be16(th + 2, cfg->dst_port);
-    put_be32(th + 4, a->seq);
-    put_be32(th + 8, a->ack);
-    th[12] = (__u8)(((TCP_HDR_LEN + opt_len) / 4) << 4);
-    th[13] = a->flags;
-    put_be16(th + 14, 65535);
-    // th[16..17] = checksum (below), th[18..19] = urgent pointer = 0
-    if (opt_len) {
-        th[20] = 2; // MSS
-        th[21] = 4;
-        put_be16(th + 22, cfg->mss);
-        th[24] = 1; // NOP
-        th[25] = 3; // Window scale
-        th[26] = 3;
-        th[27] = 7; // we never receive data, any value is fine; lets the peer scale too
-    }
-
-    __u64 sum = cfg->pseudo_sum;
-    sum += IPPROTO_TCP;
-    sum += tcp_len;
-    SUM16_BUF(sum, th, TCP_HDR_LEN + TCP_SYN_OPT_LEN); // option area is zero when unused
-    put_be16(th + 16, tcp_csum_fold(sum));
-
-    if (bpf_xdp_store_bytes(ctx, l4_off, th, TCP_HDR_LEN) < 0)
-        return -1;
-    // Option area: SYN writes the options; everything else must zero the 8
-    // bytes a previous SYN may have left in this recycled frame (the payload
-    // is assumed all-zero by the checksum above).
-    if (opt_len || a->len >= TCP_SYN_OPT_LEN) {
-        if (bpf_xdp_store_bytes(ctx, l4_off + TCP_HDR_LEN, th + TCP_HDR_LEN, TCP_SYN_OPT_LEN) < 0)
-            return -1;
-    }
-
-    // 3. L2 + IP headers from the template (never trust the recycled frame).
-    // l3_off is 14 or 18 (802.1Q). The IP header is edited in its own stack
-    // buffer at constant offsets: a stack access through hdr + l3_off has a
-    // variable offset, which some kernels' verifiers reject ("invalid read
-    // from stack ... var_off").
-    __u8 ih[40];
-    __u32 eth_len;
-    if (l3_off == 18) {
-        __builtin_memcpy(ih, (const void *)(cfg->hdr_tmpl + 18), sizeof(ih));
-        eth_len = 18;
-    } else if (l3_off == 14) {
-        __builtin_memcpy(ih, (const void *)(cfg->hdr_tmpl + 14), sizeof(ih));
-        eth_len = 14;
-    } else {
-        return -1;
-    }
-    if (bpf_xdp_store_bytes(ctx, 0, (void *)cfg->hdr_tmpl, eth_len) < 0)
-        return -1;
-    if (cfg->ip_version == 4) {
-        put_be16(ih + 2, (__u16)(20 + tcp_len));
-        // Per-connection IDs keep each flow's IDs consecutive, so GRO on
-        // the receiving side can merge its segments as it does for Linux
-        // TCP; one counter per CPU (ip_id_shared) breaks that on purpose.
-        put_be16(ih + 4, cfg->ip_id_shared ? (__u16)cs->ip_id++ : a->ip_id);
-        ih[10] = 0;
-        ih[11] = 0;
-        __u64 isum = 0;
-        SUM16_BUF(isum, ih, 20);
-        put_be16(ih + 10, tcp_csum_fold(isum));
-        if (bpf_xdp_store_bytes(ctx, eth_len, ih, 20) < 0)
-            return -1;
-    } else {
-        put_be16(ih + 4, (__u16)tcp_len);
-        if (bpf_xdp_store_bytes(ctx, eth_len, ih, 40) < 0)
-            return -1;
-    }
-    return 0;
-}
-
 #include "xdp_tcp_template.h"
 #include "xdp_tcp_template_ext.h"
 
@@ -762,9 +646,8 @@ static __noinline int tcp_tx_decide_mixed(struct tcp_flow *f, const struct tcp_t
                          extended && mixed_has_timestamps && tmpl->timestamps, 1);
 }
 
-// Compile separate entry points so mixed selection adds no verifier paths
-// or map lookup overhead to the standalone TCP scan.
-static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, const int extended)
+// Compile separate entry points for basic and extended TCP templates.
+static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
 {
     __u32 zero = 0;
     struct tcp_cfg *cfg = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
@@ -772,12 +655,9 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
     struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
     if (!cfg || !cs || !st)
         return XDP_ABORTED;
-    struct mixed_state *mixed = NULL;
-    if (mixed_mode) {
-        mixed = bpf_map_lookup_elem(&mixed_state_map, &zero);
-        if (!mixed)
-            return XDP_ABORTED;
-    }
+    struct mixed_state *mixed = bpf_map_lookup_elem(&mixed_state_map, &zero);
+    if (!mixed)
+        return XDP_ABORTED;
     if (cs->count == 0) {
         st->idle_iters++;
         return XDP_DROP;
@@ -785,7 +665,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
 
     __u32 first = cs->first, count = cs->count;
     __u32 *next = &cs->cursor;
-    if (mixed_mode && mixed->selected_group != 0xffffffff) {
+    if (mixed->selected_group != 0xffffffff) {
         __u32 key = mixed->selected_group;
         struct mixed_group *group = bpf_map_lookup_elem(&mixed_group_map, &key);
         if (!group)
@@ -816,17 +696,12 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
         struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
         if (!f)
             continue;
-        if (mixed_mode) {
-            __u32 group = f->template_id;
-            tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
-            if (!tmpl)
-                return XDP_ABORTED;
-            cfg = &tmpl->cfg;
-        }
-        if (mixed_mode)
-            kind = tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
-        else
-            kind = tcp_tx_decide(f, cfg, st, decision.now, &decision.act, &decision.extra, 0, 0, 0);
+        __u32 group = f->template_id;
+        tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
+        if (!tmpl)
+            return XDP_ABORTED;
+        cfg = &tmpl->cfg;
+        kind = tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
         if (kind != TXA_NONE && kind != TXA_CLOSED) {
             sel = f;
             break;
@@ -839,13 +714,10 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
     }
 
     int built;
-    if (mixed_mode) {
-        if (extended)
-            built = tcp_template_build_ext(ctx, tmpl, cs, &decision.act, &decision.extra);
-        else
-            built = tcp_template_build(ctx, tmpl, cs, &decision.act);
-    } else
-        built = tcp_tx_build(ctx, cfg, cs, &decision.act);
+    if (extended)
+        built = tcp_template_build_ext(ctx, tmpl, cs, &decision.act, &decision.extra);
+    else
+        built = tcp_template_build(ctx, tmpl, cs, &decision.act);
     if (built >= 0 && extended)
         built = tcp_template_finish(ctx, tmpl, &decision.act, &decision.extra);
     if (built >= 0 && extended && mixed_has_payload && decision.act.len) {
@@ -905,7 +777,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
     default:
         break;
     }
-    if (mixed_mode && !cfg->drain && !cfg->abort) {
+    if (!cfg->drain && !cfg->abort) {
         struct pkt_state *ps = bpf_map_lookup_elem(&pkt_state_map, &zero);
         if (ps && ps->budget)
             ps->budget--;
@@ -914,21 +786,15 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int mixed_mode, 
 }
 
 SEC("xdp")
-int xdp_tx_tcp(struct xdp_md *ctx)
-{
-    return tcp_tx_run(ctx, 0, 0);
-}
-
-SEC("xdp")
 int xdp_tx_tcp_mixed(struct xdp_md *ctx)
 {
-    return tcp_tx_run(ctx, 1, 0);
+    return tcp_tx_run(ctx, 0);
 }
 
 SEC("xdp")
 int xdp_tx_tcp_mixed_ext(struct xdp_md *ctx)
 {
-    return tcp_tx_run(ctx, 1, 1);
+    return tcp_tx_run(ctx, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,140 +1219,6 @@ out:
     bpf_spin_unlock(&f->lock);
     if (closed)
         mixed_count_closed(f);
-}
-
-SEC("xdp")
-int xdp_rx_tcp(struct xdp_md *ctx)
-{
-    __u32 zero = 0;
-    struct tcp_cfg *cfg = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
-    struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
-    if (!cfg || !st)
-        return XDP_PASS;
-
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end)
-        return XDP_PASS;
-
-    __u16 proto = eth->h_proto;
-    __u32 l3_off = sizeof(*eth);
-    __u8 tagged = 0;
-    if (cfg->vlan_id) {
-        if (proto == bpf_htons(ETH_P_8021Q)) {
-            struct vlan_hdr *vh = data + l3_off;
-            if ((void *)(vh + 1) > data_end)
-                return XDP_PASS;
-            if ((bpf_ntohs(vh->h_vlan_TCI) & 0x0FFF) != cfg->vlan_id)
-                return XDP_PASS;
-            proto = vh->h_vlan_encapsulated_proto;
-            l3_off += sizeof(*vh);
-            tagged = 1;
-        } else if (proto == bpf_htons(ETH_P_8021AD)) {
-            return XDP_PASS;
-        }
-        // Untagged frame while a VLAN is configured: the tag was stripped by
-        // the driver (rx-vlan-offload) or carried in skb metadata (veth
-        // hwaccel); XDP cannot see it. Accept the frame on the L3/L4 match
-        // below and push the tag back when replying.
-    } else if (proto == bpf_htons(ETH_P_8021Q) || proto == bpf_htons(ETH_P_8021AD)) {
-        return XDP_PASS;
-    }
-
-    struct tcp_rx_info in = {0};
-    __u32 l4_off;
-    __u32 ip_end; // end of the IP datagram as declared by its header
-    if (cfg->ip_version == 4) {
-        if (proto != bpf_htons(ETH_P_IP))
-            return XDP_PASS;
-        struct iphdr *iph = data + l3_off;
-        if ((void *)(iph + 1) > data_end)
-            return XDP_PASS;
-        if (iph->ihl != 5 || iph->protocol != IPPROTO_TCP)
-            return XDP_PASS;
-        if (iph->saddr != cfg->dst_ip[0] || iph->daddr != cfg->src_ip[0])
-            return XDP_PASS;
-        // Any fragment, including the first one (MF set, offset 0): no
-        // reassembly here, so it is not a complete segment.
-        if ((bpf_ntohs(iph->frag_off) & 0x3FFF) != 0)
-            return XDP_PASS;
-        l4_off = l3_off + sizeof(*iph);
-        __u32 tot = bpf_ntohs(iph->tot_len);
-        ip_end = l3_off + tot;
-        in.payload_len = tot >= sizeof(*iph) ? tot - sizeof(*iph) : 0; // minus TCP header below
-    } else {
-        if (proto != bpf_htons(ETH_P_IPV6))
-            return XDP_PASS;
-        struct ipv6hdr *ip6h = data + l3_off;
-        if ((void *)(ip6h + 1) > data_end)
-            return XDP_PASS;
-        if (ip6h->nexthdr != IPPROTO_TCP)
-            return XDP_PASS;
-        if (ip6h->saddr.in6_u.u6_addr32[0] != cfg->dst_ip[0] || ip6h->saddr.in6_u.u6_addr32[1] != cfg->dst_ip[1] ||
-            ip6h->saddr.in6_u.u6_addr32[2] != cfg->dst_ip[2] || ip6h->saddr.in6_u.u6_addr32[3] != cfg->dst_ip[3])
-            return XDP_PASS;
-        if (ip6h->daddr.in6_u.u6_addr32[0] != cfg->src_ip[0] || ip6h->daddr.in6_u.u6_addr32[1] != cfg->src_ip[1] ||
-            ip6h->daddr.in6_u.u6_addr32[2] != cfg->src_ip[2] || ip6h->daddr.in6_u.u6_addr32[3] != cfg->src_ip[3])
-            return XDP_PASS;
-        l4_off = l3_off + sizeof(*ip6h);
-        in.payload_len = bpf_ntohs(ip6h->payload_len);
-        ip_end = l4_off + in.payload_len;
-    }
-
-    struct tcphdr *th = data + l4_off;
-    if ((void *)(th + 1) > data_end)
-        return XDP_PASS;
-    if (bpf_ntohs(th->source) != cfg->dst_port)
-        return XDP_PASS;
-    in.dport = bpf_ntohs(th->dest);
-    if (in.dport < cfg->port_base)
-        return XDP_PASS;
-    __u32 idx = in.dport - cfg->port_base;
-    if (idx >= cfg->flow_count || idx >= MAX_TCP_FLOWS)
-        return XDP_PASS;
-
-    // From here on the packet belongs to an experiment flow: never XDP_PASS
-    // (the kernel has no socket for it and would answer with RST).
-    in.seq = bpf_ntohl(th->seq);
-    in.ack = bpf_ntohl(th->ack_seq);
-    in.win = bpf_ntohs(th->window);
-    in.doff = th->doff;
-    in.flags = ((__u8 *)th)[13];
-    in.wscale = 0xFF;
-    in.mss = 0;
-    {
-        // Lengths inconsistent with the frame: drop instead of acting on
-        // bytes that never arrived.
-        __u32 hl = (__u32)in.doff * 4;
-        if (hl < TCP_HDR_LEN || in.payload_len < hl || ip_end > (__u32)(data_end - data))
-            return XDP_DROP;
-        in.payload_len -= hl;
-    }
-    if ((in.flags & (TCPF_SYN | TCPF_ACK)) == (TCPF_SYN | TCPF_ACK) && in.doff > 5)
-        tcp_parse_syn_opts(ctx, l4_off, in.doff, &in.wscale, &in.mss);
-
-    struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
-    if (!f)
-        return XDP_DROP;
-    __sync_fetch_and_add(&f->rx_pkts, 1);
-
-    __u64 now = bpf_ktime_get_ns();
-    struct tcp_rx_resp resp = {0};
-    tcp_rx_update(f, st, &in, cfg->mss, now, &resp, NULL, NULL, 0, 0);
-    if (!resp.flags)
-        return XDP_DROP;
-
-    // Rewrite the received frame into the reply (ACK or RST) and bounce it back.
-    struct tcp_reply r = {.seq = resp.seq, .ack = resp.ack, .flags = resp.flags};
-    if (tcp_reply_inplace(ctx, l3_off, cfg->ip_version, cfg->vlan_id && !tagged, cfg->vlan_id, cfg->vlan_pcp, &r) < 0) {
-        st->build_errors++;
-        return XDP_DROP;
-    }
-    if (resp.flags == TCPF_ACK)
-        st->acks_sent++;
-    __sync_fetch_and_add(&f->rx_replies, 1);
-    return XDP_TX;
 }
 
 #include "xdp_tcp_template_rx.h"

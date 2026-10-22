@@ -52,6 +52,8 @@ type mixedPlan struct {
 	packets                   guest.GeneratorProcessResponse
 	groups                    []mixedGroup
 	packetWeight, totalWeight uint32
+	flows, portBase           int
+	destination               string
 	features                  coreelf.MixedProgramFeatures
 }
 
@@ -83,15 +85,12 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	if x.cfg.Infinite || x.cfg.RxDevice != "" || x.cfg.SwapResp {
 		return fmt.Errorf("mixed variants do not support --infinite, --rx-device or --swap-resp")
 	}
-	if x.cfg.TCPDst != "" || x.cfg.TCPBytes != 0 || x.cfg.TCPFlows > 1 {
-		return fmt.Errorf("mixed variants supply TCP destination, flows and bytes")
-	}
 	plan := &mixedPlan{packets: guest.GeneratorProcessResponse{TemplateType: guest.GeneratorTemplateTypeVariable}}
 	plan.packets.VariablePacketTemplate.Pattern = set.Pattern
 	var targets []uint64
 	var destination string
 	var total uint64
-	portBase := x.cfg.TCPPortBase
+	portBase := 10000
 	if set.TCPPortBase != 0 {
 		portBase = int(set.TCPPortBase)
 	}
@@ -141,9 +140,6 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		}
 		dest := f.Destination
 		if len(v.Base.Data) != 0 || v.Base.Length != 0 {
-			if x.cfg.TCPSrcIP != "" || x.cfg.TCPDstMAC != "" || x.cfg.TCPVlanID != 0 || x.cfg.TCPVlanPCP != 0 {
-				return fmt.Errorf("TCP base_packet cannot be combined with source IP, MAC or VLAN overrides")
-			}
 			t, err := parseTCPVariant(v)
 			if err != nil {
 				return fmt.Errorf("TCP variant %d: %w", i, err)
@@ -177,28 +173,25 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		if portBase < 1 || portBase > 65535 || len(f.Flows) > 65536-portBase-len(targets) {
 			return fmt.Errorf("TCP flows exceed source port capacity")
 		}
-		effective := x.cfg
-		effective.TCPDst, effective.TCPFlows, effective.TCPPortBase = canonical, len(f.Flows), portBase
-		if f.WindowSegs != 0 {
-			effective.TCPWindow = int(f.WindowSegs)
-		}
-		if f.MSS != 0 {
-			effective.TCPMSS = int(f.MSS)
-		}
-		if f.RTOMillis != 0 {
-			effective.TCPRTO = time.Duration(f.RTOMillis) * time.Millisecond
-		}
-		if f.IPID != "" {
-			effective.TCPIPID = f.IPID
-		}
-		// Reuse TCP validation with this group's effective settings.
-		effective.PluginName, effective.Count, effective.Receiver, effective.TCPBytes = "", 0, false, 1
-		if err := effective.validateTCP(); err != nil {
-			return fmt.Errorf("TCP variant %d: %w", i, err)
-		}
 		group := mixedGroup{weight: v.Weight, first: uint32(len(targets)), count: uint32(len(f.Flows)), variant: v,
-			window: effective.TCPWindow, mss: effective.TCPMSS, rto: effective.TCPRTO}
-		if effective.TCPIPID == "shared" {
+			window: 32, rto: 200 * time.Millisecond}
+		if f.WindowSegs > 65535 {
+			return fmt.Errorf("TCP variant %d window_segs must be in 1..65535 (0 = default)", i)
+		}
+		if f.WindowSegs != 0 {
+			group.window = int(f.WindowSegs)
+		}
+		if f.MSS != 0 && (f.MSS < tcpMinMSS) {
+			return fmt.Errorf("TCP variant %d mss must be 0 (default) or %d..65535", i, tcpMinMSS)
+		}
+		group.mss = int(f.MSS)
+		if f.RTOMillis != 0 {
+			group.rto = time.Duration(f.RTOMillis) * time.Millisecond
+		}
+		if f.IPID != "" && f.IPID != "flow" && f.IPID != "shared" {
+			return fmt.Errorf("TCP variant %d ip_id must be flow or shared", i)
+		}
+		if f.IPID == "shared" {
 			group.ipIDShared = 1
 		}
 		if len(v.Params) != 0 {
@@ -219,12 +212,11 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		}
 	}
 	plan.totalWeight = uint32(total)
-	cfg := x.cfg
-	cfg.TCPDst, cfg.TCPFlows, cfg.TCPPortBase = destination, len(targets), portBase
-	if cfg.Count > math.MaxInt64 {
+	plan.destination, plan.flows, plan.portBase = destination, len(targets), portBase
+	if x.cfg.Count > math.MaxInt64 {
 		return fmt.Errorf("mixed --count must be <= %d", int64(math.MaxInt64))
 	}
-	x.cfg, x.tcpVariantBytes, x.mixed = cfg, targets, plan
+	x.tcpVariantBytes, x.mixed = targets, plan
 	x.warnMixedWorkers()
 	return nil
 }
@@ -308,7 +300,7 @@ func (x *Xdperf) showMixedStats() error {
 	for _, s := range packets {
 		rxPackets += s.Packets
 	}
-	flows, err := x.readTCPFlows(x.cfg.TCPFlows)
+	flows, err := x.readTCPFlows(x.mixed.flows)
 	if err != nil {
 		return err
 	}
@@ -384,17 +376,14 @@ func (x *Xdperf) mixedCountReached(remaining int64, states []coreelf.BpfPktState
 }
 
 func (x *Xdperf) warnMixedWorkers() {
-	if x.mixed.packetWeight == 0 && x.cfg.TCPFlows < len(x.cpus) {
+	if x.mixed.packetWeight == 0 && x.mixed.flows < len(x.cpus) {
 		x.Logger.Warn("fewer TCP flows than TX workers: workers without flows remain idle",
-			zap.Int("flows", x.cfg.TCPFlows), zap.Int("workers", len(x.cpus)))
+			zap.Int("flows", x.mixed.flows), zap.Int("workers", len(x.cpus)))
 	}
 }
 
 // tcpRTO bounds shutdown by the slowest TCP group.
 func (x *Xdperf) tcpRTO() time.Duration {
-	if x.mixed == nil {
-		return x.cfg.TCPRTO
-	}
 	var rto time.Duration
 	for _, g := range x.mixed.groups {
 		rto = max(rto, g.rto)

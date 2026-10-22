@@ -165,7 +165,7 @@ func main() {
 	if err := coreelf.PrepareMixedRXDiagnostics(b); err != nil {
 		panic(err)
 	}
-	for _, name := range []string{"xdp_pass_dummy", "xdp_tx", "xdp_rx", "xdp_tx_checksum", "xdp_tx_csum_diff", "xdp_tx_csum_recalc", "xdp_tx_tcp", "xdp_rx_tcp", "xdp_rx_tcp_server", "xdp_tx_mixed", "xdp_tx_tcp_mixed"} {
+	for _, name := range []string{"xdp_pass_dummy", "xdp_tx", "xdp_rx", "xdp_tx_checksum", "xdp_tx_csum_diff", "xdp_tx_csum_recalc", "xdp_rx_tcp_server", "xdp_tx_mixed", "xdp_tx_tcp_mixed"} {
 		var x, y bytes.Buffer
 		if err := a.Programs[name].Instructions.Marshal(&x, binary.LittleEndian); err != nil {
 			panic(err)

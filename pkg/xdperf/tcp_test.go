@@ -10,69 +10,6 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-func tcpTestConfig() Config {
-	return Config{
-		Device:      "lo",
-		Sender:      true,
-		TCP:         true,
-		TCPDst:      "192.0.2.1:5201",
-		TCPFlows:    4,
-		TCPPortBase: 40000,
-		TCPWindow:   8,
-		TCPRTO:      200 * time.Millisecond,
-		TCPBytes:    1000,
-		Parallelism: 1,
-		XDPMode:     "auto",
-	}
-}
-
-func TestValidateTCP(t *testing.T) {
-	cases := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr bool
-	}{
-		{"ok", func(*Config) {}, false},
-		{"duration instead of bytes", func(c *Config) { c.TCPBytes = 0; c.Duration = time.Second }, false},
-		{"neither bytes nor duration", func(c *Config) { c.TCPBytes = 0 }, true},
-		{"missing dst", func(c *Config) { c.TCPDst = "" }, true},
-		{"recv combined", func(c *Config) { c.Receiver = true }, true},
-		{"rx-device", func(c *Config) { c.RxDevice = "eth1" }, true},
-		{"infinite", func(c *Config) { c.Infinite = true }, true},
-		{"count", func(c *Config) { c.Count = 10 }, true},
-		{"port range overflow", func(c *Config) { c.TCPPortBase = 65000; c.TCPFlows = 1000 }, true},
-		{"zero flows", func(c *Config) { c.TCPFlows = 0 }, true},
-		{"zero window", func(c *Config) { c.TCPWindow = 0 }, true},
-		{"zero rto", func(c *Config) { c.TCPRTO = 0 }, true},
-		{"mss below minimum", func(c *Config) { c.TCPMSS = 5 }, true},
-		{"mss at minimum", func(c *Config) { c.TCPMSS = tcpMinMSS }, false},
-		{"vlan id too large", func(c *Config) { c.TCPVlanID = 4095 }, true},
-		{"vlan pcp too large", func(c *Config) { c.TCPVlanPCP = 8 }, true},
-		{"flow report", func(c *Config) { c.TCPFlowReport = "flows.csv" }, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			c := tcpTestConfig()
-			tc.mutate(&c)
-			err := c.Validate()
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("Validate() error = %v, wantErr %v", err, tc.wantErr)
-			}
-		})
-	}
-}
-
-func TestNormalizeTCPImpliesSender(t *testing.T) {
-	c := Config{TCP: true}
-	c.Normalize()
-	if !c.Sender {
-		t.Fatal("--tcp should imply --send")
-	}
-	if c.PluginLanguage != "" {
-		t.Fatalf("plugin language must stay empty without a plugin, got %q", c.PluginLanguage)
-	}
-}
-
 // pseudoHeaderAddrSum must equal the address part of the RFC 793 pseudo
 // header, i.e. what gopacket folds into a correct TCP checksum.
 func TestPseudoHeaderAddrSum(t *testing.T) {
@@ -182,9 +119,8 @@ func TestValidateTCPServer(t *testing.T) {
 		{"ipv4 address", func(c *Config) { c.TCPListen = "10.0.0.2:5201" }, false},
 		{"ipv6 any", func(c *Config) { c.TCPListen = "[::]:5201" }, false},
 		{"with duration", func(c *Config) { c.Duration = time.Second }, false},
-		{"combined with --tcp", func(c *Config) { c.TCP = true }, true},
 		{"swap-resp", func(c *Config) { c.SwapResp = true }, true},
-		{"flow report needs --tcp", func(c *Config) { c.TCPFlowReport = "flows.csv" }, true},
+		{"flow report needs TCP variants", func(c *Config) { c.TCPFlowReport = "flows.csv" }, true},
 		{"rx-device", func(c *Config) { c.RxDevice = "eth1" }, true},
 		{"count", func(c *Config) { c.Count = 10 }, true},
 		{"infinite", func(c *Config) { c.Infinite = true }, true},

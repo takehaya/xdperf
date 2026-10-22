@@ -44,7 +44,7 @@ type Xdperf struct {
 
 // calculateDiffMapSize requires a validated config with positive Parallelism.
 func calculateDiffMapSize(cfg Config) uint32 {
-	if !cfg.Sender || cfg.TCP {
+	if !cfg.Sender {
 		return 1
 	}
 	// Clamp before adding the spare entry and narrowing, avoiding both uint64
@@ -83,7 +83,7 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 	}
 	cleanupFnList = append(cleanupFnList, cleanup)
 	var pm *plugin.Manager
-	if cfg.Sender && !cfg.TCP {
+	if cfg.Sender {
 		managerOpts := []plugin.ManagerOption{plugin.WithLogger(logger)}
 		if cfg.WasmCacheDir != "" {
 			managerOpts = append(managerOpts, plugin.WithCacheDir(cfg.WasmCacheDir))
@@ -258,9 +258,6 @@ func (x *Xdperf) setupOTLPMetrics() error {
 
 func (x *Xdperf) StartClient(ctx context.Context) error {
 	x.Logger.Info("start client mode")
-	if x.cfg.TCP {
-		return x.runTCP(ctx)
-	}
 
 	resp, err := x.callPlugin(ctx)
 	if err != nil {

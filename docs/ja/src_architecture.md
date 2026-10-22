@@ -10,7 +10,7 @@ src/
 ├── xdp_utils.h     ユーティリティ（MAC/IPスワップ、swap_resp制御）
 ├── xdp_packet.h    データ構造とBPFマップ定義（システムの心臓部）
 ├── xdp_checksum.h  チェックサム計算エンジン（フル再計算用）
-├── xdp_tcp.h       TCP ストリームモード（xdp_tx_tcp / xdp_rx_tcp、フロー状態マップ、tcp_reply_inplace）
+├── xdp_tcp.h       TCP ストリームモード（xdp_tx_tcp_mixed、共有状態機械、フロー状態マップ、tcp_reply_inplace）
 ├── xdp_mixed.h     混合配分の設定、CPU別グループ、tail callマップ
 ├── xdp_mixed_rx_stats.h 混合RXの未照合理由と不正TCPの診断
 ├── xdp_tcp_template.h 混合TCPのテンプレートと送信builder
@@ -165,7 +165,8 @@ IPv6版は`final_dst`パラメータでSRHの最終宛先アドレスを疑似�
 
 ## TCP と混合送信の構成
 
-単独 `--tcp` の `xdp_tx_tcp` / `xdp_rx_tcp` と、混合用の入口を分離する。
+TCP クライアントは `tcpflow.go` などのプラグインから混合用の入口を使う。
+単独 `--tcp` の `xdp_tx_tcp` / `xdp_rx_tcp` は廃止済み。
 混合 TX は `xdp_tx_mixed` から packet の `xdp_tx` または `xdp_tx_tcp_mixed` に tail call する。
 混合 RX は `xdp_rx_mixed` から `xdp_rx_tcp_mixed` へ進み、トンネルを外して内側タプルで照合する。
 未照合の外側 UDP は --recv 時だけ従来の `xdp_rx` で数える。
