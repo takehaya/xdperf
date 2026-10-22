@@ -239,7 +239,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	if !plan.repeat {
 		plan.connections = plan.flows
 	}
-	if x.cfg.Count > math.MaxInt64 && !(plan.repeat && x.cfg.CountFromDuration) {
+	if x.cfg.Count > math.MaxInt64 && (!plan.repeat || !x.cfg.CountFromDuration) {
 		return fmt.Errorf("mixed --count must be <= %d", int64(math.MaxInt64))
 	}
 	if plan.repeat && x.cfg.CountFromDuration {
