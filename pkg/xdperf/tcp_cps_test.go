@@ -251,6 +251,7 @@ func TestTCPPortReuseBPF(t *testing.T) {
 }
 
 func TestTCPCPSGateBPF(t *testing.T) {
+	pinMixedTestCPU(t)
 	v := extensionVariant(false)
 	x := setupFlowExtensions(t, v)
 	selectMixedTestFlow(t, x.bpfobjs, 0)

@@ -162,6 +162,7 @@ func TestTCPConnectionSummary(t *testing.T) {
 		{"finite unmet", 1, coreelf.BpfTcpStats{Started: 2, Established: 2, Done: 2, StartDroppedBusy: 100}, coreelf.BpfTcpStats{Started: 2, Established: 2, Done: 2}, 2 * time.Second, "all flows closed", false, [3]float64{1, 1, 1}},
 		{"legacy", 4, coreelf.BpfTcpStats{Started: 4, Established: 4, Done: 4}, coreelf.BpfTcpStats{Started: 4, Established: 4, Done: 4}, 2 * time.Second, "all flows closed", false, [3]float64{2, 2, 2}},
 		{"zero elapsed", 4, coreelf.BpfTcpStats{Started: 1}, coreelf.BpfTcpStats{Started: 1}, 0, "worker stopped", false, [3]float64{}},
+		{"signal before start", 4, coreelf.BpfTcpStats{}, coreelf.BpfTcpStats{}, -80 * time.Millisecond, "signal", false, [3]float64{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			values := make([]coreelf.BpfTcpStats, len(recs))
@@ -193,7 +194,7 @@ func TestTCPConnectionSummary(t *testing.T) {
 				"reason": tc.reason, "port_exhausted": tc.portExhausted,
 				"cps_unmet":    tc.final.StartDroppedBusy > 0,
 				"target_cps":   float64(1000),
-				"load_seconds": tc.loadTime.Seconds(), "drain_linger_seconds": 0.5,
+				"load_seconds": max(tc.loadTime, 0).Seconds(), "drain_linger_seconds": 0.5,
 				"started_cps": tc.wantCPS[0], "established_cps": tc.wantCPS[1], "done_cps": tc.wantCPS[2],
 			} {
 				if got.TCP[key] != want {

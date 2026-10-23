@@ -883,7 +883,7 @@ loop:
 }
 
 func (x *Xdperf) showTCPConnectionRates(loadStats coreelf.BpfTcpStats, load, drain time.Duration, reason string) {
-	seconds := load.Seconds()
+	seconds := max(load, 0).Seconds()
 	var startedCPS, establishedCPS, doneCPS float64
 	if seconds > 0 {
 		startedCPS = float64(loadStats.Started) / seconds
