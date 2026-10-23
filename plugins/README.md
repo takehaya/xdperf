@@ -49,6 +49,13 @@ Finite TCP-only sets can omit both count and duration; TCP-only duration needs n
 Packet variants still require count or duration, and duration requires PPS.
 The removed standalone TCP scenario API is not accepted.
 
+For multiple `VariableParams` (`variable_params`) with `pattern_type: "sequential"` in the same packet variant, every generated Diff entry advances all values by one together (zip).
+Each value starts at `byte_range.start`, includes `byte_range.end`, and wraps independently to its start.
+The generated sequence's period is the least common multiple of the range sizes (`end - start + 1`); this does not enumerate a Cartesian product.
+Parameter `pattern_type` is separate from the variant selection `pattern` (`sequential` / `mixed`).
+For example, VNI 1–2 and inner port 1000–1001 produce `(1, 1000) → (2, 1001) → (1, 1000) → …`, with period 2; `(1, 1001)` and `(2, 1000)` never appear.
+For a Cartesian product, the plugin can create one variant per value of one parameter, keep that value fixed, and sweep only the other parameter sequentially (at most 16 variants per set).
+
 Go VXLAN layout definitions and codecs are generated from the
 [C shared header](vxlan.c/vxlan_shared.h) into
 [`guest/packetdefs/vxlan`](../pkg/guest/packetdefs/vxlan/).
