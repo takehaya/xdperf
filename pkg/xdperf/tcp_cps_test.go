@@ -2,7 +2,10 @@ package xdperf
 
 import (
 	"bytes"
+	"encoding/binary"
 	"net"
+	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -387,4 +390,89 @@ func TestTCPCPSGateBPF(t *testing.T) {
 		}
 	}
 
+}
+
+func TestTCPCPSFairnessBPF(t *testing.T) {
+	for _, count := range []int{3, 9} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			v := extensionVariant(false)
+			v.TCPFlow.Flows = make([]guest.TCPFlow, count)
+			for i := range v.TCPFlow.Flows {
+				v.TCPFlow.Flows[i].Bytes = "65536"
+			}
+			x := setupFlowExtensions(t, v)
+			if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.TargetCps = 1000000000; c.SlotCount = uint32(count) }); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < count; i++ {
+				f := lookupExtensionFlow(t, x, uint32(i))
+				f.State = tcpFlowEstablished
+				f.Iss = 100
+				f.SndUna = 101
+				f.SndNxt = 101
+				f.SndMax = 101
+				f.RcvNxt = 5001
+				f.SndWnd = 65535
+				if err := x.bpfobjs.TcpFlowMap.Put(uint32(i), f); err != nil {
+					t.Fatal(err)
+				}
+				if err := x.bpfobjs.TcpSlotMap.Put(uint32(i), uint32(i)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cpus := make([]coreelf.BpfTcpCpuState, ebpf.MustPossibleCPU())
+			mixed := make([]coreelf.BpfMixedState, len(cpus))
+			for i := range cpus {
+				cpus[i] = coreelf.BpfTcpCpuState{Count: uint32(count), Stride: 1}
+				mixed[i].SelectedGroup = ^uint32(0)
+			}
+			if err := x.bpfobjs.TcpCpuStateMap.Put(uint32(0), cpus); err != nil {
+				t.Fatal(err)
+			}
+			if err := x.bpfobjs.MixedStateMap.Put(uint32(0), mixed); err != nil {
+				t.Fatal(err)
+			}
+			// Pin each test invocation to the same allowed CPU so its cursor persists.
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			var allowed unix.CPUSet
+			if err := unix.SchedGetaffinity(0, &allowed); err != nil {
+				t.Fatal(err)
+			}
+			cpu := 0
+			for cpu < len(cpus) && !allowed.IsSet(cpu) {
+				cpu++
+			}
+			if cpu == len(cpus) {
+				t.Fatal("no allowed test CPU")
+			}
+			var pinned unix.CPUSet
+			pinned.Set(cpu)
+			if err := unix.SchedSetaffinity(0, &pinned); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := unix.SchedSetaffinity(0, &allowed); err != nil {
+					t.Error(err)
+				}
+			}()
+			opts := ebpf.RunOptions{Data: bytes.Repeat([]byte{0xa5}, 2049), DataOut: make([]byte, 4096)}
+			for i := 0; i < 2*count; i++ {
+				opts.DataOut = opts.DataOut[:cap(opts.DataOut)]
+				ret, err := x.bpfobjs.XdpTxTcpMixed.Run(&opts)
+				if err != nil || ret != 3 {
+					t.Fatalf("iteration %d: action %d %v", i, ret, err)
+				}
+				port := binary.BigEndian.Uint16(opts.DataOut[34:36])
+				if want := uint16(40000 + i%count); port != want {
+					t.Fatalf("iteration %d: got port %d want %d", i, port, want)
+				}
+			}
+			stats, err := x.readTCPStats(make([]coreelf.BpfTcpStats, len(cpus)))
+			if err != nil || stats.StartDroppedBusy+stats.StartDroppedScan != uint64(2*count) {
+				t.Fatalf("SYN probing did not run every iteration: %+v %v", stats, err)
+			}
+
+		})
+	}
 }

@@ -4,6 +4,19 @@
 #include "xdp_tcp_decap.h"
 #include "xdp_mixed_rx_stats.h"
 
+// Keep state-machine spills off the RX parser's nested tunnel call stack.
+struct tcp_rx_decision {
+    struct tcp_rx_info in;
+    struct tcp_rx_timestamp ts;
+    struct tcp_rx_resp resp;
+    struct tcp_tx_extra extra;
+};
+static __noinline void tcp_rx_decide_mixed(struct tcp_flow *f, struct tcp_stats *st, const struct tcp_template *t,
+                                           struct tcp_rx_decision *d, int timestamps)
+{
+    tcp_rx_update(f, st, &d->in, t->cfg.mss, bpf_ktime_get_ns(), &d->resp, &d->ts, &d->extra, timestamps, 1);
+}
+
 static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extended)
 {
     __u32 zero = 0;
@@ -47,48 +60,44 @@ static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extend
     __u32 hl = th->doff * 4;
     if (hl < 20 || ip_end < l4 + hl || ip_end > inner.limit)
         return XDP_DROP;
-    struct tcp_rx_info in = {.seq = bpf_ntohl(th->seq),
-                             .ack = bpf_ntohl(th->ack_seq),
-                             .payload_len = ip_end - l4 - hl,
-                             .win = bpf_ntohs(th->window),
-                             .dport = dport,
-                             .doff = th->doff,
-                             .flags = ((__u8 *)th)[13],
-                             .wscale = 0xff};
-    struct tcp_rx_timestamp ts = {0};
-    struct tcp_tx_extra extra = {0};
-    if (extended && mixed_has_timestamps && t->timestamps && tcp_parse_timestamp(ctx, l4, in.doff, &ts) < 0)
+    struct tcp_rx_decision d = {.in = {.seq = bpf_ntohl(th->seq),
+                                       .ack = bpf_ntohl(th->ack_seq),
+                                       .payload_len = ip_end - l4 - hl,
+                                       .win = bpf_ntohs(th->window),
+                                       .dport = dport,
+                                       .doff = th->doff,
+                                       .flags = ((__u8 *)th)[13],
+                                       .wscale = 0xff}};
+    if (extended && mixed_has_timestamps && t->timestamps && tcp_parse_timestamp(ctx, l4, d.in.doff, &d.ts) < 0)
         return XDP_DROP;
-    if ((in.flags & (TCPF_SYN | TCPF_ACK)) == (TCPF_SYN | TCPF_ACK) && in.doff > 5) {
-        tcp_parse_syn_opts(ctx, l4, in.doff, &in.wscale, &in.mss);
+    if ((d.in.flags & (TCPF_SYN | TCPF_ACK)) == (TCPF_SYN | TCPF_ACK) && d.in.doff > 5) {
+        tcp_parse_syn_opts(ctx, l4, d.in.doff, &d.in.wscale, &d.in.mss);
         __u32 option_bytes = t->data_len;
-        if (extended && mixed_has_timestamps && t->timestamps && ts.has_timestamp)
+        if (extended && mixed_has_timestamps && t->timestamps && d.ts.has_timestamp)
             option_bytes += 12;
-        if (in.mss)
-            in.mss = in.mss > option_bytes ? in.mss - option_bytes : 1;
+        if (d.in.mss)
+            d.in.mss = d.in.mss > option_bytes ? d.in.mss - option_bytes : 1;
     }
     __sync_fetch_and_add(&f->rx_pkts, 1);
-    struct tcp_rx_resp resp = {0};
-    tcp_rx_update(f, st, &in, t->cfg.mss, bpf_ktime_get_ns(), &resp, &ts, &extra, extended && mixed_has_timestamps && t->timestamps,
-                  1);
-    if (!resp.flags)
+    tcp_rx_decide_mixed(f, st, t, &d, extended && mixed_has_timestamps && t->timestamps);
+    if (!d.resp.flags)
         return XDP_DROP;
-    struct tcp_tx_action act = {.seq = resp.seq, .ack = resp.ack, .flags = resp.flags, .src_port = dport};
+    struct tcp_tx_action act = {.seq = d.resp.seq, .ack = d.resp.ack, .flags = d.resp.flags, .src_port = dport};
     bpf_spin_lock(&f->lock);
     act.ip_id = f->ip_id++;
     bpf_spin_unlock(&f->lock);
     int built;
     if (extended)
-        built = tcp_template_build_ext(ctx, t, cs, &act, &extra);
+        built = tcp_template_build_ext(ctx, t, cs, &act, &d.extra);
     else
         built = tcp_template_build(ctx, t, cs, &act);
     if (built >= 0 && extended)
-        built = tcp_template_finish(ctx, t, &act, &extra);
+        built = tcp_template_finish(ctx, t, &act, &d.extra);
     if (built < 0) {
         st->build_errors++;
         return XDP_DROP;
     }
-    if (resp.flags == TCPF_ACK)
+    if (d.resp.flags == TCPF_ACK)
         st->acks_sent++;
     __sync_fetch_and_add(&f->rx_replies, 1);
     st->rx_replies++;

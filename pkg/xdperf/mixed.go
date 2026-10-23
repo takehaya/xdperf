@@ -136,7 +136,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 			}
 			capacity := 65536 - portBase
 			plan.attempts = uint64(*f.Connections)
-			plan.connections = min(int(*f.Connections), capacity)
+			plan.connections = int(min(uint64(*f.Connections), uint64(capacity)))
 			plan.reuse = untilDuration || uint64(*f.Connections) > uint64(capacity)
 			if untilDuration {
 				plan.connections = capacity

@@ -849,6 +849,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
 
     int permit = tcp_start_permit(global, cs, st, decision.now);
     __u32 quarantine = 0;
+    __u32 saved_cursor = *next;
     // Prefer initial SYNs during a start opportunity, then service existing flows.
     for (int i = 0; i < TCP_TX_SCAN * 2; i++) {
         if (i == TCP_TX_SCAN) {
@@ -860,6 +861,8 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
                 else
                     st->start_dropped_scan++;
                 permit = 0;
+                // An unsuccessful SYN probe must not bias normal round-robin service.
+                *next = saved_cursor;
             } else {
                 break;
             }
