@@ -347,25 +347,31 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 		return xdperf.Config{}, fmt.Errorf("config validation failed: %w", err)
 	}
 
-	// Calculate count from duration if specified (after validation)
+	// Calculate the packet budget; TCP repetition ignores it once the plugin is known.
 	// The responder does not use Count.
 	tcpMode := c.TCPServer
 	if c.Sender && !tcpMode && c.Duration > 0 && c.PPS > 0 {
 		// Divide the full 128-bit product to floor the budget exactly, including
 		// sub-second durations. Div64 requires hi < divisor for a uint64 result.
 		hi, lo := bits.Mul64(c.PPS, uint64(c.Duration))
+		c.CountFromDuration = true
 		if hi >= uint64(time.Second) {
-			return xdperf.Config{}, fmt.Errorf("calculated count exceeds uint64 range")
-		}
-		c.Count, _ = bits.Div64(hi, lo, uint64(time.Second))
-		if c.Count == 0 {
-			return xdperf.Config{}, fmt.Errorf("calculated count must be greater than zero; increase --pps or --duration")
+			c.DurationCountError = fmt.Errorf("calculated count exceeds uint64 range")
+		} else {
+			c.Count, _ = bits.Div64(hi, lo, uint64(time.Second))
+			if c.Count == 0 {
+				c.DurationCountError = fmt.Errorf("calculated count must be greater than zero; increase --pps or --duration")
+			}
 		}
 	}
 
 	// Post-validation: check count >= parallelism after duration calculation
 	if c.Sender && !tcpMode && c.Count > 0 && c.Count < uint64(c.Parallelism) {
-		return xdperf.Config{}, fmt.Errorf("calculated count (%d) must be greater than or equal to parallelism (%d)", c.Count, c.Parallelism)
+		err := fmt.Errorf("calculated count (%d) must be greater than or equal to parallelism (%d)", c.Count, c.Parallelism)
+		if !c.CountFromDuration {
+			return xdperf.Config{}, err
+		}
+		c.DurationCountError = err
 	}
 
 	// plugin config load

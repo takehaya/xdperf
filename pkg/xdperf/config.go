@@ -32,6 +32,9 @@ type Config struct {
 	Infinite    bool          // enable infinite mode for maximum throughput
 	BatchSize   uint32        // syscall batch size tuning (default: 64)
 
+	DurationCountError error // packet-budget error deferred until the plugin traffic mode is known
+	CountFromDuration  bool  // CLI-derived packet budget; ignored by TCP connection repetition
+
 	DebugMode int
 
 	SummaryJSON  string // final statistics JSON file; empty = disabled

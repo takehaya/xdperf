@@ -68,6 +68,8 @@ struct tcp_flow {
     __u16 mss;        // effective MSS: min(cfg mss, peer MSS); set on SYN-ACK
     __u8 syn_rst;     // SYN_SENT: bit0 = RST sent to a stale peer, resend SYN now; bit1 = used
     __u8 ts_enabled;
+    __u8 started; // first successfully built SYN, written only by the owner TX worker
+    __u8 _started_pad;
     __u16 ip_id;       // IPv4 ID of the next frame (per connection, like Linux)
     __u32 iss;         // our initial sequence number
     __u32 snd_una;     // oldest unacknowledged seq
@@ -94,7 +96,8 @@ struct tcp_flow {
 };
 
 struct tcp_cfg {
-    __u32 flow_count;
+    __u32 flow_count;  // retained connection states, including old DONE entries
+    __u32 slot_count;  // nonzero only in connection repetition mode
     __u32 window_segs; // max segments in flight per flow
     __u16 mss;         // payload bytes per segment
     __u16 port_base;   // src port = port_base + flow_idx (host order)
@@ -198,6 +201,7 @@ struct tcp_cpu_state {
 };
 
 struct tcp_stats {
+    __u64 started;
     __u64 syn_sent;
     __u64 synack_rcvd;
     __u64 established;
@@ -255,6 +259,14 @@ struct {
     __type(key, __u32);
     __type(value, struct tcp_stats);
 } tcp_stats_map SEC(".maps");
+
+// Only the owner TX worker advances a slot; connection states are never reused.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_TCP_FLOWS);
+    __type(key, __u32);
+    __type(value, __u32);
+} tcp_slot_map SEC(".maps");
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -346,7 +358,7 @@ static __noinline void mixed_count_closed(struct tcp_flow *f)
     __u32 zero = 0;
     struct mixed_cfg *cfg = bpf_map_lookup_elem(&mixed_cfg_map, &zero);
     struct tcp_cfg *tcp = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
-    if (!cfg || !tcp || !cfg->workers)
+    if (!cfg || !tcp || !cfg->workers || tcp->slot_count)
         return;
     __u32 slot = (__u32)(f->src_port - tcp->port_base) % cfg->workers;
     __u32 *closed = bpf_map_lookup_elem(&mixed_closed_map, &slot);
@@ -356,6 +368,32 @@ static __noinline void mixed_count_closed(struct tcp_flow *f)
 static __always_inline int mixed_flow_closed(__u8 state)
 {
     return state == TF_DONE || state == TF_FAILED || state == TF_SKIPPED;
+}
+
+// A slot is retired once; RX closure counts remain disabled in repetition mode.
+static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cfg *cfg)
+{
+    __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &slot);
+    if (!current || *current >= cfg->flow_count)
+        return NULL;
+    __u32 idx = *current;
+    struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
+    if (!f || !mixed_flow_closed(f->state))
+        return f;
+    __u32 next = idx + cfg->slot_count;
+    if (!cfg->drain && !cfg->abort && next < cfg->flow_count) {
+        *current = next;
+        return bpf_map_lookup_elem(&tcp_flow_map, &next);
+    }
+    *current = 0xffffffff;
+    struct mixed_cfg *mix = bpf_map_lookup_elem(&mixed_cfg_map, &(__u32){0});
+    if (mix && mix->workers) {
+        __u32 owner = slot % mix->workers;
+        __u32 *closed = bpf_map_lookup_elem(&mixed_closed_map, &owner);
+        if (closed)
+            __sync_fetch_and_add(closed, 1);
+    }
+    return NULL;
 }
 
 static __always_inline int tcp_flow_open(__u8 state)
@@ -388,8 +426,13 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
 {
     int kind = TXA_NONE;
     __u64 rto = cfg->rto_ns;
-    __u8 drain = cfg->drain;
-    __u8 abort = cfg->abort;
+    // Scheduling and TCP decisions share one stop flag, even during template updates.
+    __u32 zero = 0;
+    struct tcp_cfg *global = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
+    if (!global)
+        return TXA_NONE;
+    __u8 drain = global->drain;
+    __u8 abort = global->abort;
 
     bpf_spin_lock(&f->lock);
     a->src_port = f->src_port;
@@ -679,6 +722,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         }
     }
 
+    const struct tcp_cfg *global = cfg;
     struct tcp_mixed_decision decision = {.now = bpf_ktime_get_ns()};
     struct tcp_flow *sel = NULL;
     int kind = TXA_NONE;
@@ -693,7 +737,11 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         idx = first + cursor * cs->stride;
         if (idx >= MAX_TCP_FLOWS)
             continue;
-        struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
+        struct tcp_flow *f;
+        if (global->slot_count)
+            f = tcp_slot_flow(idx, global);
+        else
+            f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
         if (!f)
             continue;
         __u32 group = f->template_id;
@@ -749,6 +797,10 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
 
     switch (kind) {
     case TXA_SYN:
+        if (!sel->started) {
+            sel->started = 1;
+            st->started++;
+        }
         st->syn_sent++;
         break;
     case TXA_DATA:
@@ -781,7 +833,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
     default:
         break;
     }
-    if (!cfg->drain && !cfg->abort) {
+    if (!global->drain && !global->abort) {
         struct pkt_state *ps = bpf_map_lookup_elem(&pkt_state_map, &zero);
         if (ps && ps->budget)
             ps->budget--;

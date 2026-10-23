@@ -279,3 +279,131 @@ func TestMixedTCPKnobs(t *testing.T) {
 		t.Fatal("shutdown uses default RTO instead of maximum group RTO")
 	}
 }
+
+func TestTCPConnectionsValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		connections *uint32
+		duration    time.Duration
+		count       uint64
+		bytes       string
+		variants    int
+		want        int
+	}{
+		{"omitted", nil, 0, 0, "1024", 1, 4},
+		{"finite", ptrConnections(1000), 0, 0, "1024", 1, 1000},
+		{"partial batch", ptrConnections(7), 0, 0, "1024", 1, 7},
+		{"fewer than slots", ptrConnections(2), 0, 0, "1024", 1, 2},
+		{"duration", ptrConnections(0), time.Second, 0, "1024", 1, 25536},
+		{"capacity", ptrConnections(25536), 0, 0, "1024", 1, 25536},
+		{"over capacity", ptrConnections(25537), 0, 0, "1024", 1, 0},
+		{"overflow", ptrConnections(math.MaxUint32), 0, 0, "1024", 1, 0},
+		{"zero without duration", ptrConnections(0), 0, 0, "1024", 1, 0},
+		{"unlimited bytes", ptrConnections(10), time.Second, 0, "0", 1, 0},
+		{"count", ptrConnections(10), 0, 5, "1024", 1, 0},
+		{"multiple TCP variants", ptrConnections(10), 0, 0, "1024", 2, 0},
+		{"packet mixture", ptrConnections(10), 0, 0, "1024", 3, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := mixedResponse()
+			v := resp.VariablePacketTemplate.Variants[1]
+			v.TCPFlow.Connections = tc.connections
+			for i := range v.TCPFlow.Flows {
+				v.TCPFlow.Flows[i].Bytes = tc.bytes
+			}
+			resp.VariablePacketTemplate.Variants = []guest.PacketVariant{v}
+			if tc.variants == 2 {
+				resp.VariablePacketTemplate.Variants = append(resp.VariablePacketTemplate.Variants, v)
+			}
+			if tc.variants == 3 {
+				resp.VariablePacketTemplate.Variants = append(resp.VariablePacketTemplate.Variants, guest.PacketVariant{Weight: 1})
+			}
+			cfg := mixedConfig()
+			cfg.Count, cfg.Duration = tc.count, tc.duration
+			x := &Xdperf{cfg: cfg, Logger: zap.NewNop()}
+			err := x.prepareMixed(resp)
+			if tc.want == 0 {
+				if err == nil {
+					t.Fatal("accepted invalid connections")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if x.mixed.flows != 4 || x.mixed.connections != tc.want || x.mixed.repeat != (tc.connections != nil) {
+				t.Fatalf("plan: %+v", x.mixed)
+			}
+		})
+	}
+}
+
+func ptrConnections(n uint32) *uint32 { return &n }
+
+func TestTCPConnectionsUnusedSlotsNeedNoPorts(t *testing.T) {
+	resp := mixedResponse()
+	resp.VariablePacketTemplate.Variants = resp.VariablePacketTemplate.Variants[1:]
+	resp.VariablePacketTemplate.TCPPortBase = 65534
+	resp.VariablePacketTemplate.Variants[0].TCPFlow.Connections = ptrConnections(2)
+	cfg := mixedConfig()
+	cfg.Count = 0
+	x := &Xdperf{cfg: cfg, Logger: zap.NewNop()}
+	if err := x.prepareMixed(resp); err != nil {
+		t.Fatal(err)
+	}
+	if x.mixed.flows != 4 || x.mixed.connections != 2 {
+		t.Fatalf("plan: %+v", x.mixed)
+	}
+}
+
+func TestTCPConnectionsIgnoresDerivedPacketCount(t *testing.T) {
+	for _, connections := range []uint32{0, 1000} {
+		resp := mixedResponse()
+		resp.VariablePacketTemplate.Variants = resp.VariablePacketTemplate.Variants[1:]
+		resp.VariablePacketTemplate.Variants[0].TCPFlow.Connections = ptrConnections(connections)
+		cfg := mixedConfig()
+		cfg.Count = 10000
+		cfg.CountFromDuration = true
+		cfg.Duration = 10 * time.Second
+		cfg.PPS = 1000
+		x := &Xdperf{cfg: cfg, Logger: zap.NewNop()}
+		if err := x.prepareMixed(resp); err != nil {
+			t.Fatal(err)
+		}
+		if x.cfg.Count != 0 || x.cfg.PPS != 1000 || x.cfg.Duration != 10*time.Second {
+			t.Fatalf("config: %+v", x.cfg)
+		}
+	}
+}
+
+func TestTCPConnectionsIgnoresDerivedBudgetErrors(t *testing.T) {
+	for _, count := range []uint64{0, 1, math.MaxUint64} {
+		resp := mixedResponse()
+		resp.VariablePacketTemplate.Variants = resp.VariablePacketTemplate.Variants[1:]
+		resp.VariablePacketTemplate.Variants[0].TCPFlow.Connections = ptrConnections(0)
+		budgetErr := fmt.Errorf("invalid derived packet budget")
+		cfg := mixedConfig()
+		cfg.Count = count
+		cfg.CountFromDuration = true
+		cfg.DurationCountError = budgetErr
+		cfg.Duration = time.Second
+		cfg.PPS = 1
+		cfg.Parallelism = 4
+		if err := cfg.validateRunBounds(nil); err != budgetErr {
+			t.Fatalf("packet budget error was ignored: %v", err)
+		}
+		if err := cfg.validateRunBounds(&mixedPlan{}); err != budgetErr {
+			t.Fatalf("legacy TCP budget error was ignored: %v", err)
+		}
+		x := &Xdperf{cfg: cfg, Logger: zap.NewNop()}
+		if err := x.prepareMixed(resp); err != nil {
+			t.Fatal(err)
+		}
+		if err := x.cfg.validateRunBounds(x.mixed); err != nil {
+			t.Fatal(err)
+		}
+		if x.cfg.Count != 0 {
+			t.Fatal("derived packet budget was retained")
+		}
+	}
+}

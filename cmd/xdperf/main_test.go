@@ -74,6 +74,9 @@ func TestDurationPacketBudget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg, err := parseRunArgs("--device", "lo", "--duration", tt.duration, "--pps", tt.pps)
 			if tt.wantErr != "" {
+				if err == nil {
+					err = cfg.DurationCountError
+				}
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want %q", err, tt.wantErr)
 				}
@@ -81,6 +84,9 @@ func TestDurationPacketBudget(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !cfg.CountFromDuration {
+				t.Fatal("duration budget lost its provenance")
 			}
 			if cfg.Count != tt.wantCount {
 				t.Fatalf("duration budget = %d, want %d", cfg.Count, tt.wantCount)
@@ -278,6 +284,22 @@ func TestProbeEnv(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("probe action was not called")
+	}
+}
+
+func TestDurationBudgetValidationIsDeferred(t *testing.T) {
+	clearConfigEnv(t)
+	for _, args := range [][]string{
+		{"--duration", "1s", "--pps", "1", "--parallelism", "4"},
+		{"--duration", "100ms", "--pps", "1"},
+	} {
+		cfg, err := parseRunArgs(append([]string{"--device", "lo"}, args...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.CountFromDuration || cfg.DurationCountError == nil {
+			t.Fatalf("missing deferred budget error: %+v", cfg)
+		}
 	}
 }
 

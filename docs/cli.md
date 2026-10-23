@@ -439,6 +439,10 @@ The counters have the same scope as the existing statistics: packet TX excludes 
 TCP wire byte totals are not measured.
 
 For TCP flow clients, `tcp` contains the final TCP counters, including `flows`, `done`, `failed`, `retransmits`, `window_stalls`, and `data_bytes_sent` (payload bytes).
+`tcp.started` counts connections whose first SYN was built; `tcp.flows` is the number of concurrent slots.
+`tcp.port_exhausted` records source-port exhaustion.
+`tcp.reason`, `tcp.load_seconds`, `tcp.drain_linger_seconds`, `tcp.started_cps`, `tcp.established_cps`, and `tcp.done_cps` match the final connection-rate log.
+CPS uses the load-period snapshot divided by `load_seconds`, excluding establishments and completions during drain.
 `mixed` contains the existing dispatch, packet/TCP TX, RX reply, and RX diagnostic counters.
 For `--tcp-server`, `tcp_server` contains its final counters, including `accepted`, `closed`, `closed_implicit`, `active`, `bytes` (received payload), and errors; the top-level packet counters and rates are zero because this mode uses a separate statistics map.
 `nic` is included when the packet client uses `--show-nic-stats`, with the same interface-wide counters as its final log.

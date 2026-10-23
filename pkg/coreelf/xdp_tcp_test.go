@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"math"
 	"net"
 	"runtime"
 	"testing"
@@ -38,6 +40,7 @@ const (
 	tfFinWait2    = 4
 	tfDone        = 5
 	tfFailed      = 6
+	tfSkipped     = 7
 
 	tsSynRcvd     = 1
 	tsEstablished = 2
@@ -424,6 +427,7 @@ func clientStats(t *testing.T, objs *BpfObjects) BpfTcpStats {
 	}
 	var s BpfTcpStats
 	for _, r := range recs {
+		s.Started += r.Started
 		s.RstSent += r.RstSent
 		s.FailedEst += r.FailedEst
 		s.Failed += r.Failed
@@ -1526,4 +1530,236 @@ func TestTcpFlowLedger(t *testing.T) {
 			t.Fatalf("ledger rx=%d replies=%d tx=%d, want 1/1/0", f.RxPkts, f.RxReplies, f.TxPkts)
 		}
 	})
+}
+
+// Retained old tuples must remain reachable after their concurrency slot advances.
+func TestTcpRepeatedConnections(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		drain     bool
+		states    []uint8
+		wantIndex uint32
+	}{
+		{"advance", false, []uint8{tfDone, tfClosed}, 1},
+		{"failed attempt", false, []uint8{tfFailed, tfClosed}, 1},
+		{"finite end", false, []uint8{tfDone}, math.MaxUint32},
+		{"drain prevents refill", true, []uint8{tfDone, tfClosed}, math.MaxUint32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objs := loadTCPObjs(t)
+			flows := make([]BpfTcpFlow, len(tc.states))
+			for i, s := range tc.states {
+				flows[i] = BpfTcpFlow{State: s, Iss: 1000 + uint32(i), SndNxt: 1001, SndMax: 1001, RcvNxt: 5002, Started: 1}
+			}
+			if len(flows) > 1 {
+				flows[1].Started = 0
+			}
+			frame := setupClient(t, objs, clientOpts{}, flows...)
+			var cfg BpfTcpCfg
+			if err := objs.TcpCfgMap.Lookup(uint32(0), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			cfg.SlotCount = 1
+			if tc.drain {
+				cfg.Drain = 1
+			}
+			if err := objs.TcpCfgMap.Put(uint32(0), cfg); err != nil {
+				t.Fatal(err)
+			}
+			n := ebpf.MustPossibleCPU()
+			cpus := make([]BpfTcpCpuState, n)
+			for i := range cpus {
+				cpus[i] = BpfTcpCpuState{Stride: 1, Count: 1}
+			}
+			if err := objs.TcpCpuStateMap.Put(uint32(0), cpus); err != nil {
+				t.Fatal(err)
+			}
+			if err := objs.MixedCfgMap.Put(uint32(0), BpfMixedCfg{Workers: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if err := objs.TcpSlotMap.Put(uint32(0), uint32(0)); err != nil {
+				t.Fatal(err)
+			}
+			ret, out := runProg(t, objs.XdpTxTcpMixed, frame)
+			var current uint32
+			if err := objs.TcpSlotMap.Lookup(uint32(0), &current); err != nil {
+				t.Fatal(err)
+			}
+			if current != tc.wantIndex {
+				t.Fatalf("current=%d want=%d", current, tc.wantIndex)
+			}
+			if current != math.MaxUint32 {
+				if ret != xdpTx || uint16(decode(t, out).tcp.SrcPort) != testPortBase+1 {
+					t.Fatal("next connection did not use fresh port")
+				}
+				if clientStats(t, objs).Started != 1 {
+					t.Fatal("initial SYN not counted")
+				}
+				runProg(t, objs.XdpTxTcpMixed, frame)
+				if clientStats(t, objs).Started != 1 {
+					t.Fatal("SYN counted twice")
+				}
+				before := getFlow(t, objs, 1)
+				for _, flags := range []uint8{tcpFIN | tcpACK, tcpACK, tcpRST | tcpACK} {
+					ret, _ := runProg(t, objs.XdpRxTcpMixed, buildSeg(t, fromPeer(false, 0, 5001, 1001, flags)))
+					if flags == tcpFIN|tcpACK && ret != xdpTx {
+						t.Fatal("old FIN was not ACKed")
+					}
+					if got := getFlow(t, objs, 1); got != before {
+						t.Fatal("old packet changed new connection")
+					}
+				}
+			} else {
+				var closed uint32
+				if err := objs.MixedClosedMap.Lookup(uint32(0), &closed); err != nil {
+					t.Fatal(err)
+				}
+				if closed != 1 {
+					t.Fatalf("retired slots=%d", closed)
+				}
+				runProg(t, objs.XdpTxTcpMixed, frame)
+				if err := objs.MixedClosedMap.Lookup(uint32(0), &closed); err != nil {
+					t.Fatal(err)
+				}
+				if closed != 1 {
+					t.Fatal("slot retired twice")
+				}
+			}
+		})
+	}
+}
+
+func TestTcpRepeatedStopFlags(t *testing.T) {
+	for _, stopGlobal := range []bool{false, true} {
+		t.Run(fmt.Sprint(stopGlobal), func(t *testing.T) {
+			objs := loadTCPObjs(t)
+			frame := setupClient(t, objs, clientOpts{}, BpfTcpFlow{State: tfDone}, BpfTcpFlow{State: tfClosed, Iss: 1000}, BpfTcpFlow{State: tfClosed, Iss: 2000})
+			var cfg BpfTcpCfg
+			if err := objs.TcpCfgMap.Lookup(uint32(0), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			cfg.SlotCount = 1
+			if stopGlobal {
+				cfg.Drain = 1
+			}
+			if err := objs.TcpCfgMap.Put(uint32(0), cfg); err != nil {
+				t.Fatal(err)
+			}
+			var tmpl BpfTcpTemplate
+			if err := objs.TcpTemplateMap.Lookup(uint32(0), &tmpl); err != nil {
+				t.Fatal(err)
+			}
+			if !stopGlobal {
+				tmpl.Cfg.Drain = 1
+			} // deliberately disagree during a map update
+			if err := objs.TcpTemplateMap.Put(uint32(0), tmpl); err != nil {
+				t.Fatal(err)
+			}
+			states := make([]BpfTcpCpuState, ebpf.MustPossibleCPU())
+			for i := range states {
+				states[i] = BpfTcpCpuState{Count: 1, Stride: 1}
+			}
+			if err := objs.TcpCpuStateMap.Put(uint32(0), states); err != nil {
+				t.Fatal(err)
+			}
+			if err := objs.MixedCfgMap.Put(uint32(0), BpfMixedCfg{Workers: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if err := objs.TcpSlotMap.Put(uint32(0), uint32(0)); err != nil {
+				t.Fatal(err)
+			}
+			ret, _ := runProg(t, objs.XdpTxTcpMixed, frame)
+			if stopGlobal {
+				if ret != xdpDrop || getFlow(t, objs, 1).State != tfClosed {
+					t.Fatal("global drain allowed refill")
+				}
+				if err := objs.TcpSlotMap.Put(uint32(0), uint32(1)); err != nil {
+					t.Fatal(err)
+				}
+				ret, _ = runProg(t, objs.XdpTxTcpMixed, frame)
+				if ret != xdpDrop || getFlow(t, objs, 1).State != tfSkipped {
+					t.Fatal("global drain allowed first SYN")
+				}
+			} else if ret != xdpTx || getFlow(t, objs, 1).State != tfSynSent || getFlow(t, objs, 2).State != tfClosed {
+				t.Fatal("template stop flags consumed unstarted connections")
+			}
+		})
+	}
+}
+
+func TestTcpRepeatedUnevenCompletion(t *testing.T) {
+	objs := loadTCPObjs(t)
+	// Slots 0/1/3 stall while slot 2 finishes its last reserved connection first.
+	flows := []BpfTcpFlow{established(1000), established(2000), {State: tfDone}, established(4000), {State: tfClosed, Iss: 5000}, {State: tfClosed, Iss: 6000}}
+	for i := range flows {
+		flows[i].SndWnd = 0
+	}
+	frame := setupClient(t, objs, clientOpts{}, flows...)
+	var cfg BpfTcpCfg
+	if err := objs.TcpCfgMap.Lookup(uint32(0), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.SlotCount = 4
+	if err := objs.TcpCfgMap.Put(uint32(0), cfg); err != nil {
+		t.Fatal(err)
+	}
+	states := make([]BpfTcpCpuState, ebpf.MustPossibleCPU())
+	for i := range states {
+		states[i] = BpfTcpCpuState{Count: 4, Stride: 1}
+	}
+	if err := objs.TcpCpuStateMap.Put(uint32(0), states); err != nil {
+		t.Fatal(err)
+	}
+	if err := objs.MixedCfgMap.Put(uint32(0), BpfMixedCfg{Workers: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for i := uint32(0); i < 4; i++ {
+		if err := objs.TcpSlotMap.Put(i, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runProg(t, objs.XdpTxTcpMixed, frame)
+	var retired uint32
+	if err := objs.MixedClosedMap.Lookup(uint32(0), &retired); err != nil {
+		t.Fatal(err)
+	}
+	if retired != 1 || getFlow(t, objs, 4).State != tfClosed || getFlow(t, objs, 5).State != tfClosed {
+		t.Fatal("unexpected early completion")
+	}
+	finish := func(idx uint32) {
+		f := getFlow(t, objs, idx)
+		f.State = tfDone
+		if err := objs.TcpFlowMap.Put(idx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish(0)
+	finish(1)
+	ports := map[uint16]bool{}
+	for range 2 {
+		ret, out := runProg(t, objs.XdpTxTcpMixed, frame)
+		if ret != xdpTx {
+			t.Fatal("remaining slots did not replenish")
+		}
+		ports[uint16(decode(t, out).tcp.SrcPort)] = true
+	}
+	if !ports[testPortBase+4] || !ports[testPortBase+5] {
+		t.Fatalf("remaining ports not used: %v", ports)
+	}
+	if err := objs.MixedClosedMap.Lookup(uint32(0), &retired); err != nil {
+		t.Fatal(err)
+	}
+	if retired != 1 {
+		t.Fatal("worker stopped before reserved connections finished")
+	}
+	finish(3)
+	finish(4)
+	finish(5)
+	runProg(t, objs.XdpTxTcpMixed, frame)
+	if err := objs.MixedClosedMap.Lookup(uint32(0), &retired); err != nil {
+		t.Fatal(err)
+	}
+	if retired != 4 {
+		t.Fatalf("slots still active after all six connections finished: %d", retired)
+	}
 }

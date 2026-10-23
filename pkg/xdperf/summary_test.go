@@ -130,3 +130,75 @@ func TestSummaryRates(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTCPConnectionSummary(t *testing.T) {
+	spec, err := coreelf.LoadBpf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := ebpf.NewMap(spec.Maps["tcp_stats_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stats.Close() })
+	recs := make([]coreelf.BpfTcpStats, ebpf.MustPossibleCPU())
+	for _, tc := range []struct {
+		name          string
+		flows         int
+		final, load   coreelf.BpfTcpStats
+		loadTime      time.Duration
+		reason        string
+		portExhausted bool
+		wantCPS       [3]float64
+	}{
+		{"repeated", 4, coreelf.BpfTcpStats{Started: 1000, Established: 1000, Done: 1000}, coreelf.BpfTcpStats{Started: 1000, Established: 800, Done: 600}, 2 * time.Second, "all flows closed", false, [3]float64{500, 400, 300}},
+		{"duration", 4, coreelf.BpfTcpStats{Started: 20, Established: 20, Done: 20}, coreelf.BpfTcpStats{Started: 20, Established: 18, Done: 16}, 2 * time.Second, "duration elapsed", false, [3]float64{10, 9, 8}},
+		{"signal", 4, coreelf.BpfTcpStats{Started: 20, Established: 20, Done: 20}, coreelf.BpfTcpStats{Started: 20, Established: 18, Done: 16}, 2 * time.Second, "signal", false, [3]float64{10, 9, 8}},
+		{"legacy", 4, coreelf.BpfTcpStats{Started: 4, Established: 4, Done: 4}, coreelf.BpfTcpStats{Started: 4, Established: 4, Done: 4}, 2 * time.Second, "all flows closed", false, [3]float64{2, 2, 2}},
+		{"exhausted", 4, coreelf.BpfTcpStats{Started: 6, Established: 6, Done: 6}, coreelf.BpfTcpStats{Started: 6, Established: 4, Done: 2}, 2 * time.Second, "port_exhausted", true, [3]float64{3, 2, 1}},
+		{"zero elapsed", 4, coreelf.BpfTcpStats{Started: 1}, coreelf.BpfTcpStats{Started: 1}, 0, "worker stopped", false, [3]float64{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := make([]coreelf.BpfTcpStats, len(recs))
+			values[len(values)-1] = tc.final
+			if err := stats.Put(uint32(0), values); err != nil {
+				t.Fatal(err)
+			}
+			x := &Xdperf{
+				Logger: zap.NewNop(), summary: &runSummary{}, mixed: &mixedPlan{flows: tc.flows},
+				bpfobjs: &coreelf.BpfObjects{BpfMaps: coreelf.BpfMaps{TcpStatsMap: stats}},
+			}
+			if _, err := x.showTCPFinalStats(recs, tc.portExhausted); err != nil {
+				t.Fatal(err)
+			}
+			x.showTCPConnectionRates(tc.load, tc.loadTime, 500*time.Millisecond, tc.reason)
+			data, err := json.Marshal(x.summary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				TCP map[string]any `json:"tcp"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range map[string]any{
+				"flows": float64(tc.flows), "started": float64(tc.final.Started),
+				"established": float64(tc.final.Established), "done": float64(tc.final.Done),
+				"reason": tc.reason, "port_exhausted": tc.portExhausted,
+				"load_seconds": tc.loadTime.Seconds(), "drain_linger_seconds": 0.5,
+				"started_cps": tc.wantCPS[0], "established_cps": tc.wantCPS[1], "done_cps": tc.wantCPS[2],
+			} {
+				if got.TCP[key] != want {
+					t.Errorf("%s = %v, want %v", key, got.TCP[key], want)
+				}
+			}
+			// Logging rates without --summary-json must not enable JSON output.
+			x.summary = nil
+			x.showTCPConnectionRates(tc.load, tc.loadTime, 500*time.Millisecond, tc.reason)
+			if x.summary != nil {
+				t.Fatal("summary enabled without flag")
+			}
+		})
+	}
+}

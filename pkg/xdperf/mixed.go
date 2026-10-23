@@ -53,6 +53,8 @@ type mixedPlan struct {
 	groups                    []mixedGroup
 	packetWeight, totalWeight uint32
 	flows, portBase           int
+	connections               int // retained states; flows remains the number of concurrent slots
+	repeat, untilDuration     bool
 	destination               string
 	features                  coreelf.MixedProgramFeatures
 }
@@ -112,6 +114,24 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		if f == nil || len(f.Flows) == 0 || len(v.Checksums) != 0 {
 			return fmt.Errorf("TCP variant %d requires flows and cannot contain checksums", i)
 		}
+		if f.Connections != nil {
+			if len(set.Variants) != 1 || (x.cfg.Count != 0 && !x.cfg.CountFromDuration) {
+				return fmt.Errorf("connections requires a single TCP variant and cannot be used with --count")
+			}
+			plan.repeat = true
+			plan.untilDuration = *f.Connections == 0
+			if plan.untilDuration && x.cfg.Duration <= 0 {
+				return fmt.Errorf("connections=0 requires --duration")
+			}
+			capacity := 65536 - portBase
+			if uint64(*f.Connections) > uint64(capacity) {
+				return fmt.Errorf("connections exceeds source port capacity %d", capacity)
+			}
+			plan.connections = int(*f.Connections)
+			if plan.untilDuration {
+				plan.connections = capacity
+			}
+		}
 		if err := validateTCPFlowParams(v); err != nil {
 			return fmt.Errorf("TCP variant %d: %w", i, err)
 		}
@@ -170,7 +190,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		if destination == "" {
 			destination = canonical
 		}
-		if portBase < 1 || portBase > 65535 || len(f.Flows) > 65536-portBase-len(targets) {
+		if portBase < 1 || portBase > 65535 || len(f.Flows) > 65536 || (!plan.repeat && len(f.Flows) > 65536-portBase-len(targets)) {
 			return fmt.Errorf("TCP flows exceed source port capacity")
 		}
 		group := mixedGroup{weight: v.Weight, first: uint32(len(targets)), count: uint32(len(f.Flows)), variant: v,
@@ -205,6 +225,9 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 			if err != nil {
 				return fmt.Errorf("TCP variant %d bytes: %w", i, err)
 			}
+			if b == 0 && plan.repeat {
+				return fmt.Errorf("connections cannot be used with unlimited bytes (0)")
+			}
 			if b == 0 && x.cfg.Duration <= 0 && x.cfg.Count == 0 {
 				return fmt.Errorf("unlimited TCP flow requires --count or --duration")
 			}
@@ -213,8 +236,14 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	}
 	plan.totalWeight = uint32(total)
 	plan.destination, plan.flows, plan.portBase = destination, len(targets), portBase
-	if x.cfg.Count > math.MaxInt64 {
+	if !plan.repeat {
+		plan.connections = plan.flows
+	}
+	if x.cfg.Count > math.MaxInt64 && (!plan.repeat || !x.cfg.CountFromDuration) {
 		return fmt.Errorf("mixed --count must be <= %d", int64(math.MaxInt64))
+	}
+	if plan.repeat && x.cfg.CountFromDuration {
+		x.cfg.Count = 0
 	}
 	x.tcpVariantBytes, x.mixed = targets, plan
 	x.warnMixedWorkers()
@@ -300,7 +329,7 @@ func (x *Xdperf) showMixedStats() error {
 	for _, s := range packets {
 		rxPackets += s.Packets
 	}
-	flows, err := x.readTCPFlows(x.mixed.flows)
+	flows, err := x.readTCPFlows(x.mixed.connections)
 	if err != nil {
 		return err
 	}
@@ -364,6 +393,9 @@ func (x *Xdperf) readMixedRXStats() (mixedRXTotals, error) {
 
 // validateRunBounds needs the plugin response to distinguish finite TCP-only runs.
 func (c *Config) validateRunBounds(mixed *mixedPlan) error {
+	if c.DurationCountError != nil && (mixed == nil || !mixed.repeat) {
+		return c.DurationCountError
+	}
 	if (mixed == nil || mixed.packetWeight != 0) && c.Count == 0 && c.Duration == 0 {
 		return fmt.Errorf("either --count or --duration must be specified")
 	}

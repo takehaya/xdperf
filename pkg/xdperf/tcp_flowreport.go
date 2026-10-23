@@ -36,13 +36,16 @@ var tcpFlowReportHeader = []string{
 // writeTCPFlowLedger writes one CSV row per flow. tx_pkts + rx_replies is
 // every frame the flow put on the wire; tx_data + tx_rtx are its data
 // segments (first transmissions and retransmissions).
-func writeTCPFlowLedger(w io.Writer, flows []coreelf.BpfTcpFlow) error {
+func writeTCPFlowLedger(w io.Writer, flows []coreelf.BpfTcpFlow, onlyStarted bool) error {
 	cw := csv.NewWriter(w)
 	if err := cw.Write(tcpFlowReportHeader); err != nil {
 		return err
 	}
 	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	for i, f := range flows {
+		if onlyStarted && f.Started == 0 {
+			continue
+		}
 		row := []string{
 			strconv.Itoa(i), strconv.Itoa(int(f.SrcPort)), tcpFlowStateName(f.State),
 			u(f.TxPkts), u(f.TxData), u(f.TxRtx), u(f.RxPkts), u(f.RxReplies), u(f.BytesAcked),
@@ -72,7 +75,7 @@ func (x *Xdperf) writeTCPFlowReport() error {
 	if x.cfg.TCPFlowReport == "" {
 		return nil
 	}
-	flows, err := x.readTCPFlows(x.mixed.flows)
+	flows, err := x.readTCPFlows(x.mixed.connections)
 	if err != nil {
 		return err
 	}
@@ -80,7 +83,7 @@ func (x *Xdperf) writeTCPFlowReport() error {
 	if err != nil {
 		return fmt.Errorf("failed to create flow report: %w", err)
 	}
-	if err := writeTCPFlowLedger(f, flows); err != nil {
+	if err := writeTCPFlowLedger(f, flows, x.mixed.repeat); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("failed to write flow report: %w", err)
 	}
@@ -88,7 +91,12 @@ func (x *Xdperf) writeTCPFlowReport() error {
 		return fmt.Errorf("failed to write flow report: %w", err)
 	}
 	var tx, data, rtx, rx, replies uint64
+	rows := 0
 	for _, fl := range flows {
+		if x.mixed.repeat && fl.Started == 0 {
+			continue
+		}
+		rows++
 		tx += fl.TxPkts
 		data += fl.TxData
 		rtx += fl.TxRtx
@@ -97,7 +105,7 @@ func (x *Xdperf) writeTCPFlowReport() error {
 	}
 	x.Logger.Info("tcp flow report written",
 		zap.String("path", x.cfg.TCPFlowReport),
-		zap.Int("flows", len(flows)),
+		zap.Int("flows", rows),
 		zap.Uint64("tx_pkts", tx),
 		zap.Uint64("tx_data", data),
 		zap.Uint64("tx_rtx", rtx),
