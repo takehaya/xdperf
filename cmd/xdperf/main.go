@@ -121,6 +121,11 @@ func newApp(version string) *cli.App {
 			EnvVar: "XDPERF_PPS",
 			Usage:  "target packets per second (e.g., 100k, 1m). Empty for max speed",
 		},
+		cli.StringFlag{
+			Name:   "summary-json",
+			EnvVar: "XDPERF_SUMMARY_JSON",
+			Usage:  "write final statistics as one JSON object to this file",
+		},
 		cli.BoolFlag{
 			Name:   "show-nic-stats",
 			EnvVar: "XDPERF_SHOW_NIC_STATS",
@@ -285,6 +290,7 @@ func ParseArgs(ctx *cli.Context) (xdperf.Config, error) {
 	c.PluginLanguage = ctx.String("plugin-language")
 	c.SwapResp = ctx.Bool("swap-resp")
 	c.ShowNICStats = ctx.Bool("show-nic-stats")
+	c.SummaryJSON = ctx.String("summary-json")
 	c.Infinite = ctx.Bool("infinite")
 	c.BatchSize = uint32(ctx.Int("batch-size"))
 	c.WasmCacheDir = ctx.String("wasm-cache-dir")

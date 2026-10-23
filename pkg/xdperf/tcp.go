@@ -627,6 +627,7 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 		BatchSize: x.cfg.BatchSize,
 	}
 
+	x.beginSummary()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	statsDone := make(chan struct{})
@@ -863,12 +864,7 @@ loop:
 	if loadEnded.IsZero() {
 		loadEnded, loadStats = ended, s
 	}
-	seconds := loadEnded.Sub(started).Seconds()
-	x.Logger.Info("tcp connection rates", zap.String("reason", stopReason),
-		zap.Float64("load_seconds", seconds), zap.Float64("drain_linger_seconds", ended.Sub(loadEnded).Seconds()),
-		zap.Float64("started_cps", float64(loadStats.Started)/seconds),
-		zap.Float64("established_cps", float64(loadStats.Established)/seconds),
-		zap.Float64("done_cps", float64(loadStats.Done)/seconds))
+	x.showTCPConnectionRates(loadStats, loadEnded.Sub(started), ended.Sub(loadEnded), stopReason)
 	if err := x.showMixedStats(); err != nil && statsErr == nil {
 		statsErr = err
 	}
@@ -898,13 +894,70 @@ loop:
 		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d)",
 			s.Failed, x.mixed.connections, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts)
 	}
-	return nil
+	return x.writeSummary()
+}
+
+func (x *Xdperf) showTCPConnectionRates(loadStats coreelf.BpfTcpStats, load, drain time.Duration, reason string) {
+	seconds := load.Seconds()
+	var startedCPS, establishedCPS, doneCPS float64
+	if seconds > 0 {
+		startedCPS = float64(loadStats.Started) / seconds
+		establishedCPS = float64(loadStats.Established) / seconds
+		doneCPS = float64(loadStats.Done) / seconds
+	}
+	if x.summary != nil && x.summary.TCP != nil {
+		s := x.summary.TCP
+		s.Reason = reason
+		s.LoadSeconds = seconds
+		s.DrainLingerSeconds = drain.Seconds()
+		s.StartedCPS = startedCPS
+		s.EstablishedCPS = establishedCPS
+		s.DoneCPS = doneCPS
+	}
+	x.Logger.Info("tcp connection rates", zap.String("reason", reason),
+		zap.Float64("load_seconds", seconds), zap.Float64("drain_linger_seconds", drain.Seconds()),
+		zap.Float64("started_cps", startedCPS),
+		zap.Float64("established_cps", establishedCPS),
+		zap.Float64("done_cps", doneCPS))
 }
 
 func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats, portExhausted bool) (coreelf.BpfTcpStats, error) {
 	s, err := x.readTCPStats(recs)
 	if err != nil {
 		return s, fmt.Errorf("failed to read tcp stats: %w", err)
+	}
+	if x.summary != nil {
+		x.summary.TCP = &tcpSummary{
+			Flows:              x.mixed.flows,
+			Started:            s.Started,
+			PortExhausted:      portExhausted,
+			SynSent:            s.SynSent,
+			Established:        s.Established,
+			Done:               s.Done,
+			Failed:             s.Failed,
+			RstRcvd:            s.RstRcvd,
+			DataSegments:       s.DataSegs,
+			DataBytesSent:      s.DataBytes,
+			BytesAcked:         s.BytesAcked,
+			Retransmits:        s.RtxSegs,
+			RetransmitsTimeout: s.RtxTimeouts,
+			RetransmitsDupack:  s.RtxDupack,
+			AcksRcvd:           s.AcksRcvd,
+			AcksSent:           s.AcksSent,
+			WindowStalls:       s.WindowStalls,
+			IdleIterations:     s.IdleIters,
+			Unexpected:         s.Unexpected,
+			BuildErrors:        s.BuildErrors,
+			FailedEstablished:  s.FailedEst,
+			Skipped:            s.Skipped,
+			Aborted:            s.Aborted,
+			RstSent:            s.RstSent,
+			RetransmitGiveups:  s.RtxGiveups,
+			FinWait2Timeouts:   s.FinWait2Timeouts,
+			AckProbes:          s.AckProbes,
+			WindowProbes:       s.WindowProbes,
+			ChallengeAcks:      s.ChallengeAcks,
+		}
 	}
 	x.Logger.Info("tcp final statistics",
 		zap.Int("flows", x.mixed.flows),

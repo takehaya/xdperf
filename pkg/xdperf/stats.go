@@ -2,6 +2,7 @@ package xdperf
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,8 +12,8 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
-	"golang.org/x/text/message"
 	"go.uber.org/zap"
+	"golang.org/x/text/message"
 )
 
 type TrafficType string
@@ -146,29 +147,30 @@ func (x *Xdperf) readNICCounter(name string) (uint64, error) {
 
 // GetNICStats reads XDP-related statistics from /sys/class/net/<device>/statistics/
 func (x *Xdperf) GetNICStats() NICStats {
-	var stats NICStats
-	if v, err := x.readNICCounter("tx_packets"); err != nil {
+	stats, err := x.readNICStats()
+	if err != nil {
 		x.Logger.Debug("failed to read NIC stats", zap.Error(err))
-	} else {
-		stats.TxXdpPackets = v
-	}
-	if v, err := x.readNICCounter("tx_dropped"); err != nil {
-		x.Logger.Debug("failed to read NIC stats", zap.Error(err))
-	} else {
-		stats.TxXdpDropped = v
 	}
 	return stats
 }
 
+func (x *Xdperf) readNICStats() (NICStats, error) {
+	var stats NICStats
+	var txErr, dropErr error
+	stats.TxXdpPackets, txErr = x.readNICCounter("tx_packets")
+	stats.TxXdpDropped, dropErr = x.readNICCounter("tx_dropped")
+	return stats, errors.Join(txErr, dropErr)
+}
+
 // ShowFinalStats displays the final statistics after all packets have been sent.
-func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
+func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) error {
 	possibleCPUs := ebpf.MustPossibleCPU()
 	recs := make([]coreelf.BpfDatarec, possibleCPUs)
 
 	sumPackets, sumBytes, sumDiffErrors, sumChecksumErrors, err := sumStats(x.bpfobjs.TxStatsMap, recs)
 	if err != nil {
 		x.Logger.Error("failed to lookup stats_map", zap.Error(err))
-		return
+		return fmt.Errorf("final packet stats: %w", err)
 	}
 
 	fields := []zap.Field{
@@ -186,10 +188,25 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 
 	// NIC statistics (only if flag is set)
 	if x.cfg.ShowNICStats {
-		nicStatsAfter := x.GetNICStats()
+		var nicStatsAfter NICStats
+		if x.summary != nil {
+			nicStatsAfter, err = x.readNICStats()
+			if err != nil {
+				return fmt.Errorf("final NIC stats: %w", err)
+			}
+		} else {
+			nicStatsAfter = x.GetNICStats()
+		}
 		nicTxDelta := safeDelta(nicStatsAfter.TxXdpPackets, nicStatsBefore.TxXdpPackets)
 		nicDropDelta := safeDelta(nicStatsAfter.TxXdpDropped, nicStatsBefore.TxXdpDropped)
 
+		if x.summary != nil {
+			x.summary.NIC = &nicSummary{TxPackets: nicTxDelta, TxDropped: nicDropDelta}
+			if sumPackets > nicTxDelta {
+				x.summary.NIC.XDPToNICDropped = sumPackets - nicTxDelta
+				x.summary.NIC.DropRatePercent = float64(sumPackets-nicTxDelta) / float64(sumPackets) * 100
+			}
+		}
 		fields := []zap.Field{
 			zap.Uint64("nic_tx_packets", nicTxDelta),
 			zap.Uint64("nic_tx_dropped", nicDropDelta),
@@ -207,4 +224,5 @@ func (x *Xdperf) ShowFinalStats(nicStatsBefore NICStats) {
 
 		x.Logger.Info("NIC statistics (may include other traffic on the same interface)", fields...)
 	}
+	return nil
 }

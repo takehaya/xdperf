@@ -63,8 +63,12 @@ func printProbeResultWithLogger(lg *zap.Logger, result *ProbeResult) {
 		)
 	}
 
-	// BPF_PROG_RUN Support
-	lg.Info("BPF_PROG_RUN Support",
+	// The attach fallback only checks kernel live-frames API support.
+	liveFrameLabel := "Live-frame TX capability"
+	if result.XDPFeatures == nil {
+		liveFrameLabel = "Live-frame API support (device TX not checked)"
+	}
+	lg.Info(liveFrameLabel,
 		zap.Bool("live_frame_mode", result.LiveFrameMode),
 	)
 
@@ -73,7 +77,7 @@ func printProbeResultWithLogger(lg *zap.Logger, result *ProbeResult) {
 		lg.Info("Summary: This device is fully compatible with xdperf")
 	} else if result.XDPSupported && !result.LiveFrameMode {
 		lg.Warn("Summary: XDP is supported, but live frame mode is not available",
-			zap.String("note", "xdperf requires kernel 5.18+ for BPF_PROG_RUN live packet mode"),
+			zap.String("note", "live-frame TX requires ndo_xdp_xmit and kernel live-frames support"),
 		)
 	} else {
 		lg.Error("Summary: XDP is not supported on this device")

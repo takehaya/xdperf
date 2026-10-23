@@ -5,30 +5,28 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
-const (
-	xdpAttachTimeout     = 2 * time.Second
-	liveFrameTestTimeout = 3 * time.Second
-	minTestPacketSize    = 64
-)
+const minTestPacketSize = 64
 
 type ProbeResult struct {
-	DeviceName       string `json:"device"`
-	XDPSupported     bool   `json:"xdp_supported"`
-	XDPDriverMode    bool   `json:"xdp_driver_mode"`
-	XDPGenericMode   bool   `json:"xdp_generic_mode"`
-	XDPOffloadMode   bool   `json:"xdp_offload_mode"`
-	LiveFrameMode    bool   `json:"live_frame_mode"`
-	CurrentXDPProgID uint32 `json:"current_xdp_prog_id"`
-	AttachedMode     string `json:"attached_mode"`
+	DeviceName       string  `json:"device"`
+	XDPSupported     bool    `json:"xdp_supported"`
+	XDPDriverMode    bool    `json:"xdp_driver_mode"`
+	XDPGenericMode   bool    `json:"xdp_generic_mode"`
+	XDPOffloadMode   bool    `json:"xdp_offload_mode"`
+	LiveFrameMode    bool    `json:"live_frame_mode"`
+	CurrentXDPProgID uint32  `json:"current_xdp_prog_id"`
+	AttachedMode     string  `json:"attached_mode"`
+	XDPFeatures      *uint64 `json:"xdp_features,omitempty"`
 }
 
 func getInterface(deviceName string) (*net.Interface, error) {
@@ -37,26 +35,6 @@ func getInterface(deviceName string) (*net.Interface, error) {
 		return nil, fmt.Errorf("failed to get interface %s: %w", deviceName, err)
 	}
 	return iface, nil
-}
-
-func attachXDPWithFallback(prog *ebpf.Program, ifindex int) (link.Link, error) {
-	l, err := link.AttachXDP(link.XDPOptions{
-		Program:   prog,
-		Interface: ifindex,
-	})
-	if err == nil {
-		return l, nil
-	}
-
-	l, err = link.AttachXDP(link.XDPOptions{
-		Program:   prog,
-		Interface: ifindex,
-		Flags:     link.XDPGenericMode,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to attach XDP program: %w", err)
-	}
-	return l, nil
 }
 
 func isLiveFrameNotSupportedError(err error) bool {
@@ -100,7 +78,19 @@ func ProbeXDPSupport(deviceName string) (*ProbeResult, error) {
 		}
 	}
 
-	driverSupport, genericSupport, offloadSupport := probeXDPModes(iface.Index)
+	features, err := getXDPFeatures(iface.Index)
+	if err == nil {
+		result.setXDPFeatures(features)
+		return result, nil
+	}
+	if !errors.Is(err, errNetdevUnavailable) {
+		return nil, err
+	}
+
+	driverSupport, genericSupport, offloadSupport, err := probeXDPModes(iface.Index)
+	if err != nil {
+		return nil, err
+	}
 	if driverSupport {
 		result.XDPDriverMode = true
 	}
@@ -116,47 +106,35 @@ func ProbeXDPSupport(deviceName string) (*ProbeResult, error) {
 	return result, nil
 }
 
-func probeXDPModes(ifindex int) (driver, generic, offload bool) {
+func probeXDPModes(ifindex int) (driver, generic, offload bool, err error) {
 	prog, cleanup, err := coreelf.LoadDummyProgram()
 	if err != nil {
-		return false, false, false
+		return false, false, false, err
 	}
 	defer cleanup()
 
-	driver = tryAttachXDPWithLinkTimeout(prog, ifindex, link.XDPDriverMode, xdpAttachTimeout)
-	generic = tryAttachXDPWithLinkTimeout(prog, ifindex, link.XDPGenericMode, xdpAttachTimeout)
-	// TODO: Offload mode probing requires hardware support
-	offload = false
-
-	return driver, generic, offload
-}
-
-func tryAttachXDPWithLinkTimeout(prog *ebpf.Program, ifindex int, flags link.XDPAttachFlags, timeout time.Duration) bool {
-	resultCh := make(chan bool, 1)
-
-	go func() {
-		resultCh <- tryAttachXDPWithLink(prog, ifindex, flags)
-	}()
-
-	select {
-	case result := <-resultCh:
-		return result
-	case <-time.After(timeout):
-		return false
+	// Wait for each attach and detach to finish before trying the next mode.
+	driver, err = tryAttachXDPWithLink(prog, ifindex, link.XDPDriverMode)
+	if err != nil {
+		return false, false, false, err
 	}
+	generic, err = tryAttachXDPWithLink(prog, ifindex, link.XDPGenericMode)
+	return driver, generic, false, err
 }
 
-func tryAttachXDPWithLink(prog *ebpf.Program, ifindex int, flags link.XDPAttachFlags) bool {
+func tryAttachXDPWithLink(prog *ebpf.Program, ifindex int, flags link.XDPAttachFlags) (bool, error) {
 	l, err := link.AttachXDP(link.XDPOptions{
 		Program:   prog,
 		Interface: ifindex,
 		Flags:     flags,
 	})
 	if err != nil {
-		return false
+		return false, nil
 	}
-	l.Close()
-	return true
+	if err := l.Close(); err != nil {
+		return false, fmt.Errorf("failed to detach probe program: %w", err)
+	}
+	return true, nil
 }
 
 func ProbeLiveFrameMode(deviceName string) (bool, error) {
@@ -165,61 +143,48 @@ func ProbeLiveFrameMode(deviceName string) (bool, error) {
 		return false, err
 	}
 
-	prog, cleanup, err := coreelf.LoadDummyProgram()
+	features, err := getXDPFeatures(iface.Index)
+	if err == nil {
+		return features&netdevXDPActNdoXmit != 0, nil
+	}
+	if !errors.Is(err, errNetdevUnavailable) {
+		return false, err
+	}
+	return probeLegacyLiveFrameMode()
+}
+
+func probeLegacyLiveFrameMode() (bool, error) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		return false, err
+	}
+	// DROP on loopback tests the live-frames API without transmitting or injecting a packet.
+	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Type: ebpf.XDP,
+		Instructions: asm.Instructions{
+			asm.Mov.Imm(asm.R0, 1), // XDP_DROP
+			asm.Return(),
+		},
+		License: "GPL",
+	})
 	if err != nil {
 		return false, fmt.Errorf("failed to load BPF program: %w", err)
 	}
-	defer cleanup()
+	defer prog.Close()
 
-	l, err := attachXDPWithFallback(prog, iface.Index)
-	if err != nil {
-		return false, err
-	}
-	defer l.Close()
-
-	return runLiveFrameTest(prog, iface.Index)
-}
-
-func runLiveFrameTest(prog *ebpf.Program, ifindex int) (bool, error) {
 	data := make([]byte, minTestPacketSize)
-
-	xdpmd := coreelf.XdpMd{
-		DataEnd:        uint32(len(data)),
-		IngressIfindex: uint32(ifindex),
-	}
-
-	runOpts := &ebpf.RunOptions{
+	_, err = prog.Run(&ebpf.RunOptions{
 		Data:    data,
 		Repeat:  1,
 		Flags:   unix.BPF_F_TEST_XDP_LIVE_FRAMES,
-		Context: xdpmd,
-	}
-
-	type result struct {
-		supported bool
-		err       error
-	}
-	resultCh := make(chan result, 1)
-
-	go func() {
-		_, err := prog.Run(runOpts)
-		if err != nil {
-			if isLiveFrameNotSupportedError(err) {
-				resultCh <- result{supported: false, err: nil}
-				return
-			}
-			resultCh <- result{supported: false, err: fmt.Errorf("failed to run BPF program: %w", err)}
-			return
+		Context: coreelf.XdpMd{DataEnd: uint32(len(data))},
+	})
+	if err != nil {
+		if isLiveFrameNotSupportedError(err) {
+			return false, nil
 		}
-		resultCh <- result{supported: true, err: nil}
-	}()
-
-	select {
-	case res := <-resultCh:
-		return res.supported, res.err
-	case <-time.After(liveFrameTestTimeout):
-		return false, fmt.Errorf("timeout while probing live frame mode")
+		return false, fmt.Errorf("failed to run BPF program: %w", err)
 	}
+	return true, nil
 }
 
 func ProbeAll(deviceName string) (*ProbeResult, error) {
@@ -228,8 +193,8 @@ func ProbeAll(deviceName string) (*ProbeResult, error) {
 		return nil, err
 	}
 
-	if result.XDPSupported {
-		liveFrameSupported, err := ProbeLiveFrameMode(deviceName)
+	if result.XDPFeatures == nil && result.XDPSupported {
+		liveFrameSupported, err := probeLegacyLiveFrameMode()
 		if err != nil {
 			// Live frame mode probe failed, but XDP is still supported
 			result.LiveFrameMode = false

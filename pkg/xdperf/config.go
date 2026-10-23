@@ -37,6 +37,7 @@ type Config struct {
 
 	DebugMode int
 
+	SummaryJSON  string // final statistics JSON file; empty = disabled
 	ShowNICStats bool   // show NIC-level statistics (may include other traffic on the same interface)
 	WasmCacheDir string // WASM compilation cache directory (empty = default ~/.cache/xdperf/wasm/)
 	CPUMode      string // NUMA-aware CPU selection mode (auto/local/balanced/node:N/CPU list)

@@ -246,3 +246,32 @@ sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin 
 
 このモードは完了を待って接続を補充するため、遅延が増えると接続発生率も下がります。
 目標 CPS を指定する機能はなく、`--pps` やバリアントの weight もその代用にはなりません。
+
+## 実行結果を JSON に保存する
+
+`--summary-json result.json` を指定すると、終了時の統計を 1 つの JSON オブジェクトとして保存します。
+環境変数は `XDPERF_SUMMARY_JSON` です。
+通常の送信、受信サーバー、`--tcp-server` のいずれでも使えます。
+
+```bash
+sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
+  --summary-json result.json \
+  --cfg '{"dst_ip":"10.0.0.2","tcp_port":5201,"flows":4,"bytes":"1000000"}'
+```
+
+`tcp` に `flows`、`started`、`done`、`failed`、`port_exhausted`、`retransmits`、`window_stalls` などの最終値が入り、`mixed` に送信配分や RX 診断の統計が入ります。
+`--tcp-server` では `tcp_server` に完了数や受信ペイロードのバイト数などが入ります。
+トップレベルの送受信数と平均 PPS/bps は既存のパケット統計マップの値で、TCP フローの送信数やバイト数は含みません。
+混合 RX は外側 UDP のみを数え、TCP サーバーモードではトップレベルのパケット統計は 0 です。
+`tcp` の `reason`、`load_seconds`、`drain_linger_seconds`、`started_cps`、`established_cps`、`done_cps` は最終ログと同じ値です。
+各 CPS は負荷投入期間のカウンタを `load_seconds` で割り、drain 中の確立・完了は含めません。
+`flows` は同時実行枠数、`started` は開始した接続の総数です。
+`elapsed_seconds` は初期化後から終了処理までの秒数で、TCP の drain 時間を含みます。
+数値は数値型、キーは snake_case です。
+
+正常終了と SIGINT/SIGTERM による終了時に書きます。
+初期化、worker、TCP フロー、最終統計や CSV 出力でエラーがあった場合は書かず、以前のファイルを残します。
+JSON の読み取りや書き込みに失敗した場合は非ゼロで終了し、書き込み途中のファイルが残る場合があります。
+保存先の親ディレクトリは事前に作成してください。
+既存ファイルは上書きし、`-` は通常のファイル名として扱います。
+全フィールドの範囲は [CLI ドキュメント](../cli.md#--summary-json) を参照してください。
