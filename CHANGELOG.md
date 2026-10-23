@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.22.0](https://github.com/takehaya/xdperf/compare/v0.21.0...v0.22.0) (2026-10-23)
+
+
+### 🎉 Features
+
+* add JSON summaries for final run statistics ([#148](https://github.com/takehaya/xdperf/issues/148)) ([c4f5930](https://github.com/takehaya/xdperf/commit/c4f5930bac9642ce8029d7d7c6a5579e642425ea))
+* repeat TCP connections and report achieved CPS ([#149](https://github.com/takehaya/xdperf/issues/149)) ([fff25fd](https://github.com/takehaya/xdperf/commit/fff25fd421ebc65c4a61904cc3dd4c12304580e4))
+
+
+### 🐛 Bug Fixes
+
+* probe XDP capabilities without reconfiguring NICs ([#150](https://github.com/takehaya/xdperf/issues/150)) ([7100a5e](https://github.com/takehaya/xdperf/commit/7100a5ed57062ca7e681b2d274ffc20130080531))
+
+
+### 📝 Documentation
+
+* clarify sequential parameter combinations ([#146](https://github.com/takehaya/xdperf/issues/146)) ([c4b776e](https://github.com/takehaya/xdperf/commit/c4b776e90c26ba4d68930ddc2b0fdf9ec18f0bcd))
+* explain what window_stalls counts in TCP statistics ([#147](https://github.com/takehaya/xdperf/issues/147)) ([d8ea3ea](https://github.com/takehaya/xdperf/commit/d8ea3eaa4e493b3e494e63fffb09f836619a901e))
+
 ## [0.21.0](https://github.com/takehaya/xdperf/compare/v0.20.0...v0.21.0) (2026-10-22)
 
 
