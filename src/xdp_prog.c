@@ -187,40 +187,6 @@ static __noinline bool apply_diff(struct xdp_md *ctx, struct diff_value *dv)
     }
 }
 
-// Capture actual buffer values into old_value fields before apply_diff overwrites them.
-// Called only when base packet copy is skipped, so the incremental checksum path
-// uses the real "before" values (previous iteration's diff values) instead of stale
-// base values. When copy IS performed, old_value already matches the base packet.
-// Note: __noinline isolates verifier state from the caller.
-static __noinline void capture_old_values(struct xdp_md *ctx, struct diff_entry *diff, __u8 diff_count)
-{
-    for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
-        if (i >= diff_count)
-            break;
-        struct diff_value *dv = &diff->diffs[i];
-        if (dv->offset == 0xFFFF || dv->size == 0)
-            continue;
-        __u16 offset = dv->offset;
-        switch (dv->size) {
-        case 1:
-            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 1);
-            break;
-        case 2:
-            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 2);
-            break;
-        case 4:
-            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 4);
-            break;
-        case 6:
-            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 6);
-            break;
-        case 8:
-            bpf_xdp_load_bytes(ctx, offset, dv->old_value, 8);
-            break;
-        }
-    }
-}
-
 // Ensure IPPROTO_ETHERNET is defined (not present in older kernel headers)
 #ifndef IPPROTO_ETHERNET
 #define IPPROTO_ETHERNET 143
@@ -866,46 +832,25 @@ int xdp_tx(struct xdp_md *ctx)
         return XDP_ABORTED;
     }
 
-    // 6. Copy base packet (skip if same base and no resize needed)
-    // XDP TX recycles packets, so the buffer retains its contents between
-    // iterations. When base_idx hasn't changed and the packet length is the
-    // same, the buffer already contains the correct base data (with previous
-    // diffs applied at their offsets — those will be overwritten in step 7).
-    // Only skip for multi-chunk packets (> COPY_CHUNK_SIZE) where the copy
-    // savings outweigh the capture_old_values overhead. For single-chunk
-    // packets (== COPY_CHUNK_SIZE), the copy is just 1 helper call — skipping
-    // it adds no meaningful savings, so we take the fast path with zero overhead.
-    bool need_copy;
-    if (target_len <= COPY_CHUNK_SIZE) {
-        // Fast path: small packets, copy is trivial (1 helper call).
-        // No tracking overhead — don't touch last_base_idx at all.
-        need_copy = true;
-    } else {
-        need_copy = (base_idx != state->last_base_idx) || (cur_len != target_len);
-        state->last_base_idx = base_idx;
+    // 6. Fill every buffer: per-CPU state cannot identify recycled frames.
+    // BPF_PROG_RUN can supply a fresh buffer with the same length and base_idx.
+    if (target_len < COPY_CHUNK_SIZE) {
+        DEBUG_PRINT("packet too small (min 64 bytes): %u\n", target_len);
+        return XDP_ABORTED;
     }
 
-    if (need_copy) {
-        if (target_len < COPY_CHUNK_SIZE) {
-            DEBUG_PRINT("packet too small (min 64 bytes): %u\n", target_len);
-            return XDP_ABORTED;
-        }
+    if (copy_base_packet(ctx, base, target_len) < 0) {
+        DEBUG_PRINT("copy_base_packet failed\n");
+        return XDP_ABORTED;
+    }
 
-        if (copy_base_packet(ctx, base, target_len) < 0) {
-            DEBUG_PRINT("copy_base_packet failed\n");
-            return XDP_ABORTED;
-        }
-
-        // Tail copy: re-copy the last COPY_CHUNK_SIZE bytes to cover partial chunks.
-        // Must be in the caller (not in __noinline copy_base_packet) because the
-        // kernel 6.1 verifier loses map_value type tracking for pointer arguments
-        // passed through __noinline boundaries when combined with variable offsets.
-        if (target_len > COPY_CHUNK_SIZE) {
-            __u32 tail_off = target_len - COPY_CHUNK_SIZE;
-            tail_off &= (MAX_PACKET_SIZE - 1); // Bound for verifier: [0, 2047]
-            if (tail_off <= MAX_PACKET_SIZE - COPY_CHUNK_SIZE) {
-                bpf_xdp_store_bytes(ctx, tail_off, base->data + tail_off, COPY_CHUNK_SIZE);
-            }
+    // Cover partial chunks in the caller: older verifiers lose map_value
+    // tracking for variable offsets across __noinline function boundaries.
+    if (target_len > COPY_CHUNK_SIZE) {
+        __u32 tail_off = target_len - COPY_CHUNK_SIZE;
+        tail_off &= (MAX_PACKET_SIZE - 1);
+        if (tail_off <= MAX_PACKET_SIZE - COPY_CHUNK_SIZE) {
+            bpf_xdp_store_bytes(ctx, tail_off, base->data + tail_off, COPY_CHUNK_SIZE);
         }
     }
 
@@ -924,13 +869,6 @@ int xdp_tx(struct xdp_md *ctx)
     __u8 diff_count = diff->diff_count;
     if (diff_count > MAX_DIFFS_PER_PACKET)
         diff_count = MAX_DIFFS_PER_PACKET;
-
-    // When copy was skipped AND checksums are not yet cached, capture the actual
-    // buffer values at diff offsets into old_value fields. The incremental checksum
-    // path uses old_value as the "before" reference. When csum_cached=1, the
-    // checksum is already stored as a diff, so old_values are irrelevant — skip.
-    if (!need_copy && diff_count > 0 && !diff->csum_cached)
-        capture_old_values(ctx, diff, diff_count);
 
     // Track diff errors for debugging (looked up later for stats)
     __u8 diff_errors = 0;
@@ -1423,7 +1361,6 @@ int xdp_tx_mixed(struct xdp_md *ctx)
     __u32 pick = (__u64)bpf_get_prandom_u32() * cfg->total_weight >> 32;
     if (pick < cfg->packet_weight) {
         st->packet_opportunities++;
-        ps->last_base_idx = 0xffffffff;
         bpf_tail_call(ctx, &mixed_progs, 0);
         st->errors++;
         return XDP_ABORTED;

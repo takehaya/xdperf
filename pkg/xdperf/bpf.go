@@ -25,7 +25,7 @@ const (
 	ipv6NextHeaderOffset = 6 // offsetof(struct ipv6hdr, nexthdr)
 	ipv6PayloadLenOffset = 4 // offsetof(struct ipv6hdr, payload_len)
 
-	// Sentinel value for pkt_state.last_base_idx (no previous base, forces first copy)
+	// Legacy initial value for the reserved pkt_state.last_base_idx field
 	lastBaseIdxSentinel = math.MaxUint32
 )
 

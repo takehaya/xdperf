@@ -1,8 +1,10 @@
 package coreelf
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -149,9 +151,8 @@ func runXdpTxExpectLen(t *testing.T, prog *ebpf.Program, inputPkt []byte, expect
 	return ret, out
 }
 
-// TestXdpTxCopySkip verifies that when xdp_tx skips the base packet copy
-// (same base_idx, same length), the output packet is still correct.
-func TestXdpTxCopySkip(t *testing.T) {
+// TestXdpTxRecycledBuffer verifies diffs and checksums on recycled buffers.
+func TestXdpTxRecycledBuffer(t *testing.T) {
 	objs := loadWithDiffMap(t, 2)
 
 	// Build base packet with dst port 80
@@ -276,7 +277,7 @@ func TestXdpTxCopySkip(t *testing.T) {
 	expectedPkt1 := buildUDPPacket(t, 8080)
 	verifyChecksums(t, "run 1", out1, expectedPkt1)
 
-	// === Run 2: Second execution (copy should be SKIPPED, idx=1 → port 9090) ===
+	// === Run 2: Second execution (recycled buffer, idx=1 → port 9090) ===
 	// Feed the output of run 1 as input — simulates XDP TX packet recycling
 	ret2, out2 := runXdpTx(t, objs.XdpTx, out1)
 	if ret2 != xdpTx {
@@ -286,12 +287,12 @@ func TestXdpTxCopySkip(t *testing.T) {
 	// Verify dst port = 9090
 	gotPort2 := binary.BigEndian.Uint16(out2[udpDstPortOffset : udpDstPortOffset+2])
 	if gotPort2 != 9090 {
-		t.Errorf("run 2 (copy skipped): dst port = %d, want 9090", gotPort2)
+		t.Errorf("run 2 (recycled buffer): dst port = %d, want 9090", gotPort2)
 	}
 
 	// Build expected packet (base with port 9090) to compare checksums
 	expectedPkt2 := buildUDPPacket(t, 9090)
-	verifyChecksums(t, "run 2 (copy skipped)", out2, expectedPkt2)
+	verifyChecksums(t, "run 2 (recycled buffer)", out2, expectedPkt2)
 
 	// === Verify stats: no errors ===
 	var stats []BpfDatarec
@@ -504,7 +505,7 @@ func makeDiffEntry(basePkt []byte, pktLen uint16, newPort uint16, lenChanged boo
 func TestXdpTxCsumCache(t *testing.T) {
 	objs := loadWithDiffMap(t, 2)
 
-	basePkt := buildUDPPacketSized(t, 80, 128) // 128B > COPY_CHUNK_SIZE for copy-skip
+	basePkt := buildUDPPacketSized(t, 80, 128)
 	entry0 := makeDiffEntry(basePkt, uint16(len(basePkt)), 8080, false)
 	entry1 := makeDiffEntry(basePkt, uint16(len(basePkt)), 9090, false)
 	setupSingleBase(t, objs, basePkt, []BpfDiffEntry{entry0, entry1})
@@ -942,6 +943,44 @@ func TestXdpTxIMIXCsumCache(t *testing.T) {
 		}
 		if s.ChecksumErrors != 0 {
 			t.Errorf("checksum_errors = %d", s.ChecksumErrors)
+		}
+	}
+}
+
+// Each BPF_PROG_RUN call may supply a fresh buffer while per-CPU state survives.
+func TestXdpTxFreshBuffer(t *testing.T) {
+	objs := loadWithDiffMap(t, 1)
+	ncpus := ebpf.MustPossibleCPU()
+	for _, size := range []int{64, 512, 1400, 1500, 1514} {
+		for _, cached := range []uint8{0, 1} {
+			t.Run(fmt.Sprintf("size%d/cached%d", size, cached), func(t *testing.T) {
+				want := buildUDPPacketSized(t, 5678, size)
+				base := BpfBasePacket{Len: uint16(size)}
+				copy(base.Data[:], want)
+				bases := make([]BpfBasePacket, ncpus)
+				diffs := make([]BpfDiffEntry, ncpus)
+				states := make([]BpfPktState, ncpus)
+				for cpu := range states {
+					bases[cpu] = base
+					diffs[cpu] = BpfDiffEntry{PktLen: uint16(size), CsumCached: cached}
+					// This CPU previously sent base 0, but this buffer has never been filled.
+					states[cpu] = BpfPktState{Count: 1, LastBaseIdx: 0}
+				}
+				for _, entry := range []struct {
+					m *ebpf.Map
+					v any
+				}{
+					{objs.BasePacketMap, bases}, {objs.DiffMap, diffs}, {objs.PktStateMap, states},
+				} {
+					if err := entry.m.Put(uint32(0), entry.v); err != nil {
+						t.Fatal(err)
+					}
+				}
+				action, got := runXdpTx(t, objs.XdpTx, make([]byte, size))
+				if action != xdpTx || !bytes.Equal(got, want) {
+					t.Fatalf("action=%d len=%d, base packet missing from fresh buffer", action, len(got))
+				}
+			})
 		}
 	}
 }
