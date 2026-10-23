@@ -757,6 +757,7 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 			loadStats, err = x.readTCPStats(recs)
 			if err != nil {
 				x.Logger.Warn("failed to read load statistics", zap.Error(err))
+				once.Do(func() { firstErr = err })
 			}
 			stopReason = reason
 		}
