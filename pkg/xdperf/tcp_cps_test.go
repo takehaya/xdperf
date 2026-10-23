@@ -418,6 +418,54 @@ func TestTCPCPSGateBPF(t *testing.T) {
 		}
 	}
 
+	for _, lead := range []time.Duration{time.Second, -20 * time.Millisecond} {
+		t.Run("early drain "+lead.String(), func(t *testing.T) {
+			pinMixedTestCPU(t)
+			if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &clock); err != nil {
+				t.Fatal(err)
+			}
+			start := uint64(clock.Nano() + int64(lead))
+			originalEnd := uint64(clock.Nano() + int64(1500*time.Millisecond))
+			if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) {
+				c.TargetCps, c.SlotCount, c.Connections = 1000, 1, 0
+				c.StartNs, c.EndNs, c.Drain, c.Abort = start, originalEnd, 0, 0
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for i := range states {
+				states[i] = coreelf.BpfTcpCpuState{Stride: 1, Count: 1}
+			}
+			if err := x.bpfobjs.TcpCpuStateMap.Put(uint32(0), states); err != nil {
+				t.Fatal(err)
+			}
+			if err := x.bpfobjs.TcpStatsMap.Put(uint32(0), make([]coreelf.BpfTcpStats, len(recs))); err != nil {
+				t.Fatal(err)
+			}
+			if err := x.drainTCP(); err != nil {
+				t.Fatal(err)
+			}
+			var stopped coreelf.BpfTcpCfg
+			if err := x.bpfobjs.TcpCfgMap.Lookup(uint32(0), &stopped); err != nil {
+				t.Fatal(err)
+			}
+			if stopped.EndNs >= originalEnd || (lead > 0 && stopped.EndNs >= start) {
+				t.Fatal("early drain did not shorten the opening window", stopped)
+			}
+			want := uint64(0)
+			if stopped.EndNs > start {
+				want = (stopped.EndNs-start-1)*1000/uint64(time.Second) + 1
+			}
+			tx()
+			// Drain/linger continues beyond the original deadline without new drops.
+			time.Sleep(1600 * time.Millisecond)
+			tx()
+			s, err := x.readTCPStats(recs)
+			if err != nil || s.StartOpportunities != want || s.StartDroppedLate != want || s.Started != 0 {
+				t.Fatalf("early drain %+v want %d %v", s, want, err)
+			}
+		})
+	}
+
 }
 
 func TestTCPCPSFairnessBPF(t *testing.T) {

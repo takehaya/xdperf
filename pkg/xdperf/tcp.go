@@ -377,8 +377,7 @@ func (x *Xdperf) warnEphemeralPortOverlap() {
 	}
 }
 
-// updateTCPCfg rewrites tcp_cfg with fn applied. TX/RX keep running while
-// it is written; only drain/abort change, so a torn read is harmless.
+// updateTCPCfg applies control updates to the shared and per-template configs.
 func (x *Xdperf) updateTCPCfg(fn func(*coreelf.BpfTcpCfg)) error {
 	zero := uint32(0)
 	var cfg coreelf.BpfTcpCfg
@@ -400,6 +399,20 @@ func (x *Xdperf) updateTCPCfg(fn func(*coreelf.BpfTcpCfg)) error {
 		}
 	}
 	return nil
+}
+
+func (x *Xdperf) drainTCP() error {
+	var clock unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &clock); err != nil {
+		return err
+	}
+	return x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) {
+		c.Drain = 1
+		// Flush opportunities only through the actual stop, including early signals.
+		if c.EndNs == 0 || c.EndNs > uint64(clock.Nano()) {
+			c.EndNs = uint64(clock.Nano())
+		}
+	})
 }
 
 // readTCPStats sums tcp_stats_map over all CPUs.
@@ -748,7 +761,7 @@ func (x *Xdperf) runTCP(ctx context.Context) error {
 			lingerCh = nil
 		}
 		x.Logger.Info("draining: closing all flows", zap.String("reason", reason))
-		if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.Drain = 1 }); err != nil {
+		if err := x.drainTCP(); err != nil {
 			x.Logger.Warn("failed to set drain flag", zap.Error(err))
 		}
 		drainDeadline = time.After(drainTimeout)
