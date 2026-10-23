@@ -93,6 +93,10 @@ func TestTCPPortReuseBPF(t *testing.T) {
 	if err := x.initMixedMaps(); err != nil {
 		t.Fatal(err)
 	}
+	// Exercise wrapping without depending on the VM having booted a second ago.
+	if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.ReuseDelayNs = 1 }); err != nil {
+		t.Fatal(err)
+	}
 	tx := func() uint32 {
 		t.Helper()
 		a, _, err := x.bpfobjs.XdpTxTcpMixed.Test(bytes.Repeat([]byte{0xa5}, 2049))
@@ -139,6 +143,9 @@ func TestTCPPortReuseBPF(t *testing.T) {
 		t.Fatalf("cumulative stats %+v %v", stats, err)
 	}
 	// A recent terminal port blocks reuse without consuming the attempt ID.
+	if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.ReuseDelayNs = uint64(time.Second) }); err != nil {
+		t.Fatal(err)
+	}
 	if err := x.bpfobjs.TcpSlotMap.Put(uint32(0), uint32(4)); err != nil {
 		t.Fatal(err)
 	}
