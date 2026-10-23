@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/takehaya/xdperf/compare/v0.22.0...v0.23.0) (2026-10-23)
+
+
+### 🎉 Features
+
+* open TCP connections at a target rate and reuse source ports after a quarantine ([#152](https://github.com/takehaya/xdperf/issues/152)) ([9e66b63](https://github.com/takehaya/xdperf/commit/9e66b6339edd2ae13c8239f434ee326597a24016))
+
 ## [0.22.0](https://github.com/takehaya/xdperf/compare/v0.21.0...v0.22.0) (2026-10-23)
 
 
