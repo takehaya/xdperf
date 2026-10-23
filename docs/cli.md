@@ -440,7 +440,10 @@ TCP wire byte totals are not measured.
 
 For TCP flow clients, `tcp` contains the final TCP counters, including `flows`, `done`, `failed`, `retransmits`, `window_stalls`, and `data_bytes_sent` (payload bytes).
 `tcp.started` counts connections whose first SYN was built; `tcp.flows` is the number of concurrent slots.
-`tcp.port_exhausted` records source-port exhaustion.
+`tcp.target_cps` records the requested connection rate; `tcp.port_reuses` counts successful starts on reused ports.
+The `tcp.start_dropped_*` counters distinguish late workers, busy owned slots, quarantine waits and the bounded scan limit.
+`tcp.port_exhausted` remains false: repetition waits for the source-port quarantine instead of stopping on exhaustion.
+`--tcp-flow-report` is rejected when `connections` may reuse source ports; use the cumulative summary counters instead.
 `tcp.reason`, `tcp.load_seconds`, `tcp.drain_linger_seconds`, `tcp.started_cps`, `tcp.established_cps`, and `tcp.done_cps` match the final connection-rate log.
 CPS uses the load-period snapshot divided by `load_seconds`, excluding establishments and completions during drain.
 `mixed` contains the existing dispatch, packet/TCP TX, RX reply, and RX diagnostic counters.

@@ -88,11 +88,13 @@ struct tcp_flow {
     // Per-flow ledger, read by Go for --tcp-flow-report. Counted with atomic
     // adds after the frame is built, so a frame that failed to build is not
     // counted (it shows up in tcp_stats.build_errors instead).
-    __u64 tx_pkts;    // frames TCP TX sent: SYN, data, FIN, retransmissions, probes, RST
-    __u64 tx_data;    // new data segments (first transmission)
-    __u64 tx_rtx;     // retransmitted data segments (RTO, dup ACK, go-back-N)
-    __u64 rx_replies; // ACK / RST frames TCP RX bounced back for this flow
-    __u64 rx_pkts;    // frames received from the peer for this flow
+    __u64 tx_pkts;       // frames TCP TX sent: SYN, data, FIN, retransmissions, probes, RST
+    __u64 tx_data;       // new data segments (first transmission)
+    __u64 tx_rtx;        // retransmitted data segments (RTO, dup ACK, go-back-N)
+    __u64 rx_replies;    // ACK / RST frames TCP RX bounced back for this flow
+    __u64 rx_pkts;       // frames received from the peer for this flow
+    __u64 connection_id; // slot + attempt * slot_count, independent of port index
+    __u64 closed_ns;     // terminal transition or last valid retransmitted FIN
 };
 
 struct tcp_cfg {
@@ -122,6 +124,12 @@ struct tcp_cfg {
     __u32 dst_ip[4];
     __u64 bytes_per_flow;
     __u64 rto_ns;
+    __u64 connections; // 0 = duration; otherwise the actual attempt limit
+    __u64 reuse_delay_ns;
+    __u64 start_ns;
+    __u64 end_ns;
+    __u32 target_cps;
+    __u32 _cps_pad;
     // Ethernet(+VLAN)+IP header template (first l4_off bytes of the frame).
     // Rewritten into every frame: live frames are recycled zero-copy, and a
     // receiver on the same host (veth) may modify the header area in place
@@ -198,6 +206,10 @@ struct tcp_cpu_state {
     __u32 count;
     __u32 cursor;
     __u32 ip_id;
+    __u32 _pad;
+    __u64 start_seen;  // owned opportunities already consumed or discarded
+    __u64 start_limit; // finite attempts owned by this worker
+    __u64 start_permits;
 };
 
 struct tcp_stats {
@@ -229,7 +241,16 @@ struct tcp_stats {
     __u64 fin_wait2_timeouts; // flows reset waiting for the peer FIN
     __u64 ack_probes;         // pure ACKs sent from FIN_WAIT_2 to elicit a lost FIN
     __u64 window_probes;      // probes sent while the peer window is closed (persist)
-    __u64 challenge_acks;     // ACKs sent for an RST whose seq is not rcv_nxt (RFC 5961)
+    __u64 tx_pkts;
+    __u64 rx_replies;
+    __u64 start_opportunities;
+    __u64 start_permits;
+    __u64 start_dropped_late;
+    __u64 start_dropped_busy;
+    __u64 start_dropped_quarantine;
+    __u64 start_dropped_scan;
+    __u64 port_reuses;
+    __u64 challenge_acks; // ACKs sent for an RST whose seq is not rcv_nxt (RFC 5961)
 };
 
 struct {
@@ -260,13 +281,38 @@ struct {
     __type(value, struct tcp_stats);
 } tcp_stats_map SEC(".maps");
 
-// Only the owner TX worker advances a slot; connection states are never reused.
+// Only the owner TX worker advances a slot through its disjoint port sequence.
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, MAX_TCP_FLOWS);
     __type(key, __u32);
     __type(value, __u32);
 } tcp_slot_map SEC(".maps");
+
+// Aggregate SYN_SENT..FIN_WAIT occupancy; independent of RX CPU and port reuse.
+struct tcp_load {
+    struct bpf_spin_lock lock;
+    __u32 in_use;
+    __u32 peak;
+};
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct tcp_load);
+} tcp_load_map SEC(".maps");
+
+static __noinline void tcp_count_peak(__u32 current)
+{
+    __u32 zero = 0;
+    struct tcp_load *load = bpf_map_lookup_elem(&tcp_load_map, &zero);
+    if (!load)
+        return;
+    bpf_spin_lock(&load->lock);
+    if (current > load->peak)
+        load->peak = current;
+    bpf_spin_unlock(&load->lock);
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -370,8 +416,8 @@ static __always_inline int mixed_flow_closed(__u8 state)
     return state == TF_DONE || state == TF_FAILED || state == TF_SKIPPED;
 }
 
-// A slot is retired once; RX closure counts remain disabled in repetition mode.
-static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cfg *cfg)
+// A slot owns indices slot, slot+N, ...; wrapping to slot also works when P%N != 0.
+static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cfg *cfg, __u64 now, __u32 *quarantine)
 {
     __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &slot);
     if (!current || *current >= cfg->flow_count)
@@ -380,10 +426,40 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
     struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
     if (!f || !mixed_flow_closed(f->state))
         return f;
-    __u32 next = idx + cfg->slot_count;
-    if (!cfg->drain && !cfg->abort && next < cfg->flow_count) {
+    __u64 id = f->connection_id + cfg->slot_count;
+    if (!cfg->drain && !cfg->abort && (!cfg->end_ns || now < cfg->end_ns) && (!cfg->connections || id < cfg->connections)) {
+        __u32 next = idx + cfg->slot_count;
+        if (next >= cfg->flow_count)
+            next = slot;
+        struct tcp_flow *n = bpf_map_lookup_elem(&tcp_flow_map, &next);
+        if (!n)
+            return NULL;
+        __u32 iss = bpf_get_prandom_u32();
+        bpf_spin_lock(&n->lock);
+        if (mixed_flow_closed(n->state)) {
+            if (now < n->closed_ns || now - n->closed_ns < cfg->reuse_delay_ns) {
+                bpf_spin_unlock(&n->lock);
+                *quarantine = 1;
+                return NULL;
+            }
+            // shortcut: quarantine >= 1s outlasts microsecond frame construction outside
+            // the lock; revisit with reference protection if sub-second reuse is added.
+            n->state = TF_CLOSED;
+            n->syn_retries = n->fin_retries = n->dup_acks = 0;
+            n->rtx_pending = n->peer_fin = n->wscale = n->rtx_retries = 0;
+            n->mss = n->syn_rst = n->ts_enabled = n->started = 0;
+            n->iss = iss;
+            n->snd_una = n->snd_nxt = n->snd_max = n->rcv_nxt = n->snd_wnd = 0;
+            n->ts_recent = 0;
+            // ts_clock is monotonic across generations; bytes_target/template are immutable.
+            n->ts_recent_ns = n->bytes_acked = n->last_send_ns = n->last_ack_ns = 0;
+            n->tx_pkts = n->tx_data = n->tx_rtx = n->rx_replies = n->rx_pkts = 0;
+            n->closed_ns = 0;
+        }
+        n->connection_id = id;
+        bpf_spin_unlock(&n->lock);
         *current = next;
-        return bpf_map_lookup_elem(&tcp_flow_map, &next);
+        return n;
     }
     *current = 0xffffffff;
     struct mixed_cfg *mix = bpf_map_lookup_elem(&mixed_cfg_map, &(__u32){0});
@@ -394,6 +470,35 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
             __sync_fetch_and_add(closed, 1);
     }
     return NULL;
+}
+
+// Burst capacity is one. Expired opportunities are discarded, never caught up.
+static __noinline int tcp_start_permit(const struct tcp_cfg *cfg, struct tcp_cpu_state *cs, struct tcp_stats *st, __u64 now)
+{
+    if (!cfg->target_cps || !cs->stride || !cfg->slot_count || now < cfg->start_ns ||
+        (cfg->connections && cs->start_permits >= cs->start_limit))
+        return 0;
+    int ended = cfg->end_ns && now >= cfg->end_ns;
+    if (!ended && (cfg->drain || cfg->abort))
+        return 0;
+    if (ended && cfg->end_ns <= cfg->start_ns)
+        return 0;
+    __u64 elapsed = (ended ? cfg->end_ns - 1 : now) - cfg->start_ns;
+    // Split seconds/remainder to avoid both fractional-period drift and overflow.
+    __u64 due = (elapsed / 1000000000) * cfg->target_cps + ((elapsed % 1000000000) * cfg->target_cps) / 1000000000 + 1;
+    // The finite ID limit follows slot ownership, so its start opportunities must too.
+    __u64 rounds = due / cfg->slot_count;
+    __u32 tail = due % cfg->slot_count;
+    __u64 owned = rounds * cs->count;
+    if (tail > cs->first)
+        owned += (tail + cs->stride - 1 - cs->first) / cs->stride;
+    if (owned <= cs->start_seen)
+        return 0;
+    __u64 opportunities = owned - cs->start_seen;
+    cs->start_seen = owned;
+    st->start_opportunities += opportunities;
+    st->start_dropped_late += opportunities - !ended;
+    return !ended;
 }
 
 static __always_inline int tcp_flow_open(__u8 state)
@@ -422,7 +527,7 @@ static __always_inline int tcp_tx_fail(struct tcp_flow *f, struct tcp_stats *st,
 // Returns the action kind; fills *a. No helper calls inside the lock region.
 static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cfg *cfg, struct tcp_stats *st, __u64 now,
                                          struct tcp_tx_action *a, struct tcp_tx_extra *extra, const int mixed_mode,
-                                         const int timestamps, const int track_closed)
+                                         const int timestamps, const int track_closed, int allow_start)
 {
     int kind = TXA_NONE;
     __u64 rto = cfg->rto_ns;
@@ -431,6 +536,10 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
     struct tcp_cfg *global = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
     if (!global)
         return TXA_NONE;
+    struct tcp_load *load = bpf_map_lookup_elem(&tcp_load_map, &zero);
+    if (!load)
+        return TXA_NONE;
+    __u32 opened = 0;
     __u8 drain = global->drain;
     __u8 abort = global->abort;
 
@@ -443,8 +552,10 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
             f->state = TF_SKIPPED;
             st->skipped++;
             kind = TXA_CLOSED;
-        } else {
+        } else if ((!global->start_ns || now >= global->start_ns) && (!global->end_ns || now < global->end_ns) &&
+                   (!global->target_cps || allow_start)) {
             f->state = TF_SYN_SENT;
+            opened = __sync_fetch_and_add(&load->in_use, 1) + 1;
             f->snd_una = f->iss;
             f->snd_nxt = f->iss + 1;
             f->snd_max = f->iss + 1;
@@ -654,17 +765,24 @@ out:
         extra->stream_offset = f->bytes_acked + (__u32)(a->seq - f->snd_una);
     if (mixed_mode && mixed_has_timestamps && timestamps) {
         __u32 clock = now / 1000000;
-        if (state != TF_CLOSED && (__s32)(clock - f->ts_clock) < 0)
+        if ((state != TF_CLOSED || f->connection_id >= global->flow_count) && (__s32)(clock - f->ts_clock) < 0)
             clock = f->ts_clock;
         f->ts_clock = clock;
         extra->timestamps = (a->flags & TCPF_SYN) || f->ts_enabled;
         extra->tsval = clock;
         extra->tsecr = (a->flags & TCPF_ACK) ? f->ts_recent : 0;
     }
+    if (!mixed_flow_closed(state) && mixed_flow_closed(f->state)) {
+        f->closed_ns = now;
+        if (state != TF_CLOSED && load && load->in_use)
+            __sync_fetch_and_sub(&load->in_use, 1);
+    }
     int closed = track_closed && !mixed_flow_closed(state) && mixed_flow_closed(f->state);
     bpf_spin_unlock(&f->lock);
     if (closed)
         mixed_count_closed(f);
+    if (opened)
+        tcp_count_peak(opened);
     a->kind = kind;
     return kind;
 }
@@ -677,6 +795,7 @@ struct tcp_mixed_decision {
     struct tcp_tx_action act;
     struct tcp_tx_extra extra;
     __u64 now;
+    int allow_start;
 };
 
 static __noinline int tcp_tx_decide_mixed(struct tcp_flow *f, const struct tcp_template *tmpl, struct tcp_stats *st,
@@ -686,7 +805,7 @@ static __noinline int tcp_tx_decide_mixed(struct tcp_flow *f, const struct tcp_t
     if (extended && mixed_has_timestamps)
         decision->extra.timestamps = 0;
     return tcp_tx_decide(f, &tmpl->cfg, st, decision->now, &decision->act, &decision->extra, extended,
-                         extended && mixed_has_timestamps && tmpl->timestamps, 1);
+                         extended && mixed_has_timestamps && tmpl->timestamps, 1, decision->allow_start);
 }
 
 // Compile separate entry points for basic and extended TCP templates.
@@ -728,7 +847,23 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
     int kind = TXA_NONE;
     struct tcp_template *tmpl = NULL;
 
-    for (int i = 0; i < TCP_TX_SCAN; i++) {
+    int permit = tcp_start_permit(global, cs, st, decision.now);
+    __u32 quarantine = 0;
+    // Prefer initial SYNs during a start opportunity, then service existing flows.
+    for (int i = 0; i < TCP_TX_SCAN * 2; i++) {
+        if (i == TCP_TX_SCAN) {
+            if (permit) {
+                if (quarantine)
+                    st->start_dropped_quarantine++;
+                else if (count <= TCP_TX_SCAN)
+                    st->start_dropped_busy++;
+                else
+                    st->start_dropped_scan++;
+                permit = 0;
+            } else {
+                break;
+            }
+        }
         __u32 idx;
         __u32 cursor = *next;
         if (cursor >= count)
@@ -739,10 +874,12 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
             continue;
         struct tcp_flow *f;
         if (global->slot_count)
-            f = tcp_slot_flow(idx, global);
+            f = tcp_slot_flow(idx, global, decision.now, &quarantine);
         else
             f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
         if (!f)
+            continue;
+        if (permit && f->state != TF_CLOSED)
             continue;
         __u32 group = f->template_id;
         tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
@@ -752,9 +889,14 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         // Do not carry action state between scan attempts into the verifier.
         decision.act = (struct tcp_tx_action){0};
         decision.extra = (struct tcp_tx_extra){0};
+        decision.allow_start = permit;
         kind = tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
         if (kind != TXA_NONE && kind != TXA_CLOSED) {
             sel = f;
+            if (permit) {
+                st->start_permits++;
+                cs->start_permits++;
+            }
             break;
         }
         kind = TXA_NONE;
@@ -790,6 +932,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
 
     kind = decision.act.kind;
     __sync_fetch_and_add(&sel->tx_pkts, 1);
+    st->tx_pkts++;
     if (kind == TXA_DATA)
         __sync_fetch_and_add(&sel->tx_data, 1);
     else if (kind == TXA_RTX_TO || kind == TXA_RTX_DUPACK || kind == TXA_RTX_GBN)
@@ -800,6 +943,8 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         if (!sel->started) {
             sel->started = 1;
             st->started++;
+            if (global->slot_count && sel->connection_id >= global->flow_count)
+                st->port_reuses++;
         }
         st->syn_sent++;
         break;
@@ -1090,6 +1235,8 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
 {
     __u8 flags = in->flags;
     __u8 need_ack = 0;
+    __u32 zero = 0;
+    struct tcp_load *load = bpf_map_lookup_elem(&tcp_load_map, &zero);
 
     bpf_spin_lock(&f->lock);
     __u8 state = f->state;
@@ -1174,8 +1321,11 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
     if (state == TF_DONE) {
         // The peer retransmits its FIN when our final ACK was lost (no
         // TIME_WAIT here): answer it again, otherwise it stays in LAST-ACK.
-        if (flags & TCPF_FIN)
+        if ((flags & (TCPF_FIN | TCPF_ACK)) == (TCPF_FIN | TCPF_ACK) && in->seq + in->payload_len + 1 == f->rcv_nxt &&
+            in->ack == f->snd_max) {
+            f->closed_ns = now;
             tcp_rx_reply(r, f->snd_max, f->rcv_nxt, TCPF_ACK);
+        }
         goto out;
     }
     if (!tcp_flow_open(state)) {
@@ -1270,6 +1420,11 @@ out:
         extra->timestamps = 1;
         extra->tsval = tcp_timestamp_clock(f, now);
         extra->tsecr = f->ts_recent;
+    }
+    if (!mixed_flow_closed(state) && mixed_flow_closed(f->state)) {
+        f->closed_ns = now;
+        if (state != TF_CLOSED && load && load->in_use)
+            __sync_fetch_and_sub(&load->in_use, 1);
     }
     int closed = track_closed && !mixed_flow_closed(state) && mixed_flow_closed(f->state);
     bpf_spin_unlock(&f->lock);

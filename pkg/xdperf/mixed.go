@@ -53,8 +53,12 @@ type mixedPlan struct {
 	groups                    []mixedGroup
 	packetWeight, totalWeight uint32
 	flows, portBase           int
-	connections               int // retained states; flows remains the number of concurrent slots
-	repeat, untilDuration     bool
+	connections               int // number of retained port states
+	attempts                  uint64
+	cps                       uint32
+	portReuseDelay            time.Duration
+	reuse                     bool
+	repeat                    bool
 	destination               string
 	features                  coreelf.MixedProgramFeatures
 }
@@ -114,22 +118,38 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		if f == nil || len(f.Flows) == 0 || len(v.Checksums) != 0 {
 			return fmt.Errorf("TCP variant %d requires flows and cannot contain checksums", i)
 		}
+		if f.CPS > 1000000000 || (f.CPS > 0 && (f.Connections == nil || x.cfg.PPS != 0)) {
+			return fmt.Errorf("cps must be <= 1000000000, requires connections, and cannot be used with --pps")
+		}
+		if f.PortReuseDelayMillis != 0 && (f.PortReuseDelayMillis < 1000 || f.Connections == nil) {
+			return fmt.Errorf("port_reuse_delay_ms requires connections and must be >= 1000 (0 = 60000)")
+		}
 		if f.Connections != nil {
 			if len(set.Variants) != 1 || (x.cfg.Count != 0 && !x.cfg.CountFromDuration) {
 				return fmt.Errorf("connections requires a single TCP variant and cannot be used with --count")
 			}
 			plan.repeat = true
-			plan.untilDuration = *f.Connections == 0
-			if plan.untilDuration && x.cfg.Duration <= 0 {
+			plan.cps = f.CPS
+			untilDuration := *f.Connections == 0
+			if untilDuration && x.cfg.Duration <= 0 {
 				return fmt.Errorf("connections=0 requires --duration")
 			}
 			capacity := 65536 - portBase
-			if uint64(*f.Connections) > uint64(capacity) {
-				return fmt.Errorf("connections exceeds source port capacity %d", capacity)
-			}
-			plan.connections = int(*f.Connections)
-			if plan.untilDuration {
+			plan.attempts = uint64(*f.Connections)
+			plan.connections = min(int(*f.Connections), capacity)
+			plan.reuse = untilDuration || uint64(*f.Connections) > uint64(capacity)
+			if untilDuration {
 				plan.connections = capacity
+			}
+			plan.portReuseDelay = time.Minute
+			if f.PortReuseDelayMillis != 0 {
+				plan.portReuseDelay = time.Duration(f.PortReuseDelayMillis) * time.Millisecond
+			}
+			if plan.reuse && x.cfg.TCPFlowReport != "" {
+				return fmt.Errorf("--tcp-flow-report cannot be used when connections may reuse source ports")
+			}
+			if (plan.reuse || f.CPS > 0) && len(v.Params) != 0 {
+				return fmt.Errorf("source IP variable_params cannot be used with cps or port reuse")
 			}
 		}
 		if err := validateTCPFlowParams(v); err != nil {
@@ -234,6 +254,10 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 			targets = append(targets, b)
 		}
 	}
+	if plan.reuse && len(targets) > plan.connections {
+		targets = targets[:plan.connections]
+		plan.groups[0].count = uint32(len(targets))
+	}
 	plan.totalWeight = uint32(total)
 	plan.destination, plan.flows, plan.portBase = destination, len(targets), portBase
 	if !plan.repeat {
@@ -329,14 +353,11 @@ func (x *Xdperf) showMixedStats() error {
 	for _, s := range packets {
 		rxPackets += s.Packets
 	}
-	flows, err := x.readTCPFlows(x.mixed.connections)
+	tcp, err := x.readTCPStats(make([]coreelf.BpfTcpStats, ebpf.MustPossibleCPU()))
 	if err != nil {
 		return err
 	}
-	for _, f := range flows {
-		tn += f.TxPkts
-		replies += f.RxReplies
-	}
+	tn, replies = tcp.TxPkts, tcp.RxReplies
 	ratio := float64(0)
 	if pn+tn > 0 {
 		ratio = float64(tn) / float64(pn+tn)

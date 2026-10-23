@@ -91,6 +91,7 @@ static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extend
     if (resp.flags == TCPF_ACK)
         st->acks_sent++;
     __sync_fetch_and_add(&f->rx_replies, 1);
+    st->rx_replies++;
     return XDP_TX;
 unmatched:
     if (!extended)

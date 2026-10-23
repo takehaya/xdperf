@@ -211,8 +211,12 @@ type GeneratorCleanupResponse struct {
 // Destinations may differ between groups. Byte slices serialize as base64 JSON.
 type TCPFlowVariant struct {
 	// Connections repeats the Flows slots: nil = once, positive = total attempts,
-	// zero = until --duration. Each attempt uses a fresh source port.
+	// zero = until --duration. Ports cycle after a quarantine when needed.
 	Connections *uint32 `json:"connections,omitempty"`
+	// CPS limits initial connection attempts per second; zero is closed-loop.
+	CPS uint32 `json:"cps,omitempty"`
+	// PortReuseDelayMillis is the terminal-state quarantine: 0 = 60000, minimum 1000.
+	PortReuseDelayMillis uint32 `json:"port_reuse_delay_ms,omitempty"`
 	// Zero values use defaults: window 32, MSS sized for MTU, RTO 200ms.
 	WindowSegs uint32 `json:"window_segs,omitempty"`
 	MSS        uint16 `json:"mss,omitempty"`
