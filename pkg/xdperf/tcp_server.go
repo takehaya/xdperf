@@ -395,6 +395,7 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 		}
 	}()
 
+	x.beginSummary()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	sw := &tcpServerSweep{}
@@ -432,15 +433,50 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 	// LAST_ACK flow (final ACK lost) is closed and a SYN_RCVD one timed out.
 	if err := x.sweepTCPServerFlows(sw, 0); err != nil {
 		x.Logger.Warn("tcp server flow sweep failed", zap.Error(err))
+		if x.summary != nil {
+			return fmt.Errorf("summary JSON TCP server sweep: %w", err)
+		}
 	}
 	recs := make([]coreelf.BpfTcpSrvStats, ebpf.MustPossibleCPU())
 	s, err := x.readTCPServerStats(recs)
 	if err != nil {
 		x.Logger.Error("failed to read tcp server stats", zap.Error(err))
+		if x.summary != nil {
+			return fmt.Errorf("summary JSON TCP server stats: %w", err)
+		}
 		return nil
 	}
 	// Field names accepted / closed / bytes match the xdperf-sink JSON so the
 	// two receivers can be compared with the same scripts.
+	if x.summary != nil {
+		x.summary.TCPServer = &tcpServerSummary{
+			SynRcvd:             s.SynRcvd,
+			SynackSent:          s.SynackSent,
+			Accepted:            s.Accepted,
+			Closed:              s.Closed + sw.closedImplicit.Load(),
+			ClosedImplicit:      sw.closedImplicit.Load(),
+			SynTimeouts:         sw.synTimeouts.Load(),
+			Active:              tcpServerActive(s, sw),
+			Bytes:               s.BytesRcvd,
+			DataSegments:        s.DataSegs,
+			AcksSent:            s.AcksSent,
+			DupAcksSent:         s.DupAcksSent,
+			OutOfOrder:          s.OutOfOrder,
+			FinRcvd:             s.FinRcvd,
+			FinSent:             s.FinSent,
+			RstRcvd:             s.RstRcvd,
+			Recycled:            s.Recycled,
+			RecycledEstablished: s.RecycledEst,
+			TableFull:           s.TableFull,
+			Stray:               s.Stray,
+			RstSent:             s.RstSent,
+			ResetEstablished:    s.ResetEst,
+			Unexpected:          s.Unexpected,
+			BadLength:           s.BadLen,
+			ChallengeAcks:       s.ChallengeAcks,
+			BuildErrors:         s.BuildErrors,
+		}
+	}
 	x.Logger.Info("tcp server final statistics",
 		zap.Uint64("syn_rcvd", s.SynRcvd),
 		zap.Uint64("synack_sent", s.SynackSent),
@@ -468,5 +504,5 @@ func (x *Xdperf) runTCPServer(ctx context.Context) error {
 		zap.Uint64("challenge_acks", s.ChallengeAcks),
 		zap.Uint64("build_errors", s.BuildErrors),
 	)
-	return nil
+	return x.writeSummary()
 }

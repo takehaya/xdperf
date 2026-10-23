@@ -316,6 +316,16 @@ func (x *Xdperf) showMixedStats() error {
 	if err != nil {
 		return err
 	}
+	if x.summary != nil {
+		x.summary.Mixed = &mixedSummary{
+			PacketOpportunities: po, TCPOpportunities: to, PacketTX: pn, TCPTX: tn,
+			TCPRXReplies: replies, TCPTXRatio: ratio, DispatchErrors: dispatchErrors,
+			PacketBytes: packetBytes, PacketErrors: packetErrors, PacketRX: rxPackets,
+			PacketRXScope: "outer_udp", DrainOpportunities: drain,
+			RXParseFailed: rx[0], RXPortOutside: rx[1], RXTupleMismatch: rx[2],
+			RXNeighbor: rx[3], RXOther: rx[4], RXInvalidTCP: rx[5],
+		}
+	}
 	fields := []zap.Field{}
 	for i, reason := range mixedRXReasons {
 		fields = append(fields, zap.Uint64("rx_"+reason, rx[i]))

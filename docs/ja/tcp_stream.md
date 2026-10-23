@@ -211,3 +211,29 @@ ND は直接 ICMPv6 に到達できる形式が対象で、未対応の拡張ヘ
 `--otlp-endpoint` 指定時は混合モードで `xdperf.mixed.rx` を出力する (単位 `{packet}`、累積単調増加カウンタ)。
 `reason` 属性はフィールド名から `rx_` を除いた `parse_failed`、`port_outside`、`tuple_mismatch`、`neighbor`、`other`、`invalid_tcp`。
 このメトリクスはプラグインを検証して混合モードを選択した後に登録する。
+
+## 実行結果を JSON に保存する
+
+`--summary-json result.json` を指定すると、終了時の統計を 1 つの JSON オブジェクトとして保存します。
+環境変数は `XDPERF_SUMMARY_JSON` です。
+通常の送信、受信サーバー、`--tcp-server` のいずれでも使えます。
+
+```bash
+sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
+  --summary-json result.json \
+  --cfg '{"dst_ip":"10.0.0.2","tcp_port":5201,"flows":4,"bytes":"1000000"}'
+```
+
+`tcp` に `flows`、`done`、`failed`、`retransmits`、`window_stalls` などの最終値が入り、`mixed` に送信配分や RX 診断の統計が入ります。
+`--tcp-server` では `tcp_server` に完了数や受信ペイロードのバイト数などが入ります。
+トップレベルの送受信数と平均 PPS/bps は既存のパケット統計マップの値で、TCP フローの送信数やバイト数は含みません。
+混合 RX は外側 UDP のみを数え、TCP サーバーモードではトップレベルのパケット統計は 0 です。
+`elapsed_seconds` は初期化後から終了処理までの秒数で、TCP の drain 時間を含みます。
+数値は数値型、キーは snake_case です。
+
+正常終了と SIGINT/SIGTERM による終了時に書きます。
+初期化、worker、TCP フロー、最終統計や CSV 出力でエラーがあった場合は書かず、以前のファイルを残します。
+JSON の読み取りや書き込みに失敗した場合は非ゼロで終了し、書き込み途中のファイルが残る場合があります。
+保存先の親ディレクトリは事前に作成してください。
+既存ファイルは上書きし、`-` は通常のファイル名として扱います。
+全フィールドの範囲は [CLI ドキュメント](../cli.md#--summary-json) を参照してください。
