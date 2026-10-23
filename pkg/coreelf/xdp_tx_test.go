@@ -954,31 +954,31 @@ func TestXdpTxFreshBuffer(t *testing.T) {
 	for _, size := range []int{64, 512, 1400, 1500, 1514} {
 		for _, cached := range []uint8{0, 1} {
 			t.Run(fmt.Sprintf("size%d/cached%d", size, cached), func(t *testing.T) {
-				want := buildUDPPacketSized(t, 5678, size)
-				base := BpfBasePacket{Len: uint16(size)}
-				copy(base.Data[:], want)
-				bases := make([]BpfBasePacket, ncpus)
-				diffs := make([]BpfDiffEntry, ncpus)
+				base := buildUDPPacketSized(t, 5678, size)
+				want := buildUDPPacketSized(t, 8080, size)
+				entry := makeDiffEntry(base, uint16(size), 8080, false)
+				if cached != 0 {
+					entry.CsumCached = 1
+					entry.DiffCount = 3
+					// Cached checksums are stored as extra diffs by the data plane.
+					for i, offset := range []uint16{24, 40} {
+						diff := &entry.Diffs[i+1]
+						diff.Offset, diff.Size = offset, 2
+						copy(diff.NewValue[:], want[offset:offset+2])
+					}
+				}
+				setupSingleBase(t, objs, base, []BpfDiffEntry{entry})
 				states := make([]BpfPktState, ncpus)
 				for cpu := range states {
-					bases[cpu] = base
-					diffs[cpu] = BpfDiffEntry{PktLen: uint16(size), CsumCached: cached}
 					// This CPU previously sent base 0, but this buffer has never been filled.
 					states[cpu] = BpfPktState{Count: 1, LastBaseIdx: 0}
 				}
-				for _, entry := range []struct {
-					m *ebpf.Map
-					v any
-				}{
-					{objs.BasePacketMap, bases}, {objs.DiffMap, diffs}, {objs.PktStateMap, states},
-				} {
-					if err := entry.m.Put(uint32(0), entry.v); err != nil {
-						t.Fatal(err)
-					}
+				if err := objs.PktStateMap.Put(uint32(0), states); err != nil {
+					t.Fatal(err)
 				}
 				action, got := runXdpTx(t, objs.XdpTx, make([]byte, size))
 				if action != xdpTx || !bytes.Equal(got, want) {
-					t.Fatalf("action=%d len=%d, base packet missing from fresh buffer", action, len(got))
+					t.Fatalf("action=%d len=%d, base packet, port diff, or checksum missing from fresh buffer", action, len(got))
 				}
 			})
 		}
