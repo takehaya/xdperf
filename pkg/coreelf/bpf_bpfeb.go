@@ -137,16 +137,28 @@ type BpfTcpCfg struct {
 	DstIp          [4]uint32
 	BytesPerFlow   uint64
 	RtoNs          uint64
+	Connections    uint64
+	ReuseDelayNs   uint64
+	StartNs        uint64
+	EndNs          uint64
+	TargetCps      uint32
+	CpsPad         uint32
 	HdrTmpl        [64]uint8
 }
 
 type BpfTcpCpuState struct {
-	_      structs.HostLayout
-	First  uint32
-	Stride uint32
-	Count  uint32
-	Cursor uint32
-	IpId   uint32
+	_              structs.HostLayout
+	First          uint32
+	Stride         uint32
+	Count          uint32
+	Cursor         uint32
+	IpId           uint32
+	StartCursor    uint32
+	StartSeen      uint64
+	StartLimit     uint64
+	StartPermits   uint64
+	ServicePending uint32
+	Pad            uint32
 }
 
 type BpfTcpFlow struct {
@@ -155,42 +167,54 @@ type BpfTcpFlow struct {
 		_   structs.HostLayout
 		Val uint32
 	}
-	State       uint8
-	SynRetries  uint8
-	FinRetries  uint8
-	DupAcks     uint8
-	RtxPending  uint8
-	PeerFin     uint8
-	Wscale      uint8
-	RtxRetries  uint8
-	SrcPort     uint16
-	Mss         uint16
-	SynRst      uint8
-	TsEnabled   uint8
-	Started     uint8
-	StartedPad  uint8
-	IpId        uint16
-	_           [2]byte
-	Iss         uint32
-	SndUna      uint32
-	SndNxt      uint32
-	SndMax      uint32
-	RcvNxt      uint32
-	SndWnd      uint32
-	TemplateId  uint32
-	TsRecent    uint32
-	TsClock     uint32
-	_           [4]byte
-	TsRecentNs  uint64
-	BytesTarget uint64
-	BytesAcked  uint64
-	LastSendNs  uint64
-	LastAckNs   uint64
-	TxPkts      uint64
-	TxData      uint64
-	TxRtx       uint64
-	RxReplies   uint64
-	RxPkts      uint64
+	State        uint8
+	SynRetries   uint8
+	FinRetries   uint8
+	DupAcks      uint8
+	RtxPending   uint8
+	PeerFin      uint8
+	Wscale       uint8
+	RtxRetries   uint8
+	SrcPort      uint16
+	Mss          uint16
+	SynRst       uint8
+	TsEnabled    uint8
+	Started      uint8
+	StartedPad   uint8
+	IpId         uint16
+	_            [2]byte
+	Iss          uint32
+	SndUna       uint32
+	SndNxt       uint32
+	SndMax       uint32
+	RcvNxt       uint32
+	SndWnd       uint32
+	TemplateId   uint32
+	TsRecent     uint32
+	TsClock      uint32
+	_            [4]byte
+	TsRecentNs   uint64
+	BytesTarget  uint64
+	BytesAcked   uint64
+	LastSendNs   uint64
+	LastAckNs    uint64
+	TxPkts       uint64
+	TxData       uint64
+	TxRtx        uint64
+	RxReplies    uint64
+	RxPkts       uint64
+	ConnectionId uint64
+	ClosedNs     uint64
+}
+
+type BpfTcpLoad struct {
+	_    structs.HostLayout
+	Lock struct {
+		_   structs.HostLayout
+		Val uint32
+	}
+	InUse uint32
+	Peak  uint32
 }
 
 type BpfTcpPayload struct {
@@ -261,36 +285,46 @@ type BpfTcpSrvStats struct {
 }
 
 type BpfTcpStats struct {
-	_                structs.HostLayout
-	Started          uint64
-	SynSent          uint64
-	SynackRcvd       uint64
-	Established      uint64
-	DataSegs         uint64
-	DataBytes        uint64
-	BytesAcked       uint64
-	RtxSegs          uint64
-	RtxTimeouts      uint64
-	RtxDupack        uint64
-	FinSent          uint64
-	Done             uint64
-	Failed           uint64
-	RstRcvd          uint64
-	AcksRcvd         uint64
-	AcksSent         uint64
-	IdleIters        uint64
-	WindowStalls     uint64
-	Unexpected       uint64
-	BuildErrors      uint64
-	RstSent          uint64
-	FailedEst        uint64
-	Skipped          uint64
-	Aborted          uint64
-	RtxGiveups       uint64
-	FinWait2Timeouts uint64
-	AckProbes        uint64
-	WindowProbes     uint64
-	ChallengeAcks    uint64
+	_                      structs.HostLayout
+	Started                uint64
+	SynSent                uint64
+	SynackRcvd             uint64
+	Established            uint64
+	DataSegs               uint64
+	DataBytes              uint64
+	BytesAcked             uint64
+	RtxSegs                uint64
+	RtxTimeouts            uint64
+	RtxDupack              uint64
+	FinSent                uint64
+	Done                   uint64
+	Failed                 uint64
+	RstRcvd                uint64
+	AcksRcvd               uint64
+	AcksSent               uint64
+	IdleIters              uint64
+	WindowStalls           uint64
+	Unexpected             uint64
+	BuildErrors            uint64
+	RstSent                uint64
+	FailedEst              uint64
+	Skipped                uint64
+	Aborted                uint64
+	RtxGiveups             uint64
+	FinWait2Timeouts       uint64
+	AckProbes              uint64
+	WindowProbes           uint64
+	TxPkts                 uint64
+	RxReplies              uint64
+	StartOpportunities     uint64
+	StartPermits           uint64
+	StartDroppedLate       uint64
+	StartDroppedBusy       uint64
+	StartDroppedQuarantine uint64
+	StartDroppedScan       uint64
+	StartDroppedService    uint64
+	PortReuses             uint64
+	ChallengeAcks          uint64
 }
 
 type BpfTcpTemplate struct {
@@ -414,6 +448,7 @@ type BpfMapSpecs struct {
 	TcpCfgMap       *ebpf.MapSpec `ebpf:"tcp_cfg_map"`
 	TcpCpuStateMap  *ebpf.MapSpec `ebpf:"tcp_cpu_state_map"`
 	TcpFlowMap      *ebpf.MapSpec `ebpf:"tcp_flow_map"`
+	TcpLoadMap      *ebpf.MapSpec `ebpf:"tcp_load_map"`
 	TcpPayloadMap   *ebpf.MapSpec `ebpf:"tcp_payload_map"`
 	TcpSlotMap      *ebpf.MapSpec `ebpf:"tcp_slot_map"`
 	TcpSrvCfgMap    *ebpf.MapSpec `ebpf:"tcp_srv_cfg_map"`
@@ -479,6 +514,7 @@ type BpfMaps struct {
 	TcpCfgMap       *ebpf.Map `ebpf:"tcp_cfg_map"`
 	TcpCpuStateMap  *ebpf.Map `ebpf:"tcp_cpu_state_map"`
 	TcpFlowMap      *ebpf.Map `ebpf:"tcp_flow_map"`
+	TcpLoadMap      *ebpf.Map `ebpf:"tcp_load_map"`
 	TcpPayloadMap   *ebpf.Map `ebpf:"tcp_payload_map"`
 	TcpSlotMap      *ebpf.Map `ebpf:"tcp_slot_map"`
 	TcpSrvCfgMap    *ebpf.Map `ebpf:"tcp_srv_cfg_map"`
@@ -508,6 +544,7 @@ func (m *BpfMaps) Close() error {
 		m.TcpCfgMap,
 		m.TcpCpuStateMap,
 		m.TcpFlowMap,
+		m.TcpLoadMap,
 		m.TcpPayloadMap,
 		m.TcpSlotMap,
 		m.TcpSrvCfgMap,

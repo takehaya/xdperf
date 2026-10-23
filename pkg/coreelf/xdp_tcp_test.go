@@ -363,6 +363,7 @@ func setupClient(t *testing.T, objs *BpfObjects, o clientOpts, flows ...BpfTcpFl
 		o.maxData = 8
 	}
 	cfg, frame := clientTemplate(t, o)
+	cfg.Connections = uint64(o.flows)
 	if o.sharedID {
 		cfg.IpIdShared = 1
 	}
@@ -381,9 +382,20 @@ func setupClient(t *testing.T, objs *BpfObjects, o clientOpts, flows ...BpfTcpFl
 	for i := range flows {
 		k := uint32(i)
 		flows[i].SrcPort = testPortBase + uint16(i)
+		flows[i].ConnectionId = uint64(i)
 		if err := objs.TcpFlowMap.Put(&k, &flows[i]); err != nil {
 			t.Fatal(err)
 		}
+	}
+	var load BpfTcpLoad
+	for _, f := range flows {
+		if f.State >= tfSynSent && f.State <= tfFinWait2 {
+			load.InUse++
+		}
+	}
+	load.Peak = load.InUse
+	if err := objs.TcpLoadMap.Put(uint32(0), load); err != nil {
+		t.Fatal(err)
 	}
 	// Every CPU drives flows 0..n-1, so the test does not depend on which
 	// CPU BPF_PROG_RUN executes on.

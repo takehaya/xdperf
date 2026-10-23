@@ -5,7 +5,7 @@
 
 // Build mixed TCP frames from templates with an all-zero payload.
 static __noinline int tcp_template_build(struct xdp_md *ctx, const struct tcp_template *t, struct tcp_cpu_state *cs,
-                                         const struct tcp_tx_action *a)
+                                         const struct tcp_tx_action *a, __u16 *selected_ip_id)
 {
     if (!t)
         return -1;
@@ -55,7 +55,12 @@ static __noinline int tcp_template_build(struct xdp_md *ctx, const struct tcp_te
         return -1;
     __u8 *data = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
-    __u8 *op = data + l4 + 20;
+    // Older verifiers lose the narrowed u16 l4 range across helper calls.
+    // Validated offsets are <= 256; retain that bound at the packet access.
+    __u32 option_offset = l4 + 20;
+    asm volatile("" : "+r"(option_offset));
+    option_offset &= 511;
+    __u8 *op = data + option_offset;
 #pragma unroll
     for (int i = 0; i < 40; i++) {
         if (i < opts) {
@@ -66,8 +71,12 @@ static __noinline int tcp_template_build(struct xdp_md *ctx, const struct tcp_te
     }
     // Variable offsets address the map, never a stack array.
     __u8 ih[40];
-    __builtin_memcpy(ih, t->prefix + l3, 40);
+    __u32 ip_offset = l3;
+    asm volatile("" : "+r"(ip_offset));
+    ip_offset &= 255;
+    __builtin_memcpy(ih, t->prefix + ip_offset, 40);
     __u16 ip_id = cfg->ip_id_shared ? (__u16)cs->ip_id++ : a->ip_id;
+    *selected_ip_id = ip_id;
     if (cfg->ip_version == 4) {
         ih[1] &= 0xfc;
         put_be16(ih + 2, 20 + tcp_len);
@@ -84,10 +93,6 @@ static __noinline int tcp_template_build(struct xdp_md *ctx, const struct tcp_te
         if (bpf_xdp_store_bytes(ctx, l3, ih, 40) < 0)
             return -1;
     }
-    // Every supported outer IP/UDP header has a length patch. Bare TCP and
-    // MPLS-only templates need no envelope edits, so omit the helper entirely.
-    if (mixed_max_lengths == 0)
-        return 0;
-    return tcp_encap_patch(ctx, t, tcp_len, (__u32)a->src_port - cfg->port_base, ip_id);
+    return 0;
 }
 #endif

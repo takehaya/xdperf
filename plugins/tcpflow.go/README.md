@@ -15,6 +15,8 @@ Pass these fields as JSON with `--cfg`:
 | `tcp_port` | `5201` | Destination TCP port |
 | `flows` | `4` | Number of flows, or concurrent slots with `connections` |
 | `connections` | omitted | Total connection attempts; `0` requires `--duration` |
+| `cps` | `0` | Target initial connection attempts/second; zero uses closed-loop replenishment |
+| `port_reuse_delay_ms` | `60000` | Quarantine after DONE/FAILED; zero uses the default, explicit values must be at least `1000` |
 | `bytes` | `"65536"` | Bytes per connection as a uint64 decimal string; `"0"` requires `--count` or `--duration` |
 
 Zero or omitted tuning fields use the defaults below.
@@ -25,7 +27,7 @@ Zero or omitted tuning fields use the defaults below.
 | `mss` | automatic | MSS before subtracting TCP data options, 64..65535; automatic sizing respects MTU/frame limits |
 | `rto_ms` | 200 | Positive retransmission timeout in milliseconds |
 | `ip_id` | `flow` | IPv4 ID mode: `flow` or `shared`; empty uses the default |
-| `port_base` | 10000 | First source port for the entire set; all connection attempts must fit through port 65535 |
+| `port_base` | 10000 | First source port for the entire set; repetition cycles through ports up to 65535 |
 
 The host uses the largest group RTO for linger and drain timeout.
 Retry counts remain engine constants.
@@ -83,15 +85,41 @@ Each slot repeats its byte target and template after the previous connection fin
 Duration and signals stop new starts and drain existing connections.
 Repetition requires a single TCP variant and rejects packet mixtures, multiple TCP variants, unlimited bytes (`"0"`), and `--count`.
 
-Connection j uses source port `port_base + j`; ports never wrap and old states remain until exit.
-Capacity is `65536 - port_base` (55,536 connections at the default base).
-Larger finite requests are rejected before transmission; exhaustion during a duration run drains and exits with `port_exhausted`.
+Repetition uses a fixed pool of `65536 - port_base` port states (55,536 at the default base).
+Each slot owns a disjoint sequence of ports and cycles through it after DONE or FAILED, waiting for quarantine expiry when needed.
+Valid retransmitted FINs on DONE entries are ACKed and extend the quarantine.
+State memory is bounded by the port pool, even when the attempt limit exceeds its capacity.
+Slots do not borrow ports from other slots; a quarantine wait does not imply global port exhaustion.
+If `flows` exceeds the pool size in a reuse configuration, the effective concurrency is reduced to the pool size.
+
+The quarantine exists only during a run.
 Use a dedicated netns and a fresh port range or source IP between runs to avoid old tuples and host port conflicts.
 Reserving `ip_local_reserved_ports` prevents automatic allocation but cannot prevent explicit binds.
 The concurrency limit does not bound peer TIME_WAIT or LB conntrack entries.
+Shorter quarantine values require validation against delayed traffic and the peer or CT/NAT state on the path.
+
+A positive `cps` requires `connections` and rejects `--pps`.
+Workers share the start/end clock and stagger initial SYN opportunities; retransmissions, data and FIN continue independently.
+Each worker can use at most one outstanding opportunity.
+Missed opportunities are discarded without consuming the attempt limit or extending duration; workers never catch up with a burst.
+With connection lifetime L and quarantine H in seconds, the sustainable rate is approximately at most `pool_size / (H + L)`.
+
+```bash
+sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
+  --parallelism 2 --duration 120s --summary-json cps.json \
+  --cfg '{"dst_ip":"192.0.2.2","flows":128,"bytes":"1024","connections":0,"cps":3000,"port_reuse_delay_ms":10000}'
+```
 
 Periodic output reports achieved start, establishment, and completion CPS from counter deltas and actual elapsed time.
 Final CPS covers the load period; load and drain/linger durations are logged separately with the stop reason.
 `started` counts connections whose first SYN was successfully built; `syn_sent` includes retransmissions.
-In repetition mode, CSV contains one row per started connection, with its connection number in `flow`.
-This mode replenishes connections on completion; it does not impose a target CPS, and `--pps` is not a CPS control.
+Counters remain cumulative across reuse.
+`slots_in_use` and `peak_slots_in_use` include SYN_SENT through FIN_WAIT and exclude quarantined terminal entries.
+The final log and summary JSON include `target_cps`, `port_reuses`, `start_opportunities`, `start_permits`, `cps_unmet`, and `start_dropped_late`, `start_dropped_busy`, `start_dropped_quarantine`, `start_dropped_scan`, `start_dropped_service`.
+These drop reasons distinguish worker delay, busy owned slots, quarantine waits, the eight-slot scan limit and iterations reserved for existing connections.
+After each new SYN, at least one iteration services data, retransmissions or FIN; a separate SYN cursor preserves normal round-robin order.
+`port_exhausted` remains false because repetition waits for quarantine expiry.
+CSV remains available for finite attempts within the port capacity, with the connection number in `flow`.
+`--tcp-flow-report` is rejected when reuse is possible (`connections: 0` or a limit above port capacity), since retained states cannot preserve the complete CSV history.
+Source-IP `variable_params` are rejected with positive CPS or possible reuse.
+Failure exit behavior for summary JSON remains unchanged.

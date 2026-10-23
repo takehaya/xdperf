@@ -96,7 +96,7 @@ jobs:
         run: vimto -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 10m ./pkg/coreelf/ -run TestTcp
 
       - name: Run mixed TCP tunnel tests
-        run: vimto -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 10m ./pkg/xdperf/ -run 'TestTCP(ReceiveTunnels|EncapBPF|RawGeneveBPF|MPLSOnlyBPF|PayloadBPF|TimestampsBPF|FlowParamsBPF|FlowPayloadEncapBPF)$'
+        run: vimto -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 10m ./pkg/xdperf/ -run 'TestTCP(PortReuseBPF|CPSGateBPF|CPSFairnessBPF|ReceiveTunnels|EncapBPF|RawGeneveBPF|MPLSOnlyBPF|PayloadBPF|TimestampsBPF|FlowParamsBPF|FlowPayloadEncapBPF)$'
 
   # Same load test against kernels that ghcr.io/cilium/ci-kernels does not
   # publish yet (release candidates). The kernel is built from source with the
@@ -187,4 +187,4 @@ jobs:
       - name: Run mixed TCP tunnel tests
         run: |
           vimto -kernel ~/.cache/rc-kernels/vmlinuz-${{ matrix.kernel }} -- \
-            go test -v -count 1 -timeout 10m ./pkg/xdperf/ -run 'TestTCP(ReceiveTunnels|EncapBPF|RawGeneveBPF|MPLSOnlyBPF|PayloadBPF|TimestampsBPF|FlowParamsBPF|FlowPayloadEncapBPF)$'
+            go test -v -count 1 -timeout 10m ./pkg/xdperf/ -run 'TestTCP(PortReuseBPF|CPSGateBPF|CPSFairnessBPF|ReceiveTunnels|EncapBPF|RawGeneveBPF|MPLSOnlyBPF|PayloadBPF|TimestampsBPF|FlowParamsBPF|FlowPayloadEncapBPF)$'

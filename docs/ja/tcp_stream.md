@@ -233,22 +233,67 @@ sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin 
 この途中 close は、最終ログの `reason` (`duration elapsed` / `signal`) で、予定数の完了 (`all flows closed`) と区別できます。
 初版では TCP バリアント1つだけを使用でき、packet との混合、複数 TCP バリアント、`bytes: "0"`、`--count` との併用は拒否します。
 
-枠 i の接続番号は `j = i + k * N`、送信元ポートは `port_base + j` です。
-ポートは周回せず、終了済み接続の状態も実行終了まで保持します。
-容量は `65536 - port_base`、既定の10000では55,536接続です。
-有限 M が容量を超える場合は開始前に拒否し、時間指定中に枯渇した場合は `port_exhausted` を記録して drain 後に失敗終了します。
-実行をまたいで同じ tuple をすぐに再利用しないよう、専用 netns と未使用のポート範囲または別の送信元 IP を使用してください。
-共有環境での `ip_local_reserved_ports` は自動割り当てを防ぎますが、明示 bind との競合は防ぎません。
+`connections` 指定時は、終了したポートを隔離後に再利用できます。
+`port_reuse_delay_ms` は省略または0で60000ms、明示指定は1000ms以上です。
+FAILED も隔離し、DONE への有効な再送 FIN には ACK を返して隔離期限を延ばします。
+隔離中のポートは同時実行枠を占有しませんが、枠間でポートの貸借は行いません。
+
+ポート容量を `P = 65536 - port_base`、実効枠数を `N` とすると、枠 s は `s, s+N, ... < P` の map 添字を循環します。
+接続番号 `j = s + k*N` は64bitで、送信元ポートは `port_base + s + (k mod Qs)*N` (`Qs = 1 + floor((P-1-s)/N)`) です。
+状態のメモリ量は総接続数に比例しません。
+枠数がポート容量を超える再利用設定では、実効枠数を容量まで減らします。
+`connections` が容量以下の有限設定では、従来どおり全接続の状態を保持します。
+
+60秒は実用上の保守的な既定値です。
+短い隔離では、対向や経路上の CT/NAT に残る状態、遅延パケットの影響を確認してください。
+隔離状態は実行終了時に失われるため、実行をまたぐ同じ tuple の再利用は保護しません。
+再実行には専用 netns、未使用のポート範囲、別の送信元 IP のいずれかを使ってください。
 接続枠数は対向の TIME_WAIT や LB の conntrack 残留数を制限しません。
-外側 UDP entropy は既存どおり接続番号 j に基づき、フロー別テンプレートは枠 i の設定を繰り返します。
 
 `started` は初回 SYN の構築に成功した接続数で、再送を含む `syn_sent` とは別の値です。
 周期表示の CPS は、開始・確立・正常完了の各カウンタ差分を実測経過秒で割ります。
 最終ログの `started_cps`、`established_cps`、`done_cps` は負荷投入期間だけの値で、`load_seconds` と `drain_linger_seconds` を分けて表示します。
 `--tcp-flow-report` は開始済み接続ごとに1行を出力し、`flow` は接続番号 j です。
 
-このモードは完了を待って接続を補充するため、遅延が増えると接続発生率も下がります。
-目標 CPS を指定する機能はなく、`--pps` やバリアントの weight もその代用にはなりません。
+`cps` に目標接続開始数/秒を指定できます。
+省略または0は従来の閉ループで、完了を待って接続を補充します。
+正数は `connections` が必須で、`--pps` と併用できません。
+CPS 指定時またはポート再利用が起こりうる設定では、送信元 IP の `variable_params` も拒否します。
+再利用が起こりうる設定 (`connections: 0` または総試行数がポート容量を超える場合) では、履歴が失われるため `--tcp-flow-report` を設定エラーで拒否します。
+
+```bash
+sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
+  --parallelism 1 --duration 120s --summary-json cps.json \
+  --cfg '{"dst_ip":"192.0.2.2","flows":128,"bytes":"1024","connections":0,"cps":3000,"port_reuse_delay_ms":10000}'
+```
+
+初回 SYN の開始機会を worker ごとに等間隔で配分し、位相をずらします。
+開始許可の蓄積は1回までで、逃した機会は破棄し、後からまとめて送信しません。
+再送、データ、FIN は CPS ゲートを通りません。
+枠不足や隔離待ちで破棄しても接続試行数を消費せず、duration も延長しません。
+隔離時間 H 秒、接続寿命 L 秒では、持続可能な目安は `P/(H+L)` CPS 以下です。
+
+最終ログと summary JSON の `tcp` に次を記録します。
+`started`、`established`、`done`、`failed` は再利用前も含む累積値です。
+
+| フィールド | 意味 |
+|---|---|
+| `target_cps` | 設定した目標 CPS |
+| `cps_unmet` | 開始機会を破棄したか、許可後の SYN 構築が未完了だった場合に true |
+| `port_reuse_delay_ms` | 隔離時間 (summary JSON) |
+| `start_opportunities` | 期限切れも含む開始機会数 |
+| `start_permits` | 初回 SYN の状態遷移に与えた許可数 |
+| `start_dropped_late` | worker の遅れで期限切れになった機会 |
+| `start_dropped_busy` | 所有枠を一巡したが空きがなかった機会 |
+| `start_dropped_quarantine` | 探索した所有枠の次ポートが隔離中だった機会 |
+| `start_dropped_scan` | 8枠の探索上限で開始先を見つけられなかった機会 |
+| `start_dropped_service` | SYN が連続する場合に既存接続の処理を優先して破棄した機会 |
+| `slots_in_use` / `peak_slots_in_use` | SYN_SENT から FIN_WAIT までの使用枠数と実行中の最大値 |
+| `port_reuses` | 同じポートで再び初回 SYN の構築に成功した回数 |
+
+隔離による破棄は所有枠での不足を示し、全ポートの枯渇とは断定しません。
+`port_exhausted` は互換性のため残りますが、このモードでは false です。
+失敗終了時の summary JSON 保存は既存仕様のままです。
 
 ## 実行結果を JSON に保存する
 
