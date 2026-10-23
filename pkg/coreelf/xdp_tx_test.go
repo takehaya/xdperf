@@ -984,3 +984,66 @@ func TestXdpTxFreshBuffer(t *testing.T) {
 		}
 	}
 }
+
+func TestXdpTxTwoByteDiff(t *testing.T) {
+	objs := loadWithDiffMap(t, 1)
+	for _, tt := range []struct {
+		name   string
+		offset uint16
+		errors uint64
+	}{
+		{"unaligned", 45, 0},
+		{"last bytes", 62, 0},
+		{"past end", 63, 1},
+		{"large offset", 2047, 1},
+		{"sentinel", 0xffff, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			base := buildUDPPacketSized(t, 5678, 64)
+			entry := BpfDiffEntry{PktLen: 64, DiffCount: 1, CsumCached: 1}
+			entry.Diffs[0].Offset = tt.offset
+			entry.Diffs[0].Size = 2
+			entry.Diffs[0].NewValue = [8]uint8{0xab, 0xcd}
+			setupSingleBase(t, objs, base, []BpfDiffEntry{entry})
+			states := make([]BpfPktState, ebpf.MustPossibleCPU())
+			if err := objs.TxStatsMap.Put(uint32(0), make([]BpfDatarec, len(states))); err != nil {
+				t.Fatal(err)
+			}
+			for cpu := range states {
+				states[cpu] = BpfPktState{Count: 1, Budget: 2}
+			}
+			if err := objs.PktStateMap.Put(uint32(0), states); err != nil {
+				t.Fatal(err)
+			}
+			want := append([]byte(nil), base...)
+			if tt.offset < 63 {
+				copy(want[tt.offset:], []byte{0xab, 0xcd})
+			}
+			action, got := runXdpTx(t, objs.XdpTx, make([]byte, 64))
+			if action != xdpTx || !bytes.Equal(got, want) {
+				t.Fatalf("action=%d, packet differs", action)
+			}
+			if err := objs.PktStateMap.Lookup(uint32(0), &states); err != nil {
+				t.Fatal(err)
+			}
+			var budget uint64
+			for _, state := range states {
+				budget += state.Budget
+			}
+			if want := uint64(2*len(states) - 1); budget != want {
+				t.Fatalf("budget = %d, want %d", budget, want)
+			}
+			recs := make([]BpfDatarec, len(states))
+			if err := objs.TxStatsMap.Lookup(uint32(0), &recs); err != nil {
+				t.Fatal(err)
+			}
+			var diffErrors uint64
+			for _, rec := range recs {
+				diffErrors += rec.DiffErrors
+			}
+			if diffErrors != tt.errors {
+				t.Fatalf("diff errors = %d, want %d", diffErrors, tt.errors)
+			}
+		})
+	}
+}
