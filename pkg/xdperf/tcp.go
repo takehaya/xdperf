@@ -805,7 +805,11 @@ loop:
 				}
 			}
 			if lingerCh == nil && allClosed() {
-				startDrain("all flows closed")
+				reason := "all flows closed"
+				if x.cfg.Duration > 0 && !time.Now().Before(started.Add(x.cfg.Duration)) {
+					reason = "duration elapsed"
+				}
+				startDrain(reason)
 				lingerCh = time.After(linger)
 			}
 		case <-lingerCh:
@@ -911,7 +915,7 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpSt
 	if err := x.bpfobjs.TcpLoadMap.Lookup(uint32(0), &load); err != nil {
 		return s, fmt.Errorf("read TCP occupancy: %w", err)
 	}
-	dropped := s.StartDroppedLate + s.StartDroppedBusy + s.StartDroppedQuarantine + s.StartDroppedScan
+	dropped := s.StartDroppedLate + s.StartDroppedBusy + s.StartDroppedQuarantine + s.StartDroppedScan + s.StartDroppedService
 	unmet := x.mixed.cps > 0 && (dropped > 0 || s.StartPermits > s.Started)
 	if x.summary != nil {
 		x.summary.TCP = &tcpSummary{
@@ -927,6 +931,7 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpSt
 			StartDroppedBusy:       s.StartDroppedBusy,
 			StartDroppedQuarantine: s.StartDroppedQuarantine,
 			StartDroppedScan:       s.StartDroppedScan,
+			StartDroppedService:    s.StartDroppedService,
 			PortReuses:             s.PortReuses,
 			Started:                s.Started,
 			PortExhausted:          false,
@@ -970,6 +975,7 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpSt
 		zap.Uint64("start_dropped_busy", s.StartDroppedBusy),
 		zap.Uint64("start_dropped_quarantine", s.StartDroppedQuarantine),
 		zap.Uint64("start_dropped_scan", s.StartDroppedScan),
+		zap.Uint64("start_dropped_service", s.StartDroppedService),
 		zap.Uint64("port_reuses", s.PortReuses),
 		zap.Uint64("started", s.Started),
 		zap.Bool("port_exhausted", false),
@@ -1009,7 +1015,10 @@ func (x *Xdperf) initTCPStartClock() (time.Time, error) {
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &clock); err != nil {
 		return time.Time{}, err
 	}
-	lead := 100 * time.Millisecond
+	lead := time.Duration(0)
+	if x.mixed.cps != 0 {
+		lead = 100 * time.Millisecond
+	}
 	started := time.Now().Add(lead)
 	startNS := uint64(clock.Nano() + int64(lead))
 	if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) {

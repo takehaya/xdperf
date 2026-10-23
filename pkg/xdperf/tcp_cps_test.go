@@ -228,6 +228,26 @@ func TestTCPPortReuseBPF(t *testing.T) {
 		}
 	}
 
+	// Closed-loop PPS gets an immediately eligible first run, even below one second.
+	x.mixed.cps = 0
+	began, err := x.initTCPStartClock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if began.After(time.Now()) {
+		t.Fatal("closed-loop start was delayed")
+	}
+	var cfgClock coreelf.BpfTcpCfg
+	if err := x.bpfobjs.TcpCfgMap.Lookup(uint32(0), &cfgClock); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &clock); err != nil {
+		t.Fatal(err)
+	}
+	if cfgClock.StartNs > uint64(clock.Nano()) {
+		t.Fatal("first PPS opportunity would be gated")
+	}
+
 }
 
 func TestTCPCPSGateBPF(t *testing.T) {
@@ -393,15 +413,19 @@ func TestTCPCPSGateBPF(t *testing.T) {
 }
 
 func TestTCPCPSFairnessBPF(t *testing.T) {
-	for _, count := range []int{3, 9} {
-		t.Run(strconv.Itoa(count), func(t *testing.T) {
+	for _, tc := range []struct {
+		count int
+		mixed bool
+	}{{3, false}, {9, false}, {2, true}, {11, true}} {
+		t.Run(strconv.Itoa(tc.count), func(t *testing.T) {
+			count := tc.count
 			v := extensionVariant(false)
 			v.TCPFlow.Flows = make([]guest.TCPFlow, count)
 			for i := range v.TCPFlow.Flows {
-				v.TCPFlow.Flows[i].Bytes = "65536"
+				v.TCPFlow.Flows[i].Bytes = "1048576"
 			}
 			x := setupFlowExtensions(t, v)
-			if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.TargetCps = 1000000000; c.SlotCount = uint32(count) }); err != nil {
+			if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.TargetCps = 1000000000; c.SlotCount = uint32(count); c.RtoNs = 1 << 56 }); err != nil {
 				t.Fatal(err)
 			}
 			for i := 0; i < count; i++ {
@@ -413,6 +437,12 @@ func TestTCPCPSFairnessBPF(t *testing.T) {
 				f.SndMax = 101
 				f.RcvNxt = 5001
 				f.SndWnd = 65535
+				if tc.mixed && i == 1 {
+					f.State = tcpFlowClosed
+				}
+				if tc.mixed && i > 1 {
+					f.State = tcpFlowSynSent
+				}
 				if err := x.bpfobjs.TcpFlowMap.Put(uint32(i), f); err != nil {
 					t.Fatal(err)
 				}
@@ -432,7 +462,7 @@ func TestTCPCPSFairnessBPF(t *testing.T) {
 			if err := x.bpfobjs.MixedStateMap.Put(uint32(0), mixed); err != nil {
 				t.Fatal(err)
 			}
-			// Pin each test invocation to the same allowed CPU so its cursor persists.
+			// Pin the thread: XDP test-run does not support BPF_F_TEST_RUN_ON_CPU.
 			runtime.LockOSThread()
 			defer runtime.UnlockOSThread()
 			var allowed unix.CPUSet
@@ -457,22 +487,59 @@ func TestTCPCPSFairnessBPF(t *testing.T) {
 				}
 			}()
 			opts := ebpf.RunOptions{Data: bytes.Repeat([]byte{0xa5}, 2049), DataOut: make([]byte, 4096)}
-			for i := 0; i < 2*count; i++ {
+			iterations := 2 * count
+			if tc.mixed {
+				iterations = 4 * count
+			}
+			syns, data := 0, 0
+			for i := 0; i < iterations; i++ {
 				opts.DataOut = opts.DataOut[:cap(opts.DataOut)]
 				ret, err := x.bpfobjs.XdpTxTcpMixed.Run(&opts)
-				if err != nil || ret != 3 {
-					t.Fatalf("iteration %d: action %d %v", i, ret, err)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.mixed && ret == 1 {
+					continue
+				}
+				if ret != 3 {
+					t.Fatalf("iteration %d: action %d", i, ret)
 				}
 				port := binary.BigEndian.Uint16(opts.DataOut[34:36])
-				if want := uint16(40000 + i%count); port != want {
-					t.Fatalf("iteration %d: got port %d want %d", i, port, want)
+				if !tc.mixed {
+					if want := uint16(40000 + i%count); port != want {
+						t.Fatalf("iteration %d: got port %d want %d", i, port, want)
+					}
+				} else if opts.DataOut[47] == 2 {
+					if port != 40001 {
+						t.Fatal("unexpected SYN port", port)
+					}
+					syns++
+					f := lookupExtensionFlow(t, x, 1)
+					// Rapid peer refusals continually make another start available.
+					if _, _, err := x.bpfobjs.XdpRxTcpMixed.Test(extensionReply(v, port, 0, f.Iss+1, 0x14, nil)); err != nil {
+						t.Fatal(err)
+					}
+					if lookupExtensionFlow(t, x, 1).State != tcpFlowFailed {
+						t.Fatal("SYN was not refused")
+					}
+				} else {
+					if port != 40000 || (opts.DataOut[47] != 0x10 && opts.DataOut[47] != 0x18) || len(opts.DataOut) <= 54 {
+						t.Fatal("unexpected existing-flow action", port, opts.DataOut[47])
+					}
+					data++
 				}
 			}
 			stats, err := x.readTCPStats(make([]coreelf.BpfTcpStats, len(cpus)))
-			if err != nil || stats.StartDroppedBusy+stats.StartDroppedScan != uint64(2*count) {
-				t.Fatalf("SYN probing did not run every iteration: %+v %v", stats, err)
+			if err != nil {
+				t.Fatal(err)
 			}
-
+			if tc.mixed {
+				if syns < 2 || data < 2 || stats.StartDroppedService == 0 {
+					t.Fatalf("existing flow starved: syns=%d data=%d stats=%+v", syns, data, stats)
+				}
+			} else if stats.StartDroppedBusy+stats.StartDroppedScan != uint64(2*count) {
+				t.Fatalf("SYN probing did not run every iteration: %+v", stats)
+			}
 		})
 	}
 }

@@ -206,10 +206,12 @@ struct tcp_cpu_state {
     __u32 count;
     __u32 cursor;
     __u32 ip_id;
-    __u32 _pad;
+    __u32 start_cursor;
     __u64 start_seen;  // owned opportunities already consumed or discarded
     __u64 start_limit; // finite attempts owned by this worker
     __u64 start_permits;
+    __u32 service_pending;
+    __u32 _pad;
 };
 
 struct tcp_stats {
@@ -249,6 +251,7 @@ struct tcp_stats {
     __u64 start_dropped_busy;
     __u64 start_dropped_quarantine;
     __u64 start_dropped_scan;
+    __u64 start_dropped_service;
     __u64 port_reuses;
     __u64 challenge_acks; // ACKs sent for an RST whose seq is not rcv_nxt (RFC 5961)
 };
@@ -499,6 +502,39 @@ static __noinline int tcp_start_permit(const struct tcp_cfg *cfg, struct tcp_cpu
     st->start_opportunities += opportunities;
     st->start_dropped_late += opportunities - !ended;
     return !ended;
+}
+
+// Scan only CLOSED candidates here; running the full state machine in both scans
+// duplicates verifier paths on older kernels. Its cursor is separate from normal TX.
+static __noinline struct tcp_flow *tcp_start_flow(const struct tcp_cfg *cfg, struct tcp_cpu_state *cs, __u32 first, __u32 count)
+{
+    __u32 zero = 0;
+    struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
+    if (!st)
+        return NULL;
+    __u64 now = bpf_ktime_get_ns();
+    __u32 cursor = cs->start_cursor, quarantine = 0;
+    for (int i = 0; i < TCP_TX_SCAN; i++) {
+        if (cursor >= count)
+            cursor = 0;
+        __u32 idx = first + cursor * cs->stride;
+        cursor++;
+        if (idx >= MAX_TCP_FLOWS)
+            continue;
+        struct tcp_flow *f = tcp_slot_flow(idx, cfg, now, &quarantine);
+        if (f && f->state == TF_CLOSED) {
+            cs->start_cursor = cursor;
+            return f;
+        }
+    }
+    cs->start_cursor = cursor;
+    if (quarantine)
+        st->start_dropped_quarantine++;
+    else if (count <= TCP_TX_SCAN)
+        st->start_dropped_busy++;
+    else
+        st->start_dropped_scan++;
+    return NULL;
 }
 
 static __always_inline int tcp_flow_open(__u8 state)
@@ -848,25 +884,34 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
     struct tcp_template *tmpl = NULL;
 
     int permit = tcp_start_permit(global, cs, st, decision.now);
-    __u32 quarantine = 0;
-    __u32 saved_cursor = *next;
-    // Prefer initial SYNs during a start opportunity, then service existing flows.
-    for (int i = 0; i < TCP_TX_SCAN * 2; i++) {
-        if (i == TCP_TX_SCAN) {
-            if (permit) {
-                if (quarantine)
-                    st->start_dropped_quarantine++;
-                else if (count <= TCP_TX_SCAN)
-                    st->start_dropped_busy++;
-                else
-                    st->start_dropped_scan++;
-                permit = 0;
-                // An unsuccessful SYN probe must not bias normal round-robin service.
-                *next = saved_cursor;
-            } else {
-                break;
+    if (permit && cs->service_pending) {
+        st->start_dropped_service++;
+        permit = 0;
+    }
+    // After every new SYN, reserve an iteration for data/retries/FIN even at saturation.
+    cs->service_pending = 0;
+    if (permit) {
+        sel = tcp_start_flow(global, cs, first, count);
+        if (sel) {
+            __u32 group = sel->template_id;
+            tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
+            if (!tmpl)
+                return XDP_ABORTED;
+            decision.allow_start = 1;
+            kind = tcp_tx_decide_mixed(sel, tmpl, st, &decision, extended);
+            if (kind != TXA_NONE && kind != TXA_CLOSED) {
+                st->start_permits++;
+                cs->start_permits++;
+                cs->service_pending = 1;
+                goto build;
             }
         }
+    }
+    decision.allow_start = 0;
+    kind = TXA_NONE;
+    sel = NULL;
+    __u32 quarantine = 0;
+    for (int i = 0; i < TCP_TX_SCAN; i++) {
         __u32 idx;
         __u32 cursor = *next;
         if (cursor >= count)
@@ -882,8 +927,6 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
             f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
         if (!f)
             continue;
-        if (permit && f->state != TF_CLOSED)
-            continue;
         __u32 group = f->template_id;
         tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
         if (!tmpl)
@@ -892,14 +935,9 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         // Do not carry action state between scan attempts into the verifier.
         decision.act = (struct tcp_tx_action){0};
         decision.extra = (struct tcp_tx_extra){0};
-        decision.allow_start = permit;
         kind = tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
         if (kind != TXA_NONE && kind != TXA_CLOSED) {
             sel = f;
-            if (permit) {
-                st->start_permits++;
-                cs->start_permits++;
-            }
             break;
         }
         kind = TXA_NONE;
@@ -909,12 +947,13 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         return XDP_DROP;
     }
 
+build:;
     int built;
     if (extended)
         built = tcp_template_build_ext(ctx, tmpl, cs, &decision.act, &decision.extra);
     else
-        built = tcp_template_build(ctx, tmpl, cs, &decision.act);
-    if (built >= 0 && extended)
+        built = tcp_template_build(ctx, tmpl, cs, &decision.act, &decision.extra.ip_id);
+    if (built >= 0)
         built = tcp_template_finish(ctx, tmpl, &decision.act, &decision.extra);
     if (built >= 0 && extended && mixed_has_payload && decision.act.len) {
         __u32 id = tmpl->payload_id;

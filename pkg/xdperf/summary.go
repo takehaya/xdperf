@@ -106,6 +106,7 @@ type mixedSummary struct {
 }
 
 type tcpSummary struct {
+	StartDroppedService    uint64  `json:"start_dropped_service"`
 	SlotsInUse             uint32  `json:"slots_in_use"`
 	PeakSlotsInUse         uint32  `json:"peak_slots_in_use"`
 	CPSUnmet               bool    `json:"cps_unmet"`

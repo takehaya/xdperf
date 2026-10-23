@@ -287,6 +287,7 @@ sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin 
 | `start_dropped_busy` | 所有枠を一巡したが空きがなかった機会 |
 | `start_dropped_quarantine` | 探索した所有枠の次ポートが隔離中だった機会 |
 | `start_dropped_scan` | 8枠の探索上限で開始先を見つけられなかった機会 |
+| `start_dropped_service` | SYN が連続する場合に既存接続の処理を優先して破棄した機会 |
 | `slots_in_use` / `peak_slots_in_use` | SYN_SENT から FIN_WAIT までの使用枠数と実行中の最大値 |
 | `port_reuses` | 同じポートで再び初回 SYN の構築に成功した回数 |
 

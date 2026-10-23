@@ -90,8 +90,8 @@ static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extend
     if (extended)
         built = tcp_template_build_ext(ctx, t, cs, &act, &d.extra);
     else
-        built = tcp_template_build(ctx, t, cs, &act);
-    if (built >= 0 && extended)
+        built = tcp_template_build(ctx, t, cs, &act, &d.extra.ip_id);
+    if (built >= 0)
         built = tcp_template_finish(ctx, t, &act, &d.extra);
     if (built < 0) {
         st->build_errors++;

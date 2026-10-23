@@ -147,16 +147,18 @@ type BpfTcpCfg struct {
 }
 
 type BpfTcpCpuState struct {
-	_            structs.HostLayout
-	First        uint32
-	Stride       uint32
-	Count        uint32
-	Cursor       uint32
-	IpId         uint32
-	Pad          uint32
-	StartSeen    uint64
-	StartLimit   uint64
-	StartPermits uint64
+	_              structs.HostLayout
+	First          uint32
+	Stride         uint32
+	Count          uint32
+	Cursor         uint32
+	IpId           uint32
+	StartCursor    uint32
+	StartSeen      uint64
+	StartLimit     uint64
+	StartPermits   uint64
+	ServicePending uint32
+	Pad            uint32
 }
 
 type BpfTcpFlow struct {
@@ -320,6 +322,7 @@ type BpfTcpStats struct {
 	StartDroppedBusy       uint64
 	StartDroppedQuarantine uint64
 	StartDroppedScan       uint64
+	StartDroppedService    uint64
 	PortReuses             uint64
 	ChallengeAcks          uint64
 }

@@ -115,8 +115,9 @@ Final CPS covers the load period; load and drain/linger durations are logged sep
 `started` counts connections whose first SYN was successfully built; `syn_sent` includes retransmissions.
 Counters remain cumulative across reuse.
 `slots_in_use` and `peak_slots_in_use` include SYN_SENT through FIN_WAIT and exclude quarantined terminal entries.
-The final log and summary JSON include `target_cps`, `port_reuses`, `start_opportunities`, `start_permits`, `cps_unmet`, and `start_dropped_late`, `start_dropped_busy`, `start_dropped_quarantine`, `start_dropped_scan`.
-These drop reasons distinguish worker delay, busy owned slots, quarantine waits and the eight-slot scan limit.
+The final log and summary JSON include `target_cps`, `port_reuses`, `start_opportunities`, `start_permits`, `cps_unmet`, and `start_dropped_late`, `start_dropped_busy`, `start_dropped_quarantine`, `start_dropped_scan`, `start_dropped_service`.
+These drop reasons distinguish worker delay, busy owned slots, quarantine waits, the eight-slot scan limit and iterations reserved for existing connections.
+After each new SYN, at least one iteration services data, retransmissions or FIN; a separate SYN cursor preserves normal round-robin order.
 `port_exhausted` remains false because repetition waits for quarantine expiry.
 CSV remains available for finite attempts within the port capacity, with the connection number in `flow`.
 `--tcp-flow-report` is rejected when reuse is possible (`connections: 0` or a limit above port capacity), since retained states cannot preserve the complete CSV history.
