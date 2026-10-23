@@ -56,6 +56,30 @@ All logger settings default to `false` or `0`; `--debugmode` greater than zero s
 | `--device` | `-d` | **Yes** | - | Network interface name to probe |
 | `--json` | `-j` | No | `false` | Output results in JSON format |
 
+On Linux 6.3+, `probe` reads `xdp-features` through the `netdev` generic netlink family.
+It does not load or attach BPF programs, reconfigure NIC queues, or send test packets.
+Existing XDP program IDs and attachment modes are still reported.
+
+| Result | Feature |
+|--------|---------|
+| `xdp_driver_mode` | `NETDEV_XDP_ACT_BASIC` |
+| `xdp_generic_mode` | Always `true` (kernel generic XDP) |
+| `xdp_offload_mode` | `NETDEV_XDP_ACT_HW_OFFLOAD` |
+| `live_frame_mode` | `NETDEV_XDP_ACT_NDO_XMIT` |
+
+Live-frame `XDP_TX` uses the device's `ndo_xdp_xmit` callback, as described in the [kernel implementation](https://github.com/torvalds/linux/blob/v6.3/net/bpf/test_run.c#L291-L305).
+For veth, `NDO_XMIT` is advertised only when its peer has XDP or GRO enabled.
+These results describe advertised capabilities; they do not verify successful packet delivery or BPF permissions.
+JSON output adds `xdp_features`, the raw unsigned 64-bit feature mask from the kernel (including zero).
+The bit values are BASIC=1, REDIRECT=2, NDO_XMIT=4, XSK_ZEROCOPY=8, HW_OFFLOAD=16, RX_SG=32, and NDO_XMIT_SG=64.
+
+Only when the `netdev` family is absent does `probe` fall back to attaching a temporary pass program in native and generic mode.
+Each attach and detach completes synchronously before the next operation; a slow driver can therefore block the command.
+This fallback requires root privileges and can reconfigure NIC queues, so use it only on an idle test interface.
+Its live-frame check runs an unattached `XDP_DROP` program on loopback: it sends no packets and checks only kernel live-frames API support, not the target device's `ndo_xdp_xmit` capability.
+The fallback omits `xdp_features` and cannot detect hardware offload support unless an offloaded program is already attached.
+Other netlink errors, including missing feature attributes, are returned without attempting an attach.
+
 ### Run Command - Operating Modes
 
 For packet traffic, `xdperf run` uses the modes below.
