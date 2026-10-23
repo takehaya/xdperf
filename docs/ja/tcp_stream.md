@@ -65,7 +65,7 @@ tcp: est 64 done 0 fail 0 | 9.413 Gbps acked, 812,501 segs/s, 406,114 acks/s, rt
 bytes_acked, retransmits (timeout / dupack 別), acks_rcvd, acks_sent, window_stalls など) をログに出します。
 
 `window_stalls` は走査した候補ごとの観測数で、送信機会を失った回数ではありません。1 回の送信機会では最大 8 候補を走査し、途中の候補がウィンドウ上限でも後続の候補から送信できます。
-実際に送れなかった機会の割合は、`mixed final statistics` の `1 - tcp_tx / tcp_opportunities` で見ます (drain 中の機会は `drain_opportunities` に別に数えます)。
+全フローの完了で終わる実行では、実際に送れなかった機会の割合を `mixed final statistics` の `1 - tcp_tx / tcp_opportunities` で見られます。duration やシグナルで終わる実行では drain 中の送信も `tcp_tx` に入る (機会は `drain_opportunities` に別に数える) ため、この式は使えません。
 
 ### フローごとの記録 (`--tcp-flow-report`)
 
