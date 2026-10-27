@@ -130,7 +130,7 @@ in [TCP and mixed modes](#tcp-and-mixed-modes).
 | `--plugin-config-path` | `--cfgpath` | No | - | Path to JSON configuration file |
 | `--debugmode` | `-D` | No | `0` | Debug level (0: off, 1: on, 2: verbose) |
 | `--infinite` | - | No | `false` | Enable infinite mode for maximum throughput |
-| `--batch-size` | - | No | `64` | Syscall batch size tuning |
+| `--batch-size` | - | No | `256` | Syscall batch size tuning |
 | `--otlp-endpoint` | - | No | - | OTLP gRPC endpoint (`host:port`) to export metrics. Empty to disable |
 | `--otlp-interval` | - | No | `10s` | OTLP metrics export interval |
 | `--otlp-insecure` | - | No | `false` | Use insecure (plaintext) gRPC connection for OTLP export |
@@ -492,26 +492,28 @@ Enable infinite mode for maximum throughput. In this mode, packets are sent cont
 sudo xdperf run --device eth0 --count 10k --parallelism 4 --infinite
 
 # High-performance infinite mode with batch optimization
-sudo xdperf run --device eth0 --count 10k --parallelism 8 --infinite --batch-size 64
+sudo xdperf run --device eth0 --count 10k --parallelism 8 --infinite --batch-size 256
 ```
 
 #### `--batch-size`
 
 Tune the syscall batch size for `bpf_prog_run` (applies to infinite and
-max-speed modes; PPS-limited mode always uses 1). Higher values reduce syscall
-overhead but may increase latency.
+max-speed modes; PPS-limited packet-only runs always use 1, while TCP and mixed
+runs keep this value). Higher values reduce syscall overhead but may increase
+latency. The kernel rejects values above 256.
 
 | Value | Description |
 |-------|-------------|
-| `64` | Default; tuned for high throughput |
+| `256` | Default; the kernel maximum, tuned for high throughput |
+| `64` | Previous default; up to about 17% fewer pps per core on a 100G NIC |
 | `1` | One packet per syscall (lowest latency, much lower pps) |
 
 ```shell
-# Use batch size of 64 for improved performance
+# Use a smaller batch to reduce latency
 sudo xdperf run --device eth0 --count 1m --batch-size 64
 
 # Combined with infinite mode for maximum throughput
-sudo xdperf run --device eth0 --count 10k --infinite --batch-size 64 --parallelism 8
+sudo xdperf run --device eth0 --count 10k --infinite --batch-size 256 --parallelism 8
 ```
 
 #### `--otlp-endpoint` / `--otlp-interval` / `--otlp-insecure` / `--otlp-attributes`
