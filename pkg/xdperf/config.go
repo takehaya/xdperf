@@ -30,7 +30,7 @@ type Config struct {
 	PPS         uint64        // 0 = unlimited (max speed)
 	Duration    time.Duration // 0 = not specified
 	Infinite    bool          // enable infinite mode for maximum throughput
-	BatchSize   uint32        // syscall batch size tuning (default: 64)
+	BatchSize   uint32        // syscall batch size tuning (default: 256)
 
 	DurationCountError error // packet-budget error deferred until the plugin traffic mode is known
 	CountFromDuration  bool  // CLI-derived packet budget; ignored by TCP connection repetition
