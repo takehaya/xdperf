@@ -843,7 +843,14 @@ int xdp_tx(struct xdp_md *ctx)
     if (target_len == COPY_CHUNK_SIZE) {
         if (data + COPY_CHUNK_SIZE > data_end)
             return XDP_ABORTED;
-        __builtin_memcpy(data, base->data, COPY_CHUNK_SIZE);
+        // __builtin_memcpy emits 64 byte-sized copies for a packet pointer.
+        // Both sides are unaligned (base->data is at offset 4), so this only
+        // loads on arches with efficient unaligned access (x86, arm64).
+        __u64 *dst = data;
+        const __u64 *src = (const __u64 *)base->data;
+#pragma unroll
+        for (int i = 0; i < COPY_CHUNK_SIZE / 8; i++)
+            dst[i] = src[i];
     } else if (copy_base_packet(ctx, base, target_len) < 0) {
         DEBUG_PRINT("copy_base_packet failed\n");
         return XDP_ABORTED;
