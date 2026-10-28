@@ -71,7 +71,8 @@ static __noinline int copy_base_packet(struct xdp_md *ctx, struct base_packet *b
 volatile __u32 min_packet_size = COPY_CHUNK_SIZE;
 
 // Forward declarations for functions used across program boundaries
-static __always_inline void update_stats_and_index(__u32 local_idx, __u16 target_len, __u8 diff_errors, __u8 checksum_errors);
+static __always_inline void update_stats_and_index(struct pkt_state *state, __u32 local_idx, __u16 target_len, __u8 diff_errors,
+                                                   __u8 checksum_errors);
 
 SEC("xdp")
 int xdp_pass_dummy(struct xdp_md *ctx)
@@ -839,7 +840,18 @@ int xdp_tx(struct xdp_md *ctx)
         return XDP_ABORTED;
     }
 
-    if (copy_base_packet(ctx, base, target_len) < 0) {
+    if (target_len == COPY_CHUNK_SIZE) {
+        if (data + COPY_CHUNK_SIZE > data_end)
+            return XDP_ABORTED;
+        // __builtin_memcpy emits 64 byte-sized copies for a packet pointer.
+        // Both sides are unaligned (base->data is at offset 4), so this only
+        // loads on arches with efficient unaligned access (x86, arm64).
+        __u64 *dst = data;
+        const __u64 *src = (const __u64 *)base->data;
+#pragma unroll
+        for (int i = 0; i < COPY_CHUNK_SIZE / 8; i++)
+            dst[i] = src[i];
+    } else if (copy_base_packet(ctx, base, target_len) < 0) {
         DEBUG_PRINT("copy_base_packet failed\n");
         return XDP_ABORTED;
     }
@@ -879,7 +891,17 @@ int xdp_tx(struct xdp_md *ctx)
     for (int i = 0; i < MAX_DIFFS_PER_PACKET; i++) {
         if (i >= diff_count)
             break;
-        if (!apply_diff(ctx, &diff->diffs[i])) {
+        struct diff_value *dv = &diff->diffs[i];
+        if (dv->size == 2 && dv->offset != 0xFFFF) {
+            __u32 offset = dv->offset;
+            data = (void *)(long)ctx->data;
+            data_end = (void *)(long)ctx->data_end;
+            if (offset > MAX_PACKET_SIZE - 2 || data + offset + 2 > data_end) {
+                diff_errors++;
+                continue;
+            }
+            __builtin_memcpy(data + offset, dv->new_value, 2);
+        } else if (!apply_diff(ctx, dv)) {
             DEBUG_PRINT("apply_diff failed at %d\n", i);
             diff_errors++;
         }
@@ -898,7 +920,7 @@ int xdp_tx(struct xdp_md *ctx)
     // On the first pass, the checksum programs compute and cache the results.
     // On subsequent passes, the cached values are already applied by apply_diff above.
     if (diff->csum_cached) {
-        update_stats_and_index(local_idx, target_len, diff_errors, 0);
+        update_stats_and_index(state, local_idx, target_len, diff_errors, 0);
         DEBUG_PRINT("xdp_tx: csum_cached, skipping checksum\n");
         return XDP_TX;
     }
@@ -1109,12 +1131,12 @@ static __noinline void cache_csum_to_diffs(struct xdp_md *ctx, __u32 local_idx, 
 }
 
 // Helper: update round-robin index and stats (shared by checksum programs)
-static __always_inline void update_stats_and_index(__u32 local_idx, __u16 target_len, __u8 diff_errors, __u8 checksum_errors)
+static __always_inline void update_stats_and_index(struct pkt_state *state, __u32 local_idx, __u16 target_len, __u8 diff_errors,
+                                                   __u8 checksum_errors)
 {
     __u32 zero = 0;
 
     // Update index (round-robin)
-    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
     if (state) {
         __u32 count = state->count;
         if (count > MAX_DIFF_ENTRIES)
@@ -1241,7 +1263,8 @@ int xdp_tx_csum_recalc(struct xdp_md *ctx)
     // Cache computed checksums (and length fields) into diff_entry for future skip
     cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, 1);
 
-    update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
+    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
+    update_stats_and_index(state, local_idx, target_len, diff_errors, checksum_errors);
     DEBUG_PRINT("xdp_tx_csum_recalc: idx=%u len=%u\n", local_idx, target_len);
     return XDP_TX;
 }
@@ -1302,7 +1325,8 @@ int xdp_tx_csum_diff(struct xdp_md *ctx)
     // Cache computed checksums into diff_entry for future skip
     cache_csum_to_diffs(ctx, local_idx, base_idx, checksum_count, 0);
 
-    update_stats_and_index(local_idx, target_len, diff_errors, checksum_errors);
+    struct pkt_state *state = bpf_map_lookup_elem(&pkt_state_map, &zero);
+    update_stats_and_index(state, local_idx, target_len, diff_errors, checksum_errors);
     DEBUG_PRINT("xdp_tx_csum_diff: idx=%u len=%u\n", local_idx, target_len);
     return XDP_TX;
 }
