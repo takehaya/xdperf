@@ -362,7 +362,7 @@ func TestTcpTxReducedScan(t *testing.T) {
 	saved := mixedTxScanDivisors
 	mixedTxScanDivisors = []uint32{4} // 8 / 4: two flows per iteration
 	t.Cleanup(func() { mixedTxScanDivisors = saved })
-	objs := loadTCPObjs(t)
+	objs := loadTCPObjsWith(t, MixedProgramFeatures{Exchange: true}) // only the exchange entry reads mixed_tx_scan
 	if scan, full := MixedTxScan(); scan != 2 || full != 8 {
 		t.Fatalf("scan %d of %d, want 2 of 8", scan, full)
 	}

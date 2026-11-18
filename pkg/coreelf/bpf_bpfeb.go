@@ -441,6 +441,7 @@ type BpfProgramSpecs struct {
 	XdpTxMixed        *ebpf.ProgramSpec `ebpf:"xdp_tx_mixed"`
 	XdpTxTcpMixed     *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed"`
 	XdpTxTcpMixedExt  *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed_ext"`
+	XdpTxTcpMixedXchg *ebpf.ProgramSpec `ebpf:"xdp_tx_tcp_mixed_xchg"`
 }
 
 // BpfMapSpecs contains maps before they are loaded into the kernel.
@@ -612,6 +613,7 @@ type BpfPrograms struct {
 	XdpTxMixed        *ebpf.Program `ebpf:"xdp_tx_mixed"`
 	XdpTxTcpMixed     *ebpf.Program `ebpf:"xdp_tx_tcp_mixed"`
 	XdpTxTcpMixedExt  *ebpf.Program `ebpf:"xdp_tx_tcp_mixed_ext"`
+	XdpTxTcpMixedXchg *ebpf.Program `ebpf:"xdp_tx_tcp_mixed_xchg"`
 }
 
 func (p *BpfPrograms) Close() error {
@@ -630,6 +632,7 @@ func (p *BpfPrograms) Close() error {
 		p.XdpTxMixed,
 		p.XdpTxTcpMixed,
 		p.XdpTxTcpMixedExt,
+		p.XdpTxTcpMixedXchg,
 	)
 }
 

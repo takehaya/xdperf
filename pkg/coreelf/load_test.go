@@ -52,6 +52,7 @@ func TestBpfProgramsLoad(t *testing.T) {
 		{"xdp_rx_tcp_mixed", objs.XdpRxTcpMixed},
 		{"xdp_tx_tcp_mixed_ext", objs.XdpTxTcpMixedExt},
 		{"xdp_rx_tcp_mixed_ext", objs.XdpRxTcpMixedExt},
+		{"xdp_tx_tcp_mixed_xchg", objs.XdpTxTcpMixedXchg},
 	} {
 		if p.prog == nil {
 			t.Errorf("program %s is nil", p.name)

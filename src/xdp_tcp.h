@@ -211,18 +211,20 @@ struct {
 } tcp_payload_map SEC(".maps");
 const volatile __u32 mixed_has_timestamps SEC(".rodata.mixed") = 0;
 const volatile __u32 mixed_has_payload SEC(".rodata.mixed") = 0;
+// RX handles rounds behind this constant; TX has its own entry point
+// (xdp_tx_tcp_mixed_xchg), so the other TX entries compile without them.
 const volatile __u32 mixed_has_exchange SEC(".rodata.mixed") = 0;
-// Flows a TX iteration examines (at most TCP_TX_SCAN). Go lowers it when an
-// old verifier (6.1) rejects the full scan as too large.
+// Flows a TX iteration of the exchange entry examines (at most TCP_TX_SCAN).
+// Go lowers it when an old verifier (6.1) rejects the full scan as too large.
 const volatile __u32 mixed_tx_scan SEC(".rodata.mixed") = TCP_TX_SCAN;
 
 // Request/response rounds. A flow waits for responses when it has a response
 // size or reads until the peer FIN; every other flow keeps the one-way upload.
 // Invariant: a flow requests round k + 1 only after the response of round k is
 // complete, so at most one request is unanswered.
-static __always_inline int tcp_flow_exchange(const struct tcp_flow *f, __u8 until_fin)
+static __always_inline int tcp_flow_exchange(const int exchange, const struct tcp_flow *f, __u8 until_fin)
 {
-    return mixed_has_exchange && (f->resp_target || until_fin);
+    return exchange && (f->resp_target || until_fin);
 }
 // Rounds the flow may request so far: min(N, done + 1), or one with until_fin.
 static __always_inline __u64 tcp_xchg_rounds_allowed(const struct tcp_flow *f, __u8 until_fin)
@@ -611,7 +613,7 @@ static __always_inline int tcp_tx_fail(struct tcp_flow *f, struct tcp_stats *st,
 // Returns the action kind; fills *a. No helper calls inside the lock region.
 static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cfg *cfg, struct tcp_stats *st, __u64 now,
                                          struct tcp_tx_action *a, struct tcp_tx_extra *extra, const int mixed_mode,
-                                         const int timestamps, const int track_closed, int allow_start)
+                                         const int timestamps, const int track_closed, int allow_start, const int exchange)
 {
     int kind = TXA_NONE;
     __u64 rto = cfg->rto_ns;
@@ -694,7 +696,7 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
         __u32 in_flight = f->snd_nxt - f->snd_una;
         __u32 outstanding = f->snd_max - f->snd_una;
         __u64 remaining = ~0ULL; // payload bytes not yet acked (from snd_una)
-        int xchg = tcp_flow_exchange(f, cfg->until_fin);
+        int xchg = tcp_flow_exchange(exchange, f, cfg->until_fin);
         __u8 stop = drain;
         if (xchg) {
             // One request (Q = bytes_target, 0 = none) per received response.
@@ -856,7 +858,7 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
         __u64 since = f->last_send_ns;
         // A response still arriving after our FIN (drain) restarts the probe
         // timer. last_rx_ns comes from the RX CPU's clock: never go backwards.
-        if (tcp_flow_exchange(f, cfg->until_fin) && f->last_rx_ns > since) {
+        if (tcp_flow_exchange(exchange, f, cfg->until_fin) && f->last_rx_ns > since) {
             since = f->last_rx_ns;
             if (now < since)
                 break;
@@ -887,7 +889,7 @@ out:
     if (mixed_mode && mixed_has_payload && a->len) {
         __u64 offset = f->bytes_acked + (__u32)(a->seq - f->snd_una);
         // Every request starts at the beginning of the pattern.
-        if (tcp_flow_exchange(f, cfg->until_fin) && f->bytes_target)
+        if (tcp_flow_exchange(exchange, f, cfg->until_fin) && f->bytes_target)
             offset %= f->bytes_target;
         extra->stream_offset = offset;
     }
@@ -933,11 +935,21 @@ static __noinline int tcp_tx_decide_mixed(struct tcp_flow *f, const struct tcp_t
     if (extended && mixed_has_timestamps)
         decision->extra.timestamps = 0;
     return tcp_tx_decide(f, &tmpl->cfg, st, decision->now, &decision->act, &decision->extra, extended,
-                         extended && mixed_has_timestamps && tmpl->timestamps, 1, decision->allow_start);
+                         extended && mixed_has_timestamps && tmpl->timestamps, 1, decision->allow_start, 0);
+}
+// A separate function, not a flag: the one-way entries keep their code (and
+// their verifier cost on old kernels) free of the round logic.
+static __noinline int tcp_tx_decide_mixed_xchg(struct tcp_flow *f, const struct tcp_template *tmpl, struct tcp_stats *st,
+                                               struct tcp_mixed_decision *decision)
+{
+    if (mixed_has_timestamps)
+        decision->extra.timestamps = 0;
+    return tcp_tx_decide(f, &tmpl->cfg, st, decision->now, &decision->act, &decision->extra, 1,
+                         mixed_has_timestamps && tmpl->timestamps, 1, decision->allow_start, 1);
 }
 
 // Compile separate entry points for basic and extended TCP templates.
-static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
+static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended, const int exchange)
 {
     __u32 zero = 0;
     struct tcp_cfg *cfg = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
@@ -990,7 +1002,8 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
             if (!tmpl)
                 return XDP_ABORTED;
             decision.allow_start = 1;
-            kind = tcp_tx_decide_mixed(sel, tmpl, st, &decision, extended);
+            kind = exchange ? tcp_tx_decide_mixed_xchg(sel, tmpl, st, &decision)
+                            : tcp_tx_decide_mixed(sel, tmpl, st, &decision, extended);
             if (kind != TXA_NONE && kind != TXA_CLOSED) {
                 st->start_permits++;
                 cs->start_permits++;
@@ -1004,7 +1017,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
     sel = NULL;
     __u32 quarantine = 0;
     for (int i = 0; i < TCP_TX_SCAN; i++) {
-        if (i >= mixed_tx_scan)
+        if (exchange && i >= mixed_tx_scan)
             break;
         __u32 idx;
         __u32 cursor = *next;
@@ -1029,7 +1042,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         // Do not carry action state between scan attempts into the verifier.
         decision.act = (struct tcp_tx_action){0};
         decision.extra = (struct tcp_tx_extra){0};
-        kind = tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
+        kind = exchange ? tcp_tx_decide_mixed_xchg(f, tmpl, st, &decision) : tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
         if (kind != TXA_NONE && kind != TXA_CLOSED) {
             sel = f;
             break;
@@ -1125,13 +1138,20 @@ build:;
 SEC("xdp")
 int xdp_tx_tcp_mixed(struct xdp_md *ctx)
 {
-    return tcp_tx_run(ctx, 0);
+    return tcp_tx_run(ctx, 0, 0);
 }
 
 SEC("xdp")
 int xdp_tx_tcp_mixed_ext(struct xdp_md *ctx)
 {
-    return tcp_tx_run(ctx, 1);
+    return tcp_tx_run(ctx, 1, 0);
+}
+
+// Extended entry with request/response rounds (MixedProgramFeatures.Exchange).
+SEC("xdp")
+int xdp_tx_tcp_mixed_xchg(struct xdp_md *ctx)
+{
+    return tcp_tx_run(ctx, 1, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1540,7 +1560,7 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
         // the peer sent data: swallow it, acknowledge it
         __u32 end = in->seq + in->payload_len;
         if (!seq_after(in->seq, f->rcv_nxt) && seq_after(end, f->rcv_nxt)) {
-            if (tcp_flow_exchange(f, until_fin)) {
+            if (tcp_flow_exchange(mixed_has_exchange, f, until_fin)) {
                 __u32 fresh = end - f->rcv_nxt;
                 f->rx_bytes += fresh;
                 f->last_rx_ns = now;
@@ -1570,7 +1590,7 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
             f->rcv_nxt += 1;
             // Only a FIN that ends our rounds early says anything about the
             // peer: after our own FIN (drain) the peer is just answering it.
-            if (state == TF_ESTABLISHED && tcp_flow_exchange(f, until_fin)) {
+            if (state == TF_ESTABLISHED && tcp_flow_exchange(mixed_has_exchange, f, until_fin)) {
                 if (until_fin) {
                     if (!f->rounds_done)
                         tcp_xchg_complete(f, st, 1, now); // the FIN ends the response

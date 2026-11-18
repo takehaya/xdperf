@@ -339,9 +339,16 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 			replacements[name] = m
 		}
 	}
-	if features.Timestamps || features.Payload {
+	if features.Timestamps || features.Payload || features.Exchange {
 		spec.Programs["xdp_tx_tcp_mixed"] = spec.Programs["xdp_tx_tcp_mixed_ext"]
 		spec.Programs["xdp_rx_tcp_mixed"] = spec.Programs["xdp_rx_tcp_mixed_ext"]
+	}
+	// Rounds have their own TX entry (extended builder): the other entries
+	// carry none of that code. RX handles them behind mixed_has_exchange, set
+	// above from the same flag: the two must agree, or a flow would wait for
+	// responses RX never counts.
+	if features.Exchange {
+		spec.Programs["xdp_tx_tcp_mixed"] = spec.Programs["xdp_tx_tcp_mixed_xchg"]
 	}
 	var mixed struct {
 		XdpRxMixed    *ebpf.Program `ebpf:"xdp_rx_mixed"`
@@ -349,9 +356,10 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 		XdpTxMixed    *ebpf.Program `ebpf:"xdp_tx_mixed"`
 		XdpTxTcpMixed *ebpf.Program `ebpf:"xdp_tx_tcp_mixed"`
 	}
-	// An old verifier (6.1) may reject the TX scan with every feature as too
-	// large (E2BIG at 1M processed instructions): examine fewer flows per TX
-	// iteration instead of failing. Newer kernels load the full scan.
+	// An old verifier (6.1) may reject the exchange TX scan with every feature
+	// as too large (E2BIG at 1M processed instructions): examine fewer flows
+	// per TX iteration instead of failing. Newer kernels load the full scan;
+	// the one-way entries ignore mixed_tx_scan.
 	scanVar, ok := spec.Variables["mixed_tx_scan"]
 	if !ok {
 		return fmt.Errorf("mixed constant mixed_tx_scan not found")
@@ -360,8 +368,12 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 	if err := scanVar.Get(&full); err != nil {
 		return fmt.Errorf("get mixed_tx_scan: %w", err)
 	}
+	divisors := []uint32{1} // the one-way entries do not read mixed_tx_scan
+	if features.Exchange {
+		divisors = mixedTxScanDivisors
+	}
 	var err error
-	for i, div := range mixedTxScanDivisors {
+	for i, div := range divisors {
 		scan := full / div
 		if scan == 0 {
 			break
@@ -372,7 +384,7 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 		// Trial loads skip the verifier log: on E2BIG the library would
 		// retry with ever larger log buffers, and a 6.1 log that overflows
 		// turns E2BIG into ENOSPC. The last attempt keeps the log for the error.
-		last := i == len(mixedTxScanDivisors)-1 || full/mixedTxScanDivisors[i+1] == 0
+		last := i == len(divisors)-1 || full/divisors[i+1] == 0
 		err = spec.LoadAndAssign(&mixed, &ebpf.CollectionOptions{
 			MapReplacements: replacements,
 			Programs:        ebpf.ProgramOptions{LogDisabled: !last},
