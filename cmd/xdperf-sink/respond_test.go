@@ -30,6 +30,9 @@ func TestParseRespond(t *testing.T) {
 	if _, err := parseRespond("", 1); err == nil {
 		t.Fatal("accepted -close-after without -respond")
 	}
+	if _, err := parseRespond("0:1", 2); err == nil {
+		t.Fatal("accepted a download with -close-after 2")
+	}
 	if s, err := parseRespond("1:1", 3); err != nil || s.closeAfter != 3 {
 		t.Fatalf("close-after: %+v %v", s, err)
 	}

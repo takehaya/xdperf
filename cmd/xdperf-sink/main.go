@@ -100,6 +100,9 @@ func parseRespond(v string, closeAfter uint64) (*respondSpec, error) {
 	if s.response == 0 {
 		return nil, fmt.Errorf("-respond needs a response size above 0")
 	}
+	if s.request == 0 && closeAfter > 1 {
+		return nil, fmt.Errorf("-respond 0:R sends one response; -close-after must be 0 or 1")
+	}
 	return &s, nil
 }
 

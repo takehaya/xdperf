@@ -140,6 +140,11 @@ func TestTCPExchangeValidation(t *testing.T) {
 			cfg:    func(x *Xdperf) { x.cfg.Count, x.cfg.Duration = 0, 0 },
 			want:   "rounds 0 runs until --duration or --count",
 		},
+		"rounds 0 with close server": {
+			mutate: func(f *guest.TCPFlowVariant) { f.Flows[0].Rounds = u32p(0); f.Close = "server" },
+			cfg:    func(x *Xdperf) { x.cfg.Count, x.cfg.Duration = 0, time.Second },
+			want:   "rounds 0 has no last round",
+		},
 		"rounds 0 with connections": {
 			mutate: func(f *guest.TCPFlowVariant) { f.Flows[0].Rounds = u32p(0); f.Connections = u32p(8) },
 			cfg:    func(x *Xdperf) { x.cfg.Count, x.cfg.Duration = 0, time.Second },

@@ -105,6 +105,9 @@ func parseTCPExchange(f *guest.TCPFlowVariant, timed bool) ([]tcpExchangeFlow, b
 		if out[i].rounds == 0 && !timed {
 			return nil, false, fmt.Errorf("flow %d: rounds 0 runs until --duration or --count", i)
 		}
+		if out[i].rounds == 0 && f.Close == "server" {
+			return nil, false, fmt.Errorf("flow %d: rounds 0 has no last round, so close server would always count the peer FIN as early", i)
+		}
 		if out[i].rounds == 0 && f.Connections != nil {
 			return nil, false, fmt.Errorf("flow %d: rounds 0 never closes, so it cannot be used with connections", i)
 		}
