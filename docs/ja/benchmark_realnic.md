@@ -4,6 +4,8 @@ XDPerf を実機の 100G NIC で計測した。
 送信も受信も xdperf（XDP）で行い、DPDK は使わない。
 片方向スループットに加えて、Both Mode（`--send --recv`）と対向のエコー（`--swap-resp`）を組み合わせた往復スループットを測る。
 
+別環境での [M3（ConnectX-7 400G）の実測結果](benchmarks/m3-realnic/README.md) も参照できる。
+
 ## 構成
 
 ```mermaid
