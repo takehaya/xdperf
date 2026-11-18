@@ -49,6 +49,7 @@ func main() {
 	interval := flag.Duration("interval", time.Second, "stats print interval (0 = disable)")
 	readBuf := flag.Int("read-buf", 256*1024, "per-connection read buffer size")
 	xdpPassDev := flag.String("xdp-pass-dev", "", "attach a pass-through XDP program to this device (veth test beds only, see comment in source)")
+	netkitFastpath := flag.String("netkit-fastpath", "", "attach TCX/netkit redirect fastpath (<ingress-dev>:<netkit-primary-dev>:<pod-ipv4>)")
 	showVersion := flag.Bool("v", false, "print the version and exit")
 	flag.Parse()
 
@@ -72,6 +73,12 @@ func main() {
 			log.Fatalf("attach XDP pass program to %s: %v", *xdpPassDev, err)
 		}
 		defer detachXDPPass()
+	}
+	if *netkitFastpath != "" {
+		if err := attachNetkitFastpath(*netkitFastpath); err != nil {
+			log.Fatalf("attach netkit fastpath (%s): %v", *netkitFastpath, err)
+		}
+		defer detachNetkitFastpath()
 	}
 
 	var c counters

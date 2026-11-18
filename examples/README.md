@@ -54,6 +54,7 @@ Always run teardown after a failed test as well.
 | [tcp-vxlan](tcp-vxlan/README.md) | TCP through Linux VXLAN with IPv4/IPv6 and outer UDP zero/LCO checksums |
 | [tcp-tunnels](tcp-tunnels/README.md) | GRE, IPIP, SRv6, MPLS, GTP-U, and asymmetric replies |
 | [tcp-payload](tcp-payload/README.md) | Timestamps, payload patterns, per-flow source IPs, and ACK loss |
+| [tcp-netkit](tcp-netkit/README.md) | Guardrail check for direct TX on `netkit`, plus TCP streams (`tcpflow.go`) and mixed UDP+TCP (`mixed.go`) forwarded into `netkit` L2 and L3 Pod namespaces |
 | [otlp-metrics](otlp-metrics/) | OTLP metrics push (`--otlp-endpoint`) to an OTel Collector in docker. Verifies the exported counters via the prometheus exporter. SKIPs without docker |
 
 ## Veth queues
