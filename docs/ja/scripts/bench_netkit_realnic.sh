@@ -46,13 +46,7 @@ ssh_rx() {
 }
 
 cleanup_remote() {
-    ssh_tx "sudo bash -c '
-        ip route del ${POD_SUBNET} via ${RX_HOST_IP} dev ${TX_DEV} 2>/dev/null || true
-        if [[ \"${TX_HOST}\" == ipa-* ]]; then
-            ip addr flush dev ${TX_DEV} 2>/dev/null || true
-            ip link set ${TX_DEV} down 2>/dev/null || true
-        fi
-    '" || true
+    ssh_tx "sudo ip route del ${POD_SUBNET} via ${RX_HOST_IP} dev ${TX_DEV} 2>/dev/null || true" || true
     ssh_rx "sudo bash -c '
         kill -INT \$(cat ${REMOTE_DIR}/sink.pid 2>/dev/null) \$(cat ${REMOTE_DIR}/fp.pid 2>/dev/null) 2>/dev/null || true
         sleep 0.2
@@ -61,10 +55,6 @@ cleanup_remote() {
         ip netns del b-rx 2>/dev/null || true
         ip link del edut 2>/dev/null || true
         rm -f ${REMOTE_DIR}/sink.pid ${REMOTE_DIR}/fp.pid
-        if [[ \"${RX_HOST}\" == ipa-* ]]; then
-            ip addr flush dev ${RX_DEV} 2>/dev/null || true
-            ip link set ${RX_DEV} down 2>/dev/null || true
-        fi
     '" || true
 }
 trap cleanup_remote EXIT
@@ -74,8 +64,6 @@ setup_mode() {
     ssh_rx "sudo bash -e -c '
         kill -INT \$(cat ${REMOTE_DIR}/sink.pid 2>/dev/null) \$(cat ${REMOTE_DIR}/fp.pid 2>/dev/null) 2>/dev/null || true
         sleep 0.2
-        ip link set ${RX_DEV} up
-        ip addr replace ${RX_HOST_IP}/24 dev ${RX_DEV}
         sysctl -qw net.ipv4.ip_forward=1
         iptables -C FORWARD -i ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || \
             iptables -I FORWARD 1 -i ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT
@@ -164,6 +152,10 @@ PY
             fi
             sleep 0.1
         done
+        if ! grep -q listening ${REMOTE_DIR}/sink.log 2>/dev/null; then
+            cat ${REMOTE_DIR}/sink.log >&2 || true
+            exit 1
+        fi
         if [ -f ${REMOTE_DIR}/fp.pid ]; then
             for _ in \$(seq 1 50); do
                 if grep -q listening ${REMOTE_DIR}/fp.log 2>/dev/null; then
@@ -171,12 +163,14 @@ PY
                 fi
                 sleep 0.1
             done
+            if ! grep -q listening ${REMOTE_DIR}/fp.log 2>/dev/null; then
+                cat ${REMOTE_DIR}/fp.log >&2 || true
+                exit 1
+            fi
         fi
     '"
     ssh_tx "sudo bash -e -c '
         rm -f ${REMOTE_DIR}/tx.log ${REMOTE_DIR}/flows.csv
-        ip link set ${TX_DEV} up
-        ip addr replace ${TX_IP}/24 dev ${TX_DEV}
         ok=0
         for _ in \$(seq 1 20); do
             if ip route replace ${POD_SUBNET} via ${RX_HOST_IP} dev ${TX_DEV} 2>/dev/null &&
