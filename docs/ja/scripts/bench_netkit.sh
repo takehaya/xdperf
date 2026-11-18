@@ -44,7 +44,29 @@ cleanup_all() {
 trap cleanup_all EXIT
 
 softnet_processed() {
-    awk '{ sum += strtonum("0x" $1) } END { print sum }' /proc/net/softnet_stat
+    python3 -c '
+with open("/proc/net/softnet_stat") as f:
+    print(sum(int(line.split()[0], 16) for line in f if line.strip()))
+'
+}
+
+wait_sink_ready() {
+    local pid="$1" log="$2" label="$3"
+    local i
+    for i in $(seq 1 50); do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            echo "Error: ${label} exited early:" >&2
+            cat "${log}" >&2 || true
+            return 1
+        fi
+        if grep -q "listening" "${log}" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    echo "Error: ${label} did not become ready within 5s:" >&2
+    cat "${log}" >&2 || true
+    return 1
 }
 
 setup_mode() {
@@ -100,11 +122,14 @@ setup_mode() {
     fi
 
     ip netns exec b-dut sysctl -qw net.ipv4.ip_forward=1
+    : > "${WORK_DIR}/pass.log"
+    : > "${WORK_DIR}/sink.log"
     ip netns exec b-dut "${SINK_BIN}" -proto udp -listen 127.0.0.1:1 -interval 0 -xdp-pass-dev vdut $fp_arg >"${WORK_DIR}/pass.log" 2>&1 &
     PASS_PID=$!
     ip netns exec b-rx "${SINK_BIN}" -listen 10.200.2.2:5201 -interval 0 >"${WORK_DIR}/sink.log" 2>&1 &
     SINK_PID=$!
-    sleep 0.3
+    wait_sink_ready "${PASS_PID}" "${WORK_DIR}/pass.log" "DUT helper"
+    wait_sink_ready "${SINK_PID}" "${WORK_DIR}/sink.log" "RX sink"
     ip netns exec b-tx ping -c 1 -W 1 10.200.2.2 >/dev/null
 }
 

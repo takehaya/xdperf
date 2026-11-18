@@ -109,7 +109,10 @@ func (x *Xdperf) attachXDP(prog *ebpf.Program, dev *net.Interface) (link.Link, e
 // state (which scenarios like simpleudp-no-rx-attach exercise intentionally).
 // isLiveFrameTXUnsupported reports whether a probed device lacks the
 // ndo_xdp_xmit path needed for live-frame TX.
-func isLiveFrameTXUnsupported(res *probe.ProbeResult, linkType string) bool {
+func isLiveFrameTXUnsupported(res *probe.ProbeResult, linkType string, flags net.Flags) bool {
+	if flags&net.FlagLoopback != 0 || linkType == "netkit" {
+		return true
+	}
 	switch {
 	case res.XDPFeatures != nil && linkType != "veth":
 		return !res.LiveFrameMode
@@ -132,7 +135,7 @@ func checkLiveFrameTXSupport(dev *net.Interface) error {
 	if nlLink, lerr := netlink.LinkByIndex(dev.Index); lerr == nil {
 		linkType = nlLink.Type()
 	}
-	if isLiveFrameTXUnsupported(res, linkType) {
+	if isLiveFrameTXUnsupported(res, linkType, dev.Flags) {
 		if linkType == "netkit" {
 			return fmt.Errorf("device %s (netkit) does not support native XDP or ndo_xdp_xmit required for live-frame TX; run xdperf on the sending veth, SR-IOV VF, or physical NIC instead", dev.Name)
 		}

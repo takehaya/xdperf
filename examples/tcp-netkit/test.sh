@@ -34,7 +34,37 @@ if [ "${lf}" -eq 1 ]; then
     exit "${SKIP_EXIT_CODE}"
 fi
 
-trap stop_nk_processes EXIT
+cleanup_test() {
+    ip netns exec "${NS_DUT}" sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
+    stop_nk_processes
+}
+trap cleanup_test EXIT
+
+start_dut_helper() {
+    stop_pidfile "${PASS_PID_FILE}" xdperf-sink
+    : > "${PASS_LOG}"
+    setsid ip netns exec "${NS_DUT}" "${SINK_BIN}" -proto udp -listen 127.0.0.1:1 -interval 0 \
+        -xdp-pass-dev "${VETH_DUT}" "$@" > "${PASS_LOG}" 2>&1 &
+    local pid=$!
+    echo "${pid}" > "${PASS_PID_FILE}"
+    local i
+    for i in $(seq 1 50); do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            print_error "DUT helper exited early (log: ${PASS_LOG})"
+            cat "${PASS_LOG}" 2>/dev/null || true
+            rm -f "${PASS_PID_FILE}"
+            return 1
+        fi
+        if ip netns exec "${NS_DUT}" ip -d link show dev "${VETH_DUT}" 2>/dev/null | grep -q "prog/xdp" &&
+           grep -q "listening" "${PASS_LOG}" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    print_error "DUT helper did not become ready in ${NS_DUT} (log: ${PASS_LOG})"
+    cat "${PASS_LOG}" 2>/dev/null || true
+    return 1
+}
 
 # 1. Negative check: attempting to transmit directly on a netkit interface must
 # fail immediately with a clear error instead of silently dropping frames.
@@ -55,20 +85,7 @@ print_success "Case 1 PASS: direct live-frame TX on netkit rejected with guidanc
 
 # Attach pass-through XDP on the DUT's ingress veth so its NAPI wakes for
 # live-frame XDP_TX packets coming from NS_TX.
-setsid ip netns exec "${NS_DUT}" "${SINK_BIN}" -proto udp -listen 127.0.0.1:1 -interval 0 \
-    -xdp-pass-dev "${VETH_DUT}" > "${PASS_LOG}" 2>&1 &
-echo "$!" > "${PASS_PID_FILE}"
-for _ in $(seq 1 50); do
-    if ip netns exec "${NS_DUT}" ip -d link show dev "${VETH_DUT}" 2>/dev/null | grep -q "prog/xdp"; then
-        break
-    fi
-    sleep 0.1
-done
-if ! ip netns exec "${NS_DUT}" ip -d link show dev "${VETH_DUT}" 2>/dev/null | grep -q "prog/xdp"; then
-    print_error "pass-through XDP did not attach to ${VETH_DUT}"
-    cat "${PASS_LOG}" 2>/dev/null || true
-    exit 1
-fi
+start_dut_helper
 
 start_nk_sink() {
     local ns="$1" listen="$2"
@@ -163,17 +180,13 @@ python3 "${TCP_PY_DIR}/verify.py" mixed "${report_l2}" "${SINK_LOG}" "${TX_LOG}"
 print_success "Case 3 PASS: mixed UDP + TCP flows verified into netkit L2 Pod"
 
 # 4. TCP stream into netkit L3 Pod via TCX + netkit_peer BPF redirect fastpath
-print_info "Case 4 (netkit L3 BPF fastpath): ${FLOWS} TCP flows x ${BYTES} bytes via bpf_redirect_peer + bpf_redirect_neigh"
-stop_pidfile "${PASS_PID_FILE}" xdperf-sink
-setsid ip netns exec "${NS_DUT}" "${SINK_BIN}" -proto udp -listen 127.0.0.1:1 -interval 0 \
-    -xdp-pass-dev "${VETH_DUT}" -netkit-fastpath "${VETH_DUT}:${NK_DUT_L3}:${RX_L3_IP4}" > "${PASS_LOG}" 2>&1 &
-echo "$!" > "${PASS_PID_FILE}"
-for _ in $(seq 1 50); do
-    if ip netns exec "${NS_DUT}" ip -d link show dev "${VETH_DUT}" 2>/dev/null | grep -q "prog/xdp"; then
-        break
-    fi
-    sleep 0.1
-done
+# Disable standard IPv4 forwarding on the DUT after neighbor resolution so the
+# test only passes when both BPF redirects (bpf_redirect_peer and
+# bpf_redirect_neigh) actively forward the packets.
+print_info "Case 4 (netkit L3 BPF fastpath): ${FLOWS} TCP flows x ${BYTES} bytes via bpf_redirect_peer + bpf_redirect_neigh (ip_forward=0)"
+ip netns exec "${NS_TX}" ping -c 1 -W 1 "${RX_L3_IP4}" >/dev/null
+ip netns exec "${NS_DUT}" sysctl -qw net.ipv4.ip_forward=0
+start_dut_helper -netkit-fastpath "${VETH_DUT}:${NK_DUT_L3}:${RX_L3_IP4}"
 start_nk_sink "${NS_RX_L3}" "${RX_L3_IP4}:${DST_PORT}"
 report_fp="${XDPERF_EXAMPLE_RUNDIR}/nk-l3-fastpath-flows.csv"
 if ! ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
@@ -184,6 +197,7 @@ if ! ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
     exit 1
 fi
 stop_pidfile "${SINK_PID_FILE}" xdperf-sink
+ip netns exec "${NS_DUT}" sysctl -qw net.ipv4.ip_forward=1
 
 verify_tcp_flows "${report_fp}" "${SINK_LOG}" "${FLOWS}" "${expected_bytes}"
 print_success "Case 4 PASS: ${FLOWS} TCP flows (${expected_bytes} bytes) verified via netkit L3 BPF fastpath"

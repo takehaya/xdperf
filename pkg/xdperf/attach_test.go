@@ -21,6 +21,7 @@ func TestIsLiveFrameTXUnsupported(t *testing.T) {
 		name     string
 		res      probe.ProbeResult
 		linkType string
+		flags    net.Flags
 		want     bool
 	}{
 		{
@@ -54,15 +55,22 @@ func TestIsLiveFrameTXUnsupported(t *testing.T) {
 			want:     true,
 		},
 		{
-			name:     "legacy kernel with active generic attach not falsely rejected",
+			name:     "legacy kernel with active generic attach on veth not falsely rejected",
 			res:      probe.ProbeResult{XDPDriverMode: false, AttachedMode: "generic"},
 			linkType: "veth",
 			want:     false,
 		},
+		{
+			name:     "legacy kernel loopback with active generic attach still rejected",
+			res:      probe.ProbeResult{XDPDriverMode: false, AttachedMode: "generic"},
+			linkType: "device",
+			flags:    net.FlagLoopback,
+			want:     true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isLiveFrameTXUnsupported(&tc.res, tc.linkType); got != tc.want {
-				t.Fatalf("isLiveFrameTXUnsupported(%+v, %q) = %v, want %v", tc.res, tc.linkType, got, tc.want)
+			if got := isLiveFrameTXUnsupported(&tc.res, tc.linkType, tc.flags); got != tc.want {
+				t.Fatalf("isLiveFrameTXUnsupported(%+v, %q, %v) = %v, want %v", tc.res, tc.linkType, tc.flags, got, tc.want)
 			}
 		})
 	}
