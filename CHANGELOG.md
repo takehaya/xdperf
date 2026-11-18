@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.23.1](https://github.com/takehaya/xdperf/compare/v0.23.0...v0.23.1) (2026-11-18)
+
+
+### 🐛 Bug Fixes
+
+* **examples:** gate scenarios on kernel live-frames support, not veth readiness ([#158](https://github.com/takehaya/xdperf/issues/158)) ([19a6081](https://github.com/takehaya/xdperf/commit/19a6081a9893a8b80bd9c7b46b3485bf2b570140))
+* initialize every packet buffer before applying diffs ([#155](https://github.com/takehaya/xdperf/issues/155)) ([b2b7dbf](https://github.com/takehaya/xdperf/commit/b2b7dbf6f231999a5d3cf428c49f69de7befdd74))
+
+
+### ⚡ Performance Improvements
+
+* **cli:** default --batch-size to 256 ([#157](https://github.com/takehaya/xdperf/issues/157)) ([b5fb69f](https://github.com/takehaya/xdperf/commit/b5fb69f4c5370ed46b921cbc2cf78803ca4f945d))
+* streamline fixed-size UDP packet transmission ([#156](https://github.com/takehaya/xdperf/issues/156)) ([a78fc1e](https://github.com/takehaya/xdperf/commit/a78fc1e9b86a7ec0cc9313782de64c59f7267606))
+
 ## [0.23.0](https://github.com/takehaya/xdperf/compare/v0.22.0...v0.23.0) (2026-10-23)
 
 
