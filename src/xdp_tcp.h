@@ -525,6 +525,23 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
     return NULL;
 }
 
+// tcp_slot_flow as a global function, so the verifier checks it once instead
+// of once per scan iteration: the flow index of the slot's current flow, -1
+// without one, -2 when the next generation is still quarantined.
+__noinline int tcp_slot_resolve(__u32 slot, __u64 now)
+{
+    __u32 zero = 0, quarantine = 0;
+    const struct tcp_cfg *cfg = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
+    if (!cfg)
+        return -1;
+    struct tcp_flow *f = tcp_slot_flow(slot, cfg, now, &quarantine);
+    // Only the owner worker advances a slot: this is the index just resolved.
+    __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &slot);
+    if (!f || !current)
+        return quarantine ? -2 : -1;
+    return *current;
+}
+
 // Burst capacity is one. Expired opportunities are discarded, never caught up.
 static __noinline int tcp_start_permit(const struct tcp_cfg *cfg, struct tcp_cpu_state *cs, struct tcp_stats *st, __u64 now)
 {
@@ -564,24 +581,27 @@ static __noinline int tcp_start_flow(const struct tcp_cfg *cfg, struct tcp_cpu_s
     if (!st)
         return -1;
     __u64 now = bpf_ktime_get_ns();
-    __u32 cursor = cs->start_cursor, quarantine = 0;
+    __u32 quarantine = 0;
+    // The cursor stays in the map between iterations (like the TX scan), so
+    // every iteration reaches the loop head in the same verifier state.
     for (int i = 0; i < TCP_TX_SCAN; i++) {
+        __u32 cursor = cs->start_cursor;
         if (cursor >= count)
             cursor = 0;
+        cs->start_cursor = cursor + 1;
         __u32 idx = first + cursor * cs->stride;
-        cursor++;
         if (idx >= MAX_TCP_FLOWS)
             continue;
-        struct tcp_flow *f = tcp_slot_flow(idx, cfg, now, &quarantine);
-        if (f && f->state == TF_CLOSED) {
-            __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &idx);
-            if (!current)
-                continue;
-            cs->start_cursor = cursor;
-            return *current;
-        }
+        int flow = tcp_slot_resolve(idx, now);
+        if (flow == -2)
+            quarantine = 1;
+        if (flow < 0)
+            continue;
+        __u32 key = flow;
+        struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &key);
+        if (f && f->state == TF_CLOSED)
+            return flow;
     }
-    cs->start_cursor = cursor;
     if (quarantine)
         st->start_dropped_quarantine++;
     else if (count <= TCP_TX_SCAN)
@@ -678,16 +698,12 @@ static __always_inline int tcp_tx_step_run(__u32 idx, struct tcp_mixed_decision 
     struct tcp_flow *f;
     __u32 flow = idx;
     if (global->slot_count && !d->allow_start) {
-        __u32 quarantine = 0;
-        f = tcp_slot_flow(idx, global, d->now, &quarantine);
-        // Only this worker advances its slots: the index is the one just resolved.
-        __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &idx);
-        if (!f || !current)
+        int resolved = tcp_slot_resolve(idx, d->now);
+        if (resolved < 0)
             return TXA_NONE;
-        flow = *current;
-    } else {
-        f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
+        flow = resolved;
     }
+    f = bpf_map_lookup_elem(&tcp_flow_map, &flow);
     if (!f)
         return TXA_NONE;
     __u32 group = f->template_id;
