@@ -128,13 +128,17 @@ stack_rx_packets() {
     ip netns exec "$ns" cat "/sys/class/net/${dev}/statistics/rx_packets"
 }
 
-# The sender transmits via BPF_PROG_RUN live frames; probe reports support.
-# Returns 0 if supported, 1 if the kernel lacks support, 2 if probe itself
-# failed (callers must treat 2 as an error, not a SKIP).
+# The sender transmits via BPF_PROG_RUN live frames; this checks that the
+# kernel supports them. Returns 0 if supported, 1 if the kernel lacks support,
+# 2 if probe itself failed (callers must treat 2 as an error, not a SKIP).
+# probe's live_frame_mode is a per-device answer: a veth only advertises
+# ndo_xdp_xmit once its peer has XDP, which the scenarios attach later. Any
+# kernel that reports xdp_features (6.3+) has live frames (5.18+); without
+# xdp_features, live_frame_mode comes from probe's kernel API check.
 # Usage: check_live_frames <namespace> <device>
 check_live_frames() {
     local ns="$1" dev="$2"
     local out
     out="$(ip netns exec "$ns" "${XDPERF_BIN}" probe --device "$dev" --json 2>/dev/null)" || return 2
-    echo "$out" | grep -q '"live_frame_mode"[^,}]*true' || return 1
+    echo "$out" | grep -qE '"xdp_features"|"live_frame_mode"[^,}]*true' || return 1
 }
