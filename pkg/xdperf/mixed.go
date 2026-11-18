@@ -47,7 +47,63 @@ type mixedGroup struct {
 	window, mss          int
 	rto                  time.Duration
 	ipIDShared           uint8
+	// request/response rounds (tcp_cfg)
+	closeByServer, untilFin uint8
+	respTimeoutMs           uint32
 }
+
+// tcpDefaultResponseTimeout applies when response_timeout_ms is 0.
+const tcpDefaultResponseTimeout = 10 * time.Second
+
+// tcpExchangeFlow is the validated round setup of one flow.
+type tcpExchangeFlow struct {
+	resp   uint64
+	rounds uint32
+}
+
+// parseTCPExchange validates the request/response fields of one TCP variant.
+// It returns per-flow targets and whether any flow runs rounds.
+func parseTCPExchange(f *guest.TCPFlowVariant, timed bool) ([]tcpExchangeFlow, bool, error) {
+	out := make([]tcpExchangeFlow, len(f.Flows))
+	hasRounds := f.ResponseUntilFin
+	for i, flow := range f.Flows {
+		if flow.ResponseBytes == "" {
+			if flow.Rounds != nil {
+				return nil, false, fmt.Errorf("flow %d: rounds requires response_bytes", i)
+			}
+			if f.ResponseUntilFin {
+				out[i].rounds = 1
+			}
+			continue
+		}
+		if f.ResponseUntilFin {
+			return nil, false, fmt.Errorf("flow %d: response_until_fin takes the response length from the peer FIN; leave response_bytes empty", i)
+		}
+		r, err := decimalUint64(flow.ResponseBytes)
+		if err != nil {
+			return nil, false, fmt.Errorf("flow %d response_bytes: %w", i, err)
+		}
+		if r == 0 {
+			return nil, false, fmt.Errorf("flow %d: response_bytes must be above 0", i)
+		}
+		out[i] = tcpExchangeFlow{resp: r, rounds: 1}
+		if flow.Rounds != nil {
+			out[i].rounds = *flow.Rounds
+			if out[i].rounds == 0 && (!timed || f.Connections != nil) {
+				return nil, false, fmt.Errorf("flow %d: rounds 0 runs until --duration or --count and cannot be used with connections", i)
+			}
+		}
+		hasRounds = true
+	}
+	if !hasRounds && (f.Close != "" || f.ResponseTimeoutMillis != 0) {
+		return nil, false, fmt.Errorf("close and response_timeout_ms require response_bytes or response_until_fin")
+	}
+	if f.Close != "" && f.Close != "client" && f.Close != "server" {
+		return nil, false, fmt.Errorf("close must be client or server")
+	}
+	return out, hasRounds, nil
+}
+
 type mixedPlan struct {
 	packets                   guest.GeneratorProcessResponse
 	groups                    []mixedGroup
@@ -94,6 +150,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	plan := &mixedPlan{packets: guest.GeneratorProcessResponse{TemplateType: guest.GeneratorTemplateTypeVariable}}
 	plan.packets.VariablePacketTemplate.Pattern = set.Pattern
 	var targets []uint64
+	var exchange []tcpExchangeFlow
 	var destination string
 	var total uint64
 	portBase := 10000
@@ -155,6 +212,12 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		if err := validateTCPFlowParams(v); err != nil {
 			return fmt.Errorf("TCP variant %d: %w", i, err)
 		}
+		timed := x.cfg.Duration > 0 || x.cfg.Count != 0
+		xchg, hasXchg, err := parseTCPExchange(f, timed)
+		if err != nil {
+			return fmt.Errorf("TCP variant %d: %w", i, err)
+		}
+		plan.features.Exchange = plan.features.Exchange || hasXchg
 		payload, err := tcpPayload(f.PayloadPattern)
 		if err != nil {
 			return err
@@ -234,16 +297,34 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 		if f.IPID == "shared" {
 			group.ipIDShared = 1
 		}
+		if hasXchg {
+			if f.Close == "server" {
+				group.closeByServer = 1
+			}
+			if f.ResponseUntilFin {
+				group.untilFin = 1
+			}
+			group.respTimeoutMs = uint32(tcpDefaultResponseTimeout / time.Millisecond)
+			if f.ResponseTimeoutMillis != 0 {
+				group.respTimeoutMs = f.ResponseTimeoutMillis
+			}
+		}
 		if len(v.Params) != 0 {
 			group.templateFirst = nextTemplate
 			nextTemplate += group.count
 			plan.features.TemplateEntries = nextTemplate
 		}
 		plan.groups = append(plan.groups, group)
-		for _, flow := range f.Flows {
+		for k, flow := range f.Flows {
 			b, err := decimalUint64(flow.Bytes)
 			if err != nil {
 				return fmt.Errorf("TCP variant %d bytes: %w", i, err)
+			}
+			exchange = append(exchange, xchg[k])
+			if xchg[k].rounds != 0 {
+				// bytes is the request size: 0 is a download, not unlimited.
+				targets = append(targets, b)
+				continue
 			}
 			if b == 0 && plan.repeat {
 				return fmt.Errorf("connections cannot be used with unlimited bytes (0)")
@@ -256,6 +337,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	}
 	if plan.reuse && len(targets) > plan.connections {
 		targets = targets[:plan.connections]
+		exchange = exchange[:plan.connections]
 		plan.groups[0].count = uint32(len(targets))
 	}
 	plan.totalWeight = uint32(total)
@@ -269,7 +351,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 	if plan.repeat && x.cfg.CountFromDuration {
 		x.cfg.Count = 0
 	}
-	x.tcpVariantBytes, x.mixed = targets, plan
+	x.tcpVariantBytes, x.tcpExchange, x.mixed = targets, exchange, plan
 	x.warnMixedWorkers()
 	return nil
 }

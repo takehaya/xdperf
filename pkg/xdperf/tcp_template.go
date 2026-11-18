@@ -189,6 +189,7 @@ func (x *Xdperf) initTCPTemplates(fallback *tcpTarget, frame []byte, cfg coreelf
 			}
 			c := cfg
 			c.WindowSegs, c.RtoNs, c.IpIdShared = uint32(g.window), uint64(g.rto), g.ipIDShared
+			c.CloseByServer, c.UntilFin, c.RespTimeoutMs = g.closeByServer, g.untilFin, g.respTimeoutMs
 			c.Mss, c.DstPort, c.HdrLen, c.L3Off, c.L4Off, c.IpVersion = tc.mss, tc.dstPort, tc.hdrLen, tc.l3Off, tc.l4Off, tc.ipVersion
 			c.PseudoSum, c.SrcIp, c.DstIp = pseudoHeaderAddrSum(tc.srcIP, tc.dstIP), ipTo4Words(tc.srcIP), ipTo4Words(tc.dstIP)
 			v := coreelf.BpfTcpTemplate{Cfg: c, SynLen: uint8(tcpSynOptLen + len(syn)), DataLen: uint8(len(data))}

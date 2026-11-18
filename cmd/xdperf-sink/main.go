@@ -8,12 +8,16 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -29,6 +33,8 @@ type counters struct {
 	Bytes      atomic.Uint64 `json:"-"`
 	UDPPackets atomic.Uint64 `json:"-"`
 	UDPBytes   atomic.Uint64 `json:"-"`
+	Responses  atomic.Uint64 `json:"-"`
+	RespBytes  atomic.Uint64 `json:"-"`
 }
 
 type summary struct {
@@ -40,7 +46,96 @@ type summary struct {
 	Bytes      uint64  `json:"bytes"`
 	UDPPackets uint64  `json:"udp_packets,omitempty"`
 	UDPBytes   uint64  `json:"udp_bytes,omitempty"`
+	Responses  uint64  `json:"responses,omitempty"`
+	RespBytes  uint64  `json:"response_bytes,omitempty"`
 	Seconds    float64 `json:"seconds"`
+}
+
+// respondSpec is -respond Q:R: after every Q request bytes, write R bytes.
+type respondSpec struct {
+	request, response uint64
+}
+
+func parseSize(v string) (uint64, error) {
+	mult := uint64(1)
+	switch {
+	case strings.HasSuffix(v, "k"):
+		mult, v = 1000, strings.TrimSuffix(v, "k")
+	case strings.HasSuffix(v, "m"):
+		mult, v = 1000*1000, strings.TrimSuffix(v, "m")
+	case strings.HasSuffix(v, "g"):
+		mult, v = 1000*1000*1000, strings.TrimSuffix(v, "g")
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil || n > ^uint64(0)/mult {
+		return 0, fmt.Errorf("invalid size %q", v)
+	}
+	return n * mult, nil
+}
+
+func parseRespond(v string) (*respondSpec, error) {
+	if v == "" {
+		return nil, nil
+	}
+	q, r, ok := strings.Cut(v, ":")
+	if !ok {
+		return nil, fmt.Errorf("-respond wants Q:R, got %q", v)
+	}
+	var s respondSpec
+	var err error
+	if s.request, err = parseSize(q); err != nil {
+		return nil, err
+	}
+	if s.response, err = parseSize(r); err != nil {
+		return nil, err
+	}
+	if s.response == 0 {
+		return nil, fmt.Errorf("-respond needs a response size above 0")
+	}
+	return &s, nil
+}
+
+// serveRespond answers each Q-byte request with R bytes until the peer
+// closes. Q = 0 sends one response right away, then reads until EOF.
+func serveRespond(conn net.Conn, spec *respondSpec, buf []byte, c *counters) {
+	resp := make([]byte, min(spec.response, 1<<20))
+	write := func() error {
+		for left := spec.response; left > 0; {
+			n, err := conn.Write(resp[:min(left, uint64(len(resp)))])
+			left -= uint64(n)
+			c.RespBytes.Add(uint64(n))
+			if err != nil {
+				return err
+			}
+		}
+		c.Responses.Add(1)
+		return nil
+	}
+	if spec.request == 0 {
+		if write() != nil {
+			return
+		}
+	}
+	var got uint64
+	for {
+		n, err := conn.Read(buf)
+		c.Bytes.Add(uint64(n))
+		if spec.request != 0 {
+			// A client that waits for each response never has two
+			// requests in one read, but a pipelining one may.
+			for got += uint64(n); got >= spec.request; got -= spec.request {
+				if write() != nil {
+					return
+				}
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) || got != 0 {
+				log.Printf("connection %s ended with %d of %d request bytes pending: %v", conn.RemoteAddr(), got, spec.request, err)
+			}
+			return
+		}
+	}
 }
 
 func main() {
@@ -51,6 +146,7 @@ func main() {
 	xdpPassDev := flag.String("xdp-pass-dev", "", "attach a pass-through XDP program to this device (veth test beds only, see comment in source)")
 	netkitFastpath := flag.String("netkit-fastpath", "", "attach TCX/netkit redirect fastpath (<ingress-dev>:<netkit-primary-dev>:<pod-ipv4>)")
 	netkitFlowDump := flag.String("netkit-flow-dump", "", "enable 5-tuple LRU_HASH flow counters on -netkit-fastpath and dump JSON to this path on exit")
+	respond := flag.String("respond", "", "TCP only: answer every Q request bytes with R bytes (Q:R, k/m/g suffixes; Q 0 = send R once on accept)")
 	showVersion := flag.Bool("v", false, "print the version and exit")
 	flag.Parse()
 
@@ -60,6 +156,10 @@ func main() {
 	}
 	if *readBuf <= 0 {
 		log.Fatalf("invalid -read-buf %d: must be > 0", *readBuf)
+	}
+	spec, err := parseRespond(*respond)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	// veth quirk: the peer's XDP_TX frames are queued into this device's
@@ -95,7 +195,6 @@ func main() {
 	var ln net.Listener
 	var uc *net.UDPConn
 	if tcpOn {
-		var err error
 		ln, err = net.Listen("tcp", *listen)
 		if err != nil {
 			log.Fatalf("listen tcp %s: %v", *listen, err)
@@ -115,6 +214,10 @@ func main() {
 					defer c.Closed.Add(1)
 					defer conn.Close()
 					buf := make([]byte, *readBuf)
+					if spec != nil {
+						serveRespond(conn, spec, buf, &c)
+						return
+					}
 					for {
 						n, err := conn.Read(buf)
 						c.Bytes.Add(uint64(n))
@@ -176,6 +279,9 @@ func main() {
 			if udpOn {
 				fmt.Printf(" | udp %d pkts %d bytes", c.UDPPackets.Load(), c.UDPBytes.Load())
 			}
+			if spec != nil {
+				fmt.Printf(" | %d responses %d bytes", c.Responses.Load(), c.RespBytes.Load())
+			}
 			fmt.Println()
 			prevBytes = b
 			prevT = now
@@ -198,6 +304,8 @@ func main() {
 				Bytes:      c.Bytes.Load(),
 				UDPPackets: c.UDPPackets.Load(),
 				UDPBytes:   c.UDPBytes.Load(),
+				Responses:  c.Responses.Load(),
+				RespBytes:  c.RespBytes.Load(),
 				Seconds:    time.Since(start).Seconds(),
 			}
 			s.Active = s.Accepted - s.Closed

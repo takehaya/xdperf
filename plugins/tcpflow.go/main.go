@@ -32,10 +32,16 @@ func plugin_process(_, _, _, _ uint32) int32 {
 		TCPPort              uint16  `json:"tcp_port" default:"5201"`
 		Flows                uint16  `json:"flows" default:"4"`
 		Bytes                string  `json:"bytes" default:"65536"`
+		// Request/response rounds: bytes is then the request size.
+		ResponseBytes         string  `json:"response_bytes"`
+		Rounds                *uint32 `json:"rounds"`
+		Close                 string  `json:"close"`
+		ResponseUntilFin      bool    `json:"response_until_fin"`
+		ResponseTimeoutMillis uint32  `json:"response_timeout_ms"`
 	}]()
 	flows := make([]guest.TCPFlow, req.Flows)
 	for i := range flows {
-		flows[i] = guest.TCPFlow{Bytes: req.Bytes}
+		flows[i] = guest.TCPFlow{Bytes: req.Bytes, ResponseBytes: req.ResponseBytes, Rounds: req.Rounds}
 	}
 	// Without base_packet, the host resolves the route and neighbor for TCP.
 	goshim.PluginGeneratorProcessResponse(guest.GeneratorProcessResponse{
@@ -51,6 +57,7 @@ func plugin_process(_, _, _, _ uint32) int32 {
 					Connections: req.Connections,
 					CPS:         req.CPS, PortReuseDelayMillis: req.PortReuseDelayMillis,
 					WindowSegs: req.WindowSegs, MSS: req.MSS, RTOMillis: req.RTOMillis, IPID: req.IPID,
+					Close: req.Close, ResponseUntilFin: req.ResponseUntilFin, ResponseTimeoutMillis: req.ResponseTimeoutMillis,
 				},
 			}},
 		},

@@ -262,6 +262,8 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 		cfg.SlotCount = uint32(x.mixed.flows)
 	}
 	cfg.IpIdShared = x.mixed.groups[0].ipIDShared
+	g0 := x.mixed.groups[0]
+	cfg.CloseByServer, cfg.UntilFin, cfg.RespTimeoutMs = g0.closeByServer, g0.untilFin, g0.respTimeoutMs
 	copy(cfg.HdrTmpl[:], template[:min(int(t.l4Off), len(cfg.HdrTmpl))])
 	zero := uint32(0)
 	if err := x.bpfobjs.TcpCfgMap.Put(&zero, &cfg); err != nil {
@@ -282,6 +284,8 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 			SrcPort:      uint16(x.mixed.portBase + i),
 			Iss:          rand.Uint32(),
 			BytesTarget:  x.tcpVariantBytes[i%x.mixed.flows],
+			RespTarget:   x.tcpExchange[i%x.mixed.flows].resp,
+			RoundsTarget: x.tcpExchange[i%x.mixed.flows].rounds,
 		}
 	}
 	for j, g := range x.mixed.groups {
@@ -889,8 +893,13 @@ loop:
 	// A run whose flows did not complete is a failed measurement: report it
 	// in the exit status, not only in the log (e.g. every SYN refused).
 	if s.Failed > 0 {
-		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d)",
-			s.Failed, x.mixed.connections, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts)
+		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d, response timeouts %d)",
+			s.Failed, x.mixed.connections, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts, s.RespTimeouts)
+	}
+	// A response cut short by the peer FIN is a failed round even though
+	// the connection itself closed cleanly.
+	if s.ShortResponses > 0 {
+		return fmt.Errorf("%d responses ended early with the peer FIN", s.ShortResponses)
 	}
 	return x.writeSummary()
 }
@@ -974,6 +983,11 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpSt
 			AckProbes:              s.AckProbes,
 			WindowProbes:           s.WindowProbes,
 			ChallengeAcks:          s.ChallengeAcks,
+			RoundsDone:             s.RoundsDone,
+			ResponseBytes:          s.RespBytes,
+			ResponseTimeouts:       s.RespTimeouts,
+			ShortResponses:         s.ShortResponses,
+			PeerClosedEarly:        s.PeerClosedEarly,
 		}
 	}
 	x.Logger.Info("tcp final statistics",
@@ -1018,6 +1032,11 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpSt
 		zap.Uint64("ack_probes", s.AckProbes),
 		zap.Uint64("window_probes", s.WindowProbes),
 		zap.Uint64("challenge_acks", s.ChallengeAcks),
+		zap.Uint64("rounds_done", s.RoundsDone),
+		zap.Uint64("response_bytes", s.RespBytes),
+		zap.Uint64("response_timeouts", s.RespTimeouts),
+		zap.Uint64("short_responses", s.ShortResponses),
+		zap.Uint64("peer_closed_early", s.PeerClosedEarly),
 	)
 	return s, nil
 }

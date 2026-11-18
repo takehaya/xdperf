@@ -229,6 +229,16 @@ type TCPFlowVariant struct {
 	// PayloadPattern repeats at the 64-bit stream offset, including retransmits.
 	// At most 256 bytes; empty or all-zero patterns use the zero-payload path.
 	PayloadPattern []byte `json:"payload_pattern,omitempty"`
+	// Close is who closes a request/response flow: "client" (default) sends
+	// FIN after the last response, "server" waits for the peer's FIN.
+	Close string `json:"close,omitempty"`
+	// ResponseUntilFin sends one request and takes everything up to the
+	// peer's FIN as the response (HTTP/1.0 style). Flows leave
+	// response_bytes empty and rounds unset.
+	ResponseUntilFin bool `json:"response_until_fin,omitempty"`
+	// ResponseTimeoutMillis resets a request/response flow that receives
+	// nothing for this long while it waits for the peer: 0 = 10000.
+	ResponseTimeoutMillis uint32 `json:"response_timeout_ms,omitempty"`
 	// Encapsulation requires an explicit base packet and matching patch tables.
 	Encapsulation *TCPEncapsulation `json:"encapsulation,omitempty"`
 	// Destination is an IP literal and port; optional with Base, otherwise required.
@@ -244,8 +254,16 @@ type TCPFlowVariant struct {
 }
 
 // TCPFlow.Bytes is a decimal uint64 string; zero requires --count or --duration.
+// With ResponseBytes, Bytes is the size of each request and zero means no
+// request (a download).
 type TCPFlow struct {
 	Bytes string `json:"bytes"`
+	// ResponseBytes is a decimal uint64 string above zero: the peer answers
+	// each request with this many bytes. Empty keeps the one-way upload.
+	ResponseBytes string `json:"response_bytes,omitempty"`
+	// Rounds is the number of request/response rounds: nil = 1, 0 = until
+	// --duration or --count. Requires ResponseBytes.
+	Rounds *uint32 `json:"rounds,omitempty"`
 }
 
 // TCPEncapsulation declares mutable outer-header fields. Offsets are absolute
