@@ -154,8 +154,13 @@ func TestServeRespondCloseAfter(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectEOF(t, client)
+	// The server half-closes and waits for our FIN.
+	if err := client.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
 	waitServed(t, done)
-	// Rounds: the server closes after the second response.
+	// Rounds: the server closes after the second response. A third request
+	// already in flight is read and dropped, not answered with RST.
 	client, c, done := respondPair(t, respondSpec{request: 5, response: 50, closeAfter: 2}, 4096)
 	for i := 0; i < 2; i++ {
 		if _, err := client.Write(make([]byte, 5)); err != nil {
@@ -165,9 +170,15 @@ func TestServeRespondCloseAfter(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := client.Write(make([]byte, 5)); err != nil {
+		t.Fatal(err)
+	}
 	expectEOF(t, client)
+	if err := client.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
 	waitServed(t, done)
-	if c.Responses.Load() != 2 || c.Errors.Load() != 0 {
-		t.Fatalf("counters: %d %d", c.Responses.Load(), c.Errors.Load())
+	if c.Responses.Load() != 2 || c.Errors.Load() != 0 || c.Bytes.Load() != 15 {
+		t.Fatalf("counters: %d %d %d", c.Responses.Load(), c.Errors.Load(), c.Bytes.Load())
 	}
 }

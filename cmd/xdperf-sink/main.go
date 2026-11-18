@@ -125,14 +125,28 @@ func serveRespond(conn net.Conn, spec *respondSpec, buf []byte, c *counters) {
 		sent++
 		return nil
 	}
-	// done reports whether the connection should be closed now.
+	// done reports whether the server should close now.
 	done := func() bool { return spec.closeAfter != 0 && sent >= spec.closeAfter }
+	// closeFirst sends our FIN, then reads until the peer's: a full close
+	// with unread data would answer a request already in flight with RST.
+	closeFirst := func() {
+		if tc, ok := conn.(*net.TCPConn); ok && tc.CloseWrite() == nil {
+			for {
+				n, err := conn.Read(buf)
+				c.Bytes.Add(uint64(n))
+				if err != nil {
+					return
+				}
+			}
+		}
+	}
 	if spec.request == 0 {
 		if err := write(); err != nil {
 			c.Errors.Add(1)
 			return
 		}
 		if done() {
+			closeFirst()
 			return
 		}
 	}
@@ -149,6 +163,7 @@ func serveRespond(conn net.Conn, spec *respondSpec, buf []byte, c *counters) {
 					return
 				}
 				if done() {
+					closeFirst()
 					return
 				}
 			}
