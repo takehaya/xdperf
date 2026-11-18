@@ -75,6 +75,12 @@ func (x *Xdperf) attachXDP(prog *ebpf.Program, dev *net.Interface) (link.Link, e
 			x.Logger.Info("XDP attached in generic (SKB) mode; expect much lower performance than native mode",
 				zap.String("device", dev.Name))
 		}
+		if x.cfg.Sender && x.Device != nil && dev.Index == x.Device.Index {
+			if err := checkLiveFrameTXSupport(dev); err != nil {
+				_ = l.Close()
+				return nil, err
+			}
+		}
 		return l, nil
 	}
 	if mode != XDPModeAuto {
@@ -89,6 +95,12 @@ func (x *Xdperf) attachXDP(prog *ebpf.Program, dev *net.Interface) (link.Link, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to attach XDP program in both default and generic mode: %w", errors.Join(defaultErr, err))
 	}
+	if x.cfg.Sender && x.Device != nil && dev.Index == x.Device.Index {
+		if err := checkLiveFrameTXSupport(dev); err != nil {
+			_ = l.Close()
+			return nil, err
+		}
+	}
 	x.Logger.Warn("default XDP attach failed; fell back to generic (SKB) mode with much lower performance",
 		zap.String("device", dev.Name),
 		zap.NamedError("default_attach_error", defaultErr))
@@ -101,20 +113,20 @@ func (x *Xdperf) attachXDP(prog *ebpf.Program, dev *net.Interface) (link.Link, e
 // BPF_PROG_RUN succeed while xdp_do_redirect_frame silently drops every frame
 // with -EOPNOTSUPP.
 //
-// On kernels 6.3+ (XDPFeatures != nil), non-veth drivers are checked via
-// LiveFrameMode (NETDEV_XDP_ACT_NDO_XMIT) so drivers implementing only
-// NETDEV_XDP_ACT_BASIC without ndo_xdp_xmit are also rejected. veth is checked
-// via XDPDriverMode because veth_xdp_xmit is always implemented by the driver
-// whereas its NDO_XMIT feature bit is toggled dynamically by the peer's XDP/GRO
-// state (which scenarios like simpleudp-no-rx-attach exercise intentionally).
-// isLiveFrameTXUnsupported reports whether a probed device lacks the
-// ndo_xdp_xmit path needed for live-frame TX.
+// On kernels 6.3+ (XDPFeatures != nil), NIC drivers such as mlx5_core, ice,
+// i40e, and virtio_net only set NETDEV_XDP_ACT_NDO_XMIT (LiveFrameMode) via
+// xdp_features_set_redirect_target() once an XDP program is attached to the
+// device. Therefore, pre-attach (AttachedMode == "") requires XDPDriverMode
+// (NETDEV_XDP_ACT_BASIC), and post-attach (AttachedMode != "") on non-veth
+// devices requires LiveFrameMode (NETDEV_XDP_ACT_NDO_XMIT). veth is always
+// checked via XDPDriverMode because its NDO_XMIT bit is toggled by the peer's
+// XDP/GRO state (which scenarios like simpleudp-no-rx-attach exercise).
 func isLiveFrameTXUnsupported(res *probe.ProbeResult, linkType string, flags net.Flags) bool {
 	if flags&net.FlagLoopback != 0 || linkType == "netkit" {
 		return true
 	}
 	switch {
-	case res.XDPFeatures != nil && linkType != "veth":
+	case res.XDPFeatures != nil && linkType != "veth" && res.AttachedMode != "":
 		return !res.LiveFrameMode
 	case res.XDPFeatures != nil:
 		return !res.XDPDriverMode

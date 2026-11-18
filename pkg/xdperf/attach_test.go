@@ -25,16 +25,22 @@ func TestIsLiveFrameTXUnsupported(t *testing.T) {
 		want     bool
 	}{
 		{
-			name:     "non-veth with BASIC and NDO_XMIT supported",
-			res:      probe.ProbeResult{XDPDriverMode: true, LiveFrameMode: true, XDPFeatures: &featBasicAndXmit},
+			name:     "non-veth pre-attach with BASIC only (e.g. mlx5 before XDP attach) accepted",
+			res:      probe.ProbeResult{XDPDriverMode: true, LiveFrameMode: false, AttachedMode: "", XDPFeatures: &featBasicOnly},
 			linkType: "device",
 			want:     false,
 		},
 		{
-			name:     "non-veth with BASIC only (no NDO_XMIT) rejected",
-			res:      probe.ProbeResult{XDPDriverMode: true, LiveFrameMode: false, XDPFeatures: &featBasicOnly},
+			name:     "non-veth post-attach with BASIC only (no NDO_XMIT) rejected",
+			res:      probe.ProbeResult{XDPDriverMode: true, LiveFrameMode: false, AttachedMode: "driver", XDPFeatures: &featBasicOnly},
 			linkType: "device",
 			want:     true,
+		},
+		{
+			name:     "non-veth post-attach with BASIC and NDO_XMIT supported",
+			res:      probe.ProbeResult{XDPDriverMode: true, LiveFrameMode: true, AttachedMode: "driver", XDPFeatures: &featBasicAndXmit},
+			linkType: "device",
+			want:     false,
 		},
 		{
 			name:     "veth with unready peer (BASIC only) accepted",
