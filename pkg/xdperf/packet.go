@@ -11,6 +11,9 @@ import (
 func (x *Xdperf) BuildSamplePacket() ([]byte, error) {
 	buf := gopacket.NewSerializeBuffer()
 	payloadLen := 1500
+	if x.mixed == nil && x.initialPacketLen != 0 {
+		payloadLen = int(x.initialPacketLen)
+	}
 	var ethLayer gopacket.SerializableLayer
 	var ipLayer gopacket.SerializableLayer
 	var udpLayer *layers.UDP
@@ -48,4 +51,24 @@ func (x *Xdperf) BuildSamplePacket() ([]byte, error) {
 		return nil, fmt.Errorf("failed to serialize packet: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// uniformPacketLen uses the effective lengths consumed by xdp_tx, including
+// Raw entries and entries whose zero length falls back to their base.
+func uniformPacketLen(bases []BasePacketInfo, entries []DiffEntry) uint16 {
+	var length uint16
+	for _, entry := range entries {
+		if int(entry.BaseIdx) >= len(bases) {
+			return 0
+		}
+		n := entry.PacketLen
+		if n == 0 {
+			n = bases[entry.BaseIdx].Base.Length
+		}
+		if n < 64 || n >= 1500 || (length != 0 && n != length) {
+			return 0
+		}
+		length = n
+	}
+	return length
 }

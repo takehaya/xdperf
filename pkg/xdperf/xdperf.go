@@ -43,6 +43,8 @@ type Xdperf struct {
 	otlpMeter       metric.Meter
 	summary         *runSummary
 	cpus            []int // resolved CPU list for workers
+
+	initialPacketLen uint16 // zero keeps the default live-frame length
 }
 
 // calculateDiffMapSize requires a validated config with positive Parallelism.
@@ -384,6 +386,7 @@ func (x *Xdperf) initPacketGeneration(resp *guest.GeneratorProcessResponse) erro
 		return fmt.Errorf("failed to init BPF maps: %w", err)
 	}
 
+	x.initialPacketLen = uniformPacketLen(bases, diffEntries)
 	return nil
 }
 
