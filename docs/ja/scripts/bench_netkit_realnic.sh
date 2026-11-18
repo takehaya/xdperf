@@ -11,7 +11,7 @@ TX_DEV="${TX_DEV:-enp1s0np0}"
 RX_DEV="${RX_DEV:-enp1s0np0}"
 TX_IP="${TX_IP:-192.168.20.2}"
 RX_HOST_IP="${RX_HOST_IP:-192.168.20.1}"
-TX_CPU_START="${TX_CPU_START:-16}"
+TX_CPU_START="${TX_CPU_START-16}"
 POD_SUBNET="${POD_SUBNET:-10.200.2.0/24}"
 POD_GW="${POD_GW:-10.200.2.1}"
 POD_IP="${POD_IP:-10.200.2.2}"
@@ -50,6 +50,10 @@ cleanup_remote() {
     ssh_rx "sudo bash -c '
         kill -INT \$(cat ${REMOTE_DIR}/sink.pid 2>/dev/null) \$(cat ${REMOTE_DIR}/fp.pid 2>/dev/null) 2>/dev/null || true
         sleep 0.2
+        if [ -f ${REMOTE_DIR}/orig_ip_forward ]; then
+            sysctl -qw net.ipv4.ip_forward=\$(cat ${REMOTE_DIR}/orig_ip_forward) 2>/dev/null || true
+            rm -f ${REMOTE_DIR}/orig_ip_forward
+        fi
         while iptables -D FORWARD -i ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null; do :; done
         while iptables -D FORWARD -o ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null; do :; done
         ip netns del b-rx 2>/dev/null || true
@@ -62,8 +66,12 @@ trap cleanup_remote EXIT
 setup_mode() {
     local mode="$1"
     ssh_rx "sudo bash -e -c '
+        mkdir -p ${REMOTE_DIR}
         kill -INT \$(cat ${REMOTE_DIR}/sink.pid 2>/dev/null) \$(cat ${REMOTE_DIR}/fp.pid 2>/dev/null) 2>/dev/null || true
         sleep 0.2
+        if [ ! -f ${REMOTE_DIR}/orig_ip_forward ]; then
+            sysctl -n net.ipv4.ip_forward > ${REMOTE_DIR}/orig_ip_forward
+        fi
         sysctl -qw net.ipv4.ip_forward=1
         iptables -C FORWARD -i ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || \
             iptables -I FORWARD 1 -i ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT
