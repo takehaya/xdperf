@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"reflect"
 	"structs"
+	"sync/atomic"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 )
 
 // MaxDiffEntries is the maximum number of diff entries per CPU. This MUST match
@@ -260,6 +262,18 @@ type MixedProgramFeatures struct {
 	TemplateEntries uint32
 }
 
+// mixedTxScanDivisors reduce the flows a TCP TX iteration examines (the
+// mixed_tx_scan default, TCP_TX_SCAN in src/xdp_tcp.h) when the verifier
+// rejects the program as too large.
+var mixedTxScanDivisors = []uint32{1, 2, 4}
+
+var mixedTxScan, mixedTxScanMax atomic.Uint32
+
+// MixedTxScan reports how many flows a TCP TX iteration examines in the last
+// loaded mixed programs, and the full scan they were built for (0, 0 before
+// the first load).
+func MixedTxScan() (scan, full uint32) { return mixedTxScan.Load(), mixedTxScanMax.Load() }
+
 // LoadMixedProgramsWithFeatures specializes builders before verification. The
 // caller must include every template used for TX and RX replies, and must not
 // widen their requirements after loading. The first successful load wins.
@@ -335,7 +349,46 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 		XdpTxMixed    *ebpf.Program `ebpf:"xdp_tx_mixed"`
 		XdpTxTcpMixed *ebpf.Program `ebpf:"xdp_tx_tcp_mixed"`
 	}
-	if err := spec.LoadAndAssign(&mixed, &ebpf.CollectionOptions{MapReplacements: replacements}); err != nil {
+	// An old verifier (6.1) may reject the TX scan with every feature as too
+	// large (E2BIG at 1M processed instructions): examine fewer flows per TX
+	// iteration instead of failing. Newer kernels load the full scan.
+	scanVar, ok := spec.Variables["mixed_tx_scan"]
+	if !ok {
+		return fmt.Errorf("mixed constant mixed_tx_scan not found")
+	}
+	var full uint32
+	if err := scanVar.Get(&full); err != nil {
+		return fmt.Errorf("get mixed_tx_scan: %w", err)
+	}
+	var err error
+	for i, div := range mixedTxScanDivisors {
+		scan := full / div
+		if scan == 0 {
+			break
+		}
+		if err = scanVar.Set(scan); err != nil {
+			return fmt.Errorf("set mixed_tx_scan: %w", err)
+		}
+		// Trial loads skip the verifier log: on E2BIG the library would
+		// retry with ever larger log buffers, and a 6.1 log that overflows
+		// turns E2BIG into ENOSPC. The last attempt keeps the log for the error.
+		last := i == len(mixedTxScanDivisors)-1 || full/mixedTxScanDivisors[i+1] == 0
+		err = spec.LoadAndAssign(&mixed, &ebpf.CollectionOptions{
+			MapReplacements: replacements,
+			Programs:        ebpf.ProgramOptions{LogDisabled: !last},
+		})
+		if err == nil {
+			mixedTxScan.Store(scan)
+			mixedTxScanMax.Store(full)
+			break
+		}
+		// Other E2BIG causes (a map, BTF) fail at every scan: a few wasted
+		// attempts, and the last error is reported as is.
+		if !errors.Is(err, unix.E2BIG) {
+			break
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("load mixed programs: %w", err)
 	}
 	objs.XdpRxMixed, objs.XdpRxTcpMixed = mixed.XdpRxMixed, mixed.XdpRxTcpMixed

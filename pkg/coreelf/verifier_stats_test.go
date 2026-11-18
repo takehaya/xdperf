@@ -46,7 +46,8 @@ func TestBpfMixedVerifierStats(t *testing.T) {
 				t.Fatal(err)
 			}
 			n, _ := info.VerifiedInstructions()
-			t.Logf("VSTAT %s %s %d", name, p.name, n)
+			scan, _ := MixedTxScan()
+			t.Logf("VSTAT %s %s %d scan=%d", name, p.name, n, scan)
 		}
 		objs.Close()
 	}

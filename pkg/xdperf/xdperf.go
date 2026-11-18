@@ -308,6 +308,10 @@ func (x *Xdperf) StartClient(ctx context.Context) error {
 		if err := coreelf.LoadMixedProgramsWithFeatures(x.bpfobjs, x.bpfSpec, x.mixed.features); err != nil {
 			return err
 		}
+		if scan, full := coreelf.MixedTxScan(); scan < full {
+			x.Logger.Warn("verifier rejected the full TCP TX scan; examining fewer flows per TX iteration",
+				zap.Uint32("flows_per_iteration", scan), zap.Uint32("full", full))
+		}
 		if x.otlpMeter != nil {
 			if err := x.registerMixedRXMetrics(x.otlpMeter); err != nil {
 				return err

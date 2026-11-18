@@ -212,6 +212,9 @@ struct {
 const volatile __u32 mixed_has_timestamps SEC(".rodata.mixed") = 0;
 const volatile __u32 mixed_has_payload SEC(".rodata.mixed") = 0;
 const volatile __u32 mixed_has_exchange SEC(".rodata.mixed") = 0;
+// Flows a TX iteration examines (at most TCP_TX_SCAN). Go lowers it when an
+// old verifier (6.1) rejects the full scan as too large.
+const volatile __u32 mixed_tx_scan SEC(".rodata.mixed") = TCP_TX_SCAN;
 
 // Request/response rounds. A flow waits for responses when it has a response
 // size or reads until the peer FIN; every other flow keeps the one-way upload.
@@ -1001,6 +1004,8 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
     sel = NULL;
     __u32 quarantine = 0;
     for (int i = 0; i < TCP_TX_SCAN; i++) {
+        if (i >= mixed_tx_scan)
+            break;
         __u32 idx;
         __u32 cursor = *next;
         if (cursor >= count)

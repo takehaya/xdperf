@@ -2,9 +2,11 @@ package coreelf
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"golang.org/x/sys/unix"
 )
 
 func defaultConsts() map[string]any {
@@ -218,6 +220,11 @@ func TestBpfMixedSpecializations(t *testing.T) {
 			if err := LoadMixedProgramsWithFeatures(objs, spec, features); err != nil {
 				t.Fatal(err)
 			}
+			// A reduced scan is a fallback for 6.1, never a silent budget
+			// regression on newer kernels or for other feature sets.
+			if scan, full := MixedTxScan(); scan != full && (name != "exchange-nested-extensions" || !kernelBefore(t, 6, 2)) {
+				t.Fatalf("TX scan reduced to %d of %d", scan, full)
+			}
 			var original uint32
 			if err := spec.Variables["mixed_max_udps"].Get(&original); err != nil {
 				t.Fatal(err)
@@ -241,4 +248,17 @@ func TestBpfMixedSpecializations(t *testing.T) {
 			}
 		})
 	}
+}
+
+func kernelBefore(t *testing.T, major, minor int) bool {
+	t.Helper()
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		t.Fatal(err)
+	}
+	var maj, mnr int
+	if _, err := fmt.Sscanf(unix.ByteSliceToString(u.Release[:]), "%d.%d", &maj, &mnr); err != nil {
+		t.Fatal(err)
+	}
+	return maj < major || (maj == major && mnr < minor)
 }
