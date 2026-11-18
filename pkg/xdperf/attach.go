@@ -7,6 +7,8 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/takehaya/xdperf/pkg/probe"
+	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
 )
 
@@ -91,4 +93,53 @@ func (x *Xdperf) attachXDP(prog *ebpf.Program, dev *net.Interface) (link.Link, e
 		zap.String("device", dev.Name),
 		zap.NamedError("default_attach_error", defaultErr))
 	return l, nil
+}
+
+// checkLiveFrameTXSupport verifies that dev supports the ndo_xdp_xmit path
+// required by BPF_F_TEST_XDP_LIVE_FRAMES to transmit XDP_TX frames. Devices
+// like netkit or loopback accept a generic (SKB) XDP attach and let
+// BPF_PROG_RUN succeed while xdp_do_redirect_frame silently drops every frame
+// with -EOPNOTSUPP.
+//
+// On kernels 6.3+ (XDPFeatures != nil), non-veth drivers are checked via
+// LiveFrameMode (NETDEV_XDP_ACT_NDO_XMIT) so drivers implementing only
+// NETDEV_XDP_ACT_BASIC without ndo_xdp_xmit are also rejected. veth is checked
+// via XDPDriverMode because veth_xdp_xmit is always implemented by the driver
+// whereas its NDO_XMIT feature bit is toggled dynamically by the peer's XDP/GRO
+// state (which scenarios like simpleudp-no-rx-attach exercise intentionally).
+// isLiveFrameTXUnsupported reports whether a probed device lacks the
+// ndo_xdp_xmit path needed for live-frame TX.
+func isLiveFrameTXUnsupported(res *probe.ProbeResult, linkType string, flags net.Flags) bool {
+	if flags&net.FlagLoopback != 0 || linkType == "netkit" {
+		return true
+	}
+	switch {
+	case res.XDPFeatures != nil && linkType != "veth":
+		return !res.LiveFrameMode
+	case res.XDPFeatures != nil:
+		return !res.XDPDriverMode
+	default:
+		return !res.XDPDriverMode && (res.AttachedMode == "" || linkType != "veth")
+	}
+}
+
+func checkLiveFrameTXSupport(dev *net.Interface) error {
+	if dev == nil || dev.Name == "" {
+		return fmt.Errorf("TX device is required")
+	}
+	res, err := probe.ProbeXDPSupport(dev.Name)
+	if err != nil {
+		return fmt.Errorf("failed to probe XDP support on %s: %w", dev.Name, err)
+	}
+	var linkType string
+	if nlLink, lerr := netlink.LinkByIndex(dev.Index); lerr == nil {
+		linkType = nlLink.Type()
+	}
+	if isLiveFrameTXUnsupported(res, linkType, dev.Flags) {
+		if linkType == "netkit" {
+			return fmt.Errorf("device %s (netkit) does not support native XDP or ndo_xdp_xmit required for live-frame TX; run xdperf on the sending veth, SR-IOV VF, or physical NIC instead", dev.Name)
+		}
+		return fmt.Errorf("device %s does not support native XDP / ndo_xdp_xmit required for live-frame TX", dev.Name)
+	}
+	return nil
 }

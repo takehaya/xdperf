@@ -99,6 +99,18 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 		return nil, fmt.Errorf("failed init logger: %w", err)
 	}
 	cleanupFnList = append(cleanupFnList, cleanup)
+	if cfg.Device == "" {
+		return nil, fmt.Errorf("device is required")
+	}
+	dev, err := net.InterfaceByName(cfg.Device)
+	if err != nil {
+		return nil, fmt.Errorf("failed get device %s: %w", cfg.Device, err)
+	}
+	if cfg.Sender {
+		if err := checkLiveFrameTXSupport(dev); err != nil {
+			return nil, err
+		}
+	}
 	var pm *plugin.Manager
 	if cfg.Sender {
 		managerOpts := []plugin.ManagerOption{plugin.WithLogger(logger)}
@@ -123,14 +135,6 @@ func NewXdperf(cfg Config) (_ *Xdperf, err error) {
 			return nil, fmt.Errorf("failed load plugin: %w", err)
 		}
 		logger.Info("xdperf wasm plugin loader initialized")
-	}
-
-	if cfg.Device == "" {
-		return nil, fmt.Errorf("device is required")
-	}
-	dev, err := net.InterfaceByName(cfg.Device)
-	if err != nil {
-		return nil, fmt.Errorf("failed get device %s: %w", cfg.Device, err)
 	}
 
 	// Generate once before loading maps so TCP-only plugins do not allocate an
