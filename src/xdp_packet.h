@@ -70,7 +70,7 @@ struct pkt_state {
     __u64 budget;        // Locally borrowed mixed TX frames (0 initially)
     __u32 count;         // Number of valid diff entries
     __u32 idx;           // Current index (round-robin)
-    __u32 last_base_idx; // Last base_idx used (0xFFFFFFFF = none, forces first copy)
+    __u32 last_base_idx; // Reserved for map layout compatibility (formerly last base_idx)
 };
 
 // Base packet map (multiple base packets for different variants)
