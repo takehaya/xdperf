@@ -61,6 +61,10 @@ func attachNetkitFastpath(spec string) error {
 	}
 
 	// 1. TCX ingress program on inDev -> bpf_redirect_peer(nkDev.Index, 0)
+	// Use 32-bit JNE.Imm32 comparisons because LoadMem (Word/Half) zero-extends
+	// into 64-bit registers while 64-bit JNE.Imm sign-extends int32 immediates
+	// (which would mismatch any IPv4 address whose high bit in native order is 1,
+	// e.g. last octet >= 128 on little-endian).
 	tcxProg, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name: "tcx_to_netkit",
 		Type: ebpf.SchedCLS,
@@ -71,9 +75,9 @@ func attachNetkitFastpath(spec string) error {
 			asm.Add.Imm(asm.R4, ethHLen+ipv4HLen),
 			asm.JGT.Reg(asm.R4, asm.R3, "pass"),
 			asm.LoadMem(asm.R5, asm.R2, ethProtoOffset, asm.Half),
-			asm.JNE.Imm(asm.R5, ethPIP, "pass"),
+			asm.JNE.Imm32(asm.R5, ethPIP, "pass"),
 			asm.LoadMem(asm.R5, asm.R2, ipv4DaddrOffset, asm.Word),
-			asm.JNE.Imm(asm.R5, podIP, "pass"),
+			asm.JNE.Imm32(asm.R5, podIP, "pass"),
 			asm.Mov.Imm(asm.R1, int32(nkDev.Index)),
 			asm.Mov.Imm(asm.R2, 0),
 			asm.FnRedirectPeer.Call(),
@@ -94,7 +98,7 @@ func attachNetkitFastpath(spec string) error {
 		Type: ebpf.SchedCLS,
 		Instructions: asm.Instructions{
 			asm.LoadMem(asm.R2, asm.R1, skbProtocolOffset, asm.Word),
-			asm.JNE.Imm(asm.R2, ethPIP, "pass"),
+			asm.JNE.Imm32(asm.R2, ethPIP, "pass"),
 			asm.Mov.Imm(asm.R1, int32(inDev.Index)),
 			asm.Mov.Imm(asm.R2, 0),
 			asm.Mov.Imm(asm.R3, 0),

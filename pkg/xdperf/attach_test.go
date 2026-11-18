@@ -8,8 +8,65 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/takehaya/xdperf/pkg/probe"
 	"github.com/vishvananda/netlink"
 )
+
+func TestIsLiveFrameTXUnsupported(t *testing.T) {
+	featZero := uint64(0)
+	featBasicOnly := uint64(1)
+	featBasicAndXmit := uint64(5)
+
+	for _, tc := range []struct {
+		name     string
+		res      probe.ProbeResult
+		linkType string
+		want     bool
+	}{
+		{
+			name:     "non-veth with BASIC and NDO_XMIT supported",
+			res:      probe.ProbeResult{XDPDriverMode: true, LiveFrameMode: true, XDPFeatures: &featBasicAndXmit},
+			linkType: "device",
+			want:     false,
+		},
+		{
+			name:     "non-veth with BASIC only (no NDO_XMIT) rejected",
+			res:      probe.ProbeResult{XDPDriverMode: true, LiveFrameMode: false, XDPFeatures: &featBasicOnly},
+			linkType: "device",
+			want:     true,
+		},
+		{
+			name:     "veth with unready peer (BASIC only) accepted",
+			res:      probe.ProbeResult{XDPDriverMode: true, LiveFrameMode: false, XDPFeatures: &featBasicOnly},
+			linkType: "veth",
+			want:     false,
+		},
+		{
+			name:     "netkit (no features) rejected",
+			res:      probe.ProbeResult{XDPDriverMode: false, LiveFrameMode: false, XDPFeatures: &featZero},
+			linkType: "netkit",
+			want:     true,
+		},
+		{
+			name:     "legacy kernel without XDPFeatures and no driver mode rejected",
+			res:      probe.ProbeResult{XDPDriverMode: false, AttachedMode: ""},
+			linkType: "device",
+			want:     true,
+		},
+		{
+			name:     "legacy kernel with active generic attach not falsely rejected",
+			res:      probe.ProbeResult{XDPDriverMode: false, AttachedMode: "generic"},
+			linkType: "veth",
+			want:     false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isLiveFrameTXUnsupported(&tc.res, tc.linkType); got != tc.want {
+				t.Fatalf("isLiveFrameTXUnsupported(%+v, %q) = %v, want %v", tc.res, tc.linkType, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestCheckLiveFrameTXSupport(t *testing.T) {
 	if os.Geteuid() != 0 {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -50,9 +51,28 @@ func TestAttachNetkitFastpath(t *testing.T) {
 		t.Fatalf("expected invalid IPv4 error, got: %v", err)
 	}
 
-	spec := fmt.Sprintf("%s:%s:10.200.3.2", vname, nkname)
-	if err := attachNetkitFastpath(spec); err != nil {
-		t.Fatalf("attachNetkitFastpath(%q): %v", spec, err)
+	// Include an IP whose final octet is >= 128 (bit 31 set in little-endian
+	// uint32) to verify 32-bit immediate comparison does not sign-extend.
+	for _, podIP := range []string{"10.200.3.2", "10.200.3.200"} {
+		spec := fmt.Sprintf("%s:%s:%s", vname, nkname, podIP)
+		if err := attachNetkitFastpath(spec); err != nil {
+			t.Fatalf("attachNetkitFastpath(%q): %v", spec, err)
+		}
+
+		// Verify tcx_to_netkit matches podIP (even when last octet >= 128) and
+		// does not take the TC_ACT_OK (0) pass branch.
+		pkt := make([]byte, 34)
+		pkt[12], pkt[13] = 0x08, 0x00 // ETH_P_IP
+		copy(pkt[30:34], net.ParseIP(podIP).To4())
+		ret, _, err := nkFastpathProgs[0].Test(pkt)
+		if err != nil {
+			detachNetkitFastpath()
+			t.Fatalf("test tcx_to_netkit for %s: %v", podIP, err)
+		}
+		if ret == 0 {
+			detachNetkitFastpath()
+			t.Fatalf("tcx_to_netkit returned TC_ACT_OK (0) for matching Pod IP %s", podIP)
+		}
+		detachNetkitFastpath()
 	}
-	detachNetkitFastpath()
 }

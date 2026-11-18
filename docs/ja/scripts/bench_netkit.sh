@@ -8,7 +8,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 XDPERF_BIN="${XDPERF_BIN:-${REPO_ROOT}/out/bin/xdperf}"
 SINK_BIN="${SINK_BIN:-${REPO_ROOT}/out/bin/xdperf-sink}"
 PLUGIN_PATH="${PLUGIN_PATH:-${REPO_ROOT}/out/bin}"
-TCP_PY_DIR="${REPO_ROOT}/examples/common/py"
 DURATION="${DURATION:-3s}"
 MODES="${MODES:-veth netkit-l2 netkit-l3 netkit-bpf}"
 
@@ -17,13 +16,32 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-cleanup() {
+WORK_DIR="$(mktemp -d /run/xdperf-nkbench.XXXXXX)"
+SINK_PID=""
+PASS_PID=""
+
+cleanup_mode() {
+    if [ -n "${SINK_PID}" ]; then
+        kill -INT "${SINK_PID}" 2>/dev/null || true
+        wait "${SINK_PID}" 2>/dev/null || true
+        SINK_PID=""
+    fi
+    if [ -n "${PASS_PID}" ]; then
+        kill -INT "${PASS_PID}" 2>/dev/null || true
+        wait "${PASS_PID}" 2>/dev/null || true
+        PASS_PID=""
+    fi
     ip netns del b-tx 2>/dev/null || true
     ip netns del b-dut 2>/dev/null || true
     ip netns del b-rx 2>/dev/null || true
-    rm -f /tmp/nkbench-*.log /tmp/nkbench-*.csv /tmp/nkbench-*.json
+    rm -f "${WORK_DIR}"/*.log "${WORK_DIR}"/*.csv "${WORK_DIR}"/*.json
 }
-trap cleanup EXIT
+
+cleanup_all() {
+    cleanup_mode
+    rm -rf "${WORK_DIR}"
+}
+trap cleanup_all EXIT
 
 softnet_processed() {
     awk '{ sum += strtonum("0x" $1) } END { print sum }' /proc/net/softnet_stat
@@ -31,7 +49,7 @@ softnet_processed() {
 
 setup_mode() {
     local mode="$1"
-    cleanup
+    cleanup_mode
     ip netns add b-tx
     ip netns add b-dut
     ip netns add b-rx
@@ -82,18 +100,16 @@ setup_mode() {
     fi
 
     ip netns exec b-dut sysctl -qw net.ipv4.ip_forward=1
-    ip netns exec b-dut "${SINK_BIN}" -proto udp -listen 127.0.0.1:1 -interval 0 -xdp-pass-dev vdut $fp_arg >/tmp/nkbench-pass.log 2>&1 &
+    ip netns exec b-dut "${SINK_BIN}" -proto udp -listen 127.0.0.1:1 -interval 0 -xdp-pass-dev vdut $fp_arg >"${WORK_DIR}/pass.log" 2>&1 &
     PASS_PID=$!
-    ip netns exec b-rx "${SINK_BIN}" -listen 10.200.2.2:5201 -interval 0 >/tmp/nkbench-sink.log 2>&1 &
+    ip netns exec b-rx "${SINK_BIN}" -listen 10.200.2.2:5201 -interval 0 >"${WORK_DIR}/sink.log" 2>&1 &
     SINK_PID=$!
     sleep 0.3
     ip netns exec b-tx ping -c 1 -W 1 10.200.2.2 >/dev/null
 }
 
 teardown_mode() {
-    kill -INT "${SINK_PID:-}" "${PASS_PID:-}" 2>/dev/null || true
-    wait "${SINK_PID:-}" 2>/dev/null || true
-    cleanup
+    cleanup_mode
 }
 
 echo "=== E1-A: Sustained TCP Stream (${DURATION}) ==="
@@ -108,10 +124,10 @@ for mode in $MODES; do
             --plugin tcpflow.go --plugin-path "${PLUGIN_PATH}" \
             --parallelism "$workers" --duration "${DURATION}" \
             --cfg "{\"dst_ip\":\"10.200.2.2\",\"tcp_port\":5201,\"flows\":${flows},\"bytes\":\"0\",\"window_segs\":${win},\"ip_id\":\"${ip_id}\"}" \
-            >/tmp/nkbench-tx.log 2>&1
+            >"${WORK_DIR}/tx.log" 2>&1
         s_after="$(softnet_processed)"
         s_delta=$(( s_after - s_before ))
-        python3 - "$mode" "$workers" "$flows" "$ip_id" "$s_delta" /tmp/nkbench-tx.log <<'PY'
+        python3 - "$mode" "$workers" "$flows" "$ip_id" "$s_delta" "${WORK_DIR}/tx.log" <<'PY'
 import json, sys
 mode, workers, flows, ip_id, s_delta, tx_log = sys.argv[1:]
 s_delta = int(s_delta)
@@ -140,11 +156,11 @@ for mode in $MODES; do
     ip netns exec b-tx "${XDPERF_BIN}" run --device vtx \
         --plugin tcpflow.go --plugin-path "${PLUGIN_PATH}" \
         --parallelism 1 --duration "${DURATION}" \
-        --cfg '{"dst_ip":"10.200.2.2","tcp_port":5201,"flows":64,"bytes":"1024","connections":0,"window_segs":4,"port_quarantine_ms":1000}' \
-        >/tmp/nkbench-tx.log 2>&1
+        --cfg '{"dst_ip":"10.200.2.2","tcp_port":5201,"flows":64,"bytes":"1024","connections":0,"window_segs":4,"port_reuse_delay_ms":1000}' \
+        >"${WORK_DIR}/tx.log" 2>&1
     s_after="$(softnet_processed)"
     s_delta=$(( s_after - s_before ))
-    python3 - "$mode" "1" "$s_delta" /tmp/nkbench-tx.log <<'PY'
+    python3 - "$mode" "1" "$s_delta" "${WORK_DIR}/tx.log" <<'PY'
 import json, sys
 mode, workers, s_delta, tx_log = sys.argv[1:]
 s_delta = int(s_delta)
