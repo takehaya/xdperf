@@ -11,7 +11,7 @@ TX_DEV="${TX_DEV:-enp1s0np0}"
 RX_DEV="${RX_DEV:-enp1s0np0}"
 TX_IP="${TX_IP:-192.168.20.2}"
 RX_HOST_IP="${RX_HOST_IP:-192.168.20.1}"
-TX_CPU_POOL="${TX_CPU_POOL:-16-23}"
+TX_CPU_START="${TX_CPU_START:-16}"
 POD_SUBNET="${POD_SUBNET:-10.200.2.0/24}"
 POD_GW="${POD_GW:-10.200.2.1}"
 POD_IP="${POD_IP:-10.200.2.2}"
@@ -20,6 +20,22 @@ REMOTE_BIN="${REMOTE_DIR}/bin"
 DURATION="${DURATION:-3s}"
 MODES="${MODES:-veth netkit-l2 netkit-l3 netkit-bpf}"
 SECTIONS="${SECTIONS:-E3A E3B E3C E3D}"
+IPT_COMMENT="xdperf-nkbench"
+
+cpu_mode_for_workers() {
+    local w="$1"
+    if [ -z "${TX_CPU_START}" ]; then
+        echo "auto"
+        return 0
+    fi
+    local start="${TX_CPU_START}"
+    local end=$(( start + w - 1 ))
+    if [ "${w}" -le 1 ]; then
+        echo "${start}"
+    else
+        echo "${start}-${end}"
+    fi
+}
 
 ssh_tx() {
     ssh -o BatchMode=yes "${TX_HOST}" "$@"
@@ -40,8 +56,8 @@ cleanup_remote() {
     ssh_rx "sudo bash -c '
         kill -INT \$(cat ${REMOTE_DIR}/sink.pid 2>/dev/null) \$(cat ${REMOTE_DIR}/fp.pid 2>/dev/null) 2>/dev/null || true
         sleep 0.2
-        while iptables -D FORWARD -i ${RX_DEV} -j ACCEPT 2>/dev/null; do :; done
-        while iptables -D FORWARD -o ${RX_DEV} -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D FORWARD -i ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D FORWARD -o ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null; do :; done
         ip netns del b-rx 2>/dev/null || true
         ip link del edut 2>/dev/null || true
         rm -f ${REMOTE_DIR}/sink.pid ${REMOTE_DIR}/fp.pid
@@ -61,8 +77,10 @@ setup_mode() {
         ip link set ${RX_DEV} up
         ip addr replace ${RX_HOST_IP}/24 dev ${RX_DEV}
         sysctl -qw net.ipv4.ip_forward=1
-        iptables -C FORWARD -i ${RX_DEV} -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i ${RX_DEV} -j ACCEPT
-        iptables -C FORWARD -o ${RX_DEV} -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o ${RX_DEV} -j ACCEPT
+        iptables -C FORWARD -i ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || \
+            iptables -I FORWARD 1 -i ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT
+        iptables -C FORWARD -o ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT 2>/dev/null || \
+            iptables -I FORWARD 1 -o ${RX_DEV} -m comment --comment ${IPT_COMMENT} -j ACCEPT
         ip netns del b-rx 2>/dev/null || true
         ip link del edut 2>/dev/null || true
         rm -f ${REMOTE_DIR}/sink.pid ${REMOTE_DIR}/fp.pid ${REMOTE_DIR}/flow5.json ${REMOTE_DIR}/sink.log ${REMOTE_DIR}/fp.log
@@ -186,11 +204,12 @@ printf "%-12s | %-6s | %-5s | %-4s | %-6s | %-10s | %-12s | %-6s | %-12s\n" \
 for mode in $MODES; do
     for cfg_item in "1:16:32:flow" "1:16:32:shared" "4:64:32:flow" "4:64:32:shared" "8:256:8:flow" "8:256:8:shared"; do
         IFS=":" read -r workers flows win ip_id <<< "$cfg_item"
+        cpu_mode="$(cpu_mode_for_workers "${workers}")"
         setup_mode "$mode"
         s_before="$(rx_softnet_processed)"
         ssh_tx "sudo ${REMOTE_BIN}/xdperf run --device ${TX_DEV} \
             --plugin tcpflow.go --plugin-path ${REMOTE_BIN} \
-            --parallelism ${workers} --cpu-mode ${TX_CPU_POOL} --duration ${DURATION} \
+            --parallelism ${workers} --cpu-mode ${cpu_mode} --duration ${DURATION} \
             --cfg '{\"dst_ip\":\"${POD_IP}\",\"tcp_port\":5201,\"flows\":${flows},\"bytes\":\"0\",\"window_segs\":${win},\"ip_id\":\"${ip_id}\"}' \
             >${REMOTE_DIR}/tx.log 2>&1"
         s_after="$(rx_softnet_processed)"
@@ -221,12 +240,13 @@ printf "%-12s | %-6s | %-5s | %-12s | %-12s | %-6s | %-12s\n" \
     "Mode" "Worker" "Slots" "Done CPS" "Completed" "RTX" "RX Softnet/conn"
 for cfg_item in "1:64" "4:256"; do
     IFS=":" read -r workers slots <<< "$cfg_item"
+    cpu_mode="$(cpu_mode_for_workers "${workers}")"
     for mode in $MODES; do
         setup_mode "$mode"
         s_before="$(rx_softnet_processed)"
         ssh_tx "sudo ${REMOTE_BIN}/xdperf run --device ${TX_DEV} \
             --plugin tcpflow.go --plugin-path ${REMOTE_BIN} \
-            --parallelism ${workers} --cpu-mode ${TX_CPU_POOL} --duration ${DURATION} \
+            --parallelism ${workers} --cpu-mode ${cpu_mode} --duration ${DURATION} \
             --cfg '{\"dst_ip\":\"${POD_IP}\",\"tcp_port\":5201,\"flows\":${slots},\"bytes\":\"1024\",\"connections\":0,\"window_segs\":4,\"port_reuse_delay_ms\":1000}' \
             >${REMOTE_DIR}/tx.log 2>&1"
         s_after="$(rx_softnet_processed)"
@@ -255,13 +275,14 @@ echo "=== E3-C: 100GbE Mixed High-PPS UDP Flood (75%) + 4 TCP Streams (25%, 3x25
 printf "%-12s | %-6s | %-9s | %-11s | %-6s | %-10s | %-18s | %-12s\n" \
     "Mode" "Done" "TCP Time" "TCP Goodput" "RTX" "UDP TX" "UDP RX (Delivery)" "RX Softnet/pkt"
 rx_mac="$(ssh_rx "cat /sys/class/net/${RX_DEV}/address")"
+cpu_mode_1w="$(cpu_mode_for_workers 1)"
 for mode in $MODES; do
     setup_mode "$mode"
     s_before="$(rx_softnet_processed)"
     ssh_tx "sudo ${REMOTE_BIN}/xdperf run --send --device ${TX_DEV} \
         --plugin mixed.go --plugin-path ${REMOTE_BIN} \
         --plugin-config '{\"src_ip\":\"${TX_IP}\",\"dst_ip\":\"${POD_IP}\",\"dst_mac\":\"${rx_mac}\",\"tcp_port\":5201,\"udp_port\":5201,\"small_bytes\":\"262144\",\"large_bytes\":\"2097152\",\"packet_weight\":3,\"tcp_weight\":1,\"window_segs\":8,\"mss\":1448}' \
-        --tcp-flow-report ${REMOTE_DIR}/flows.csv --count 2000000 --pps 250000 --parallelism 1 --cpu-mode ${TX_CPU_POOL} \
+        --tcp-flow-report ${REMOTE_DIR}/flows.csv --count 2000000 --pps 250000 --parallelism 1 --cpu-mode ${cpu_mode_1w} \
         >${REMOTE_DIR}/tx.log 2>&1"
     s_after="$(rx_softnet_processed)"
     s_delta=$(( s_after - s_before ))
@@ -298,11 +319,12 @@ printf "%-16s | %-6s | %-5s | %-6s | %-10s | %-12s | %-6s\n" \
     "Mode" "Worker" "Flows" "IP_ID" "Goodput" "Data Segs/s" "RTX"
 for cfg_item in "1:16:32:flow" "1:16:32:shared" "4:64:32:flow" "4:64:32:shared"; do
     IFS=":" read -r workers flows win ip_id <<< "$cfg_item"
+    cpu_mode="$(cpu_mode_for_workers "${workers}")"
     for mode in netkit-bpf netkit-bpf+flow5; do
         setup_mode "$mode"
         ssh_tx "sudo ${REMOTE_BIN}/xdperf run --device ${TX_DEV} \
             --plugin tcpflow.go --plugin-path ${REMOTE_BIN} \
-            --parallelism ${workers} --cpu-mode ${TX_CPU_POOL} --duration ${DURATION} \
+            --parallelism ${workers} --cpu-mode ${cpu_mode} --duration ${DURATION} \
             --cfg '{\"dst_ip\":\"${POD_IP}\",\"tcp_port\":5201,\"flows\":${flows},\"bytes\":\"0\",\"window_segs\":${win},\"ip_id\":\"${ip_id}\"}' \
             >${REMOTE_DIR}/tx.log 2>&1"
         ssh_tx "python3 - '$mode' '$workers' '$flows' '$ip_id' ${REMOTE_DIR}/tx.log <<'PY'
@@ -331,18 +353,19 @@ for item in \
     "1:128:1:flow:TCP 128x10segs (win1,1w)" \
     "4:256:1:flow:TCP 256x10segs (win1,4w)"; do
     IFS=":" read -r w fl win ip_id label <<< "$item"
+    cpu_mode="$(cpu_mode_for_workers "${w}")"
     setup_mode "netkit-bpf+flow5"
     ssh_tx "sudo ${REMOTE_BIN}/xdperf run --device ${TX_DEV} \
         --plugin tcpflow.go --plugin-path ${REMOTE_BIN} \
-        --parallelism ${w} --cpu-mode ${TX_CPU_POOL} --tcp-flow-report ${REMOTE_DIR}/flows.csv \
+        --parallelism ${w} --cpu-mode ${cpu_mode} --tcp-flow-report ${REMOTE_DIR}/flows.csv \
         --cfg '{\"dst_ip\":\"${POD_IP}\",\"tcp_port\":5201,\"flows\":${fl},\"bytes\":\"14480\",\"window_segs\":${win},\"ip_id\":\"${ip_id}\"}' \
         >${REMOTE_DIR}/tx.log 2>&1"
     ssh_rx "sudo bash -c 'kill -INT \$(cat ${REMOTE_DIR}/fp.pid) 2>/dev/null || true; sleep 0.3'"
     scp -q "${TX_HOST}:${REMOTE_DIR}/flows.csv" /tmp/e3d_flows.csv
     scp -q "${RX_HOST}:${REMOTE_DIR}/flow5.json" /tmp/e3d_flow5.json
-    python3 - "$label" /tmp/e3d_flows.csv /tmp/e3d_flow5.json <<'PY'
+    python3 - "$label" /tmp/e3d_flows.csv /tmp/e3d_flow5.json "${TX_IP}" "${POD_IP}" <<'PY'
 import csv, json, sys
-label, csv_path, json_path = sys.argv[1:]
+label, csv_path, json_path, tx_ip, pod_ip = sys.argv[1:]
 with open(csv_path, newline='') as f:
     rows = list(csv.DictReader(f))
 with open(json_path) as f:
@@ -352,27 +375,28 @@ eg_map = {(e['src_ip'], e['dst_ip'], e['src_port'], e['dst_port'], e['proto']): 
 fwd_wire = sum(int(r['tx_pkts']) + int(r['rx_replies']) for r in rows)
 tcx_in = sum(in_map.values())
 gro_ratio = fwd_wire / max(1, tcx_in)
-in_ok = sum(1 for r in rows if in_map.get(('192.168.20.2', '10.200.2.2', int(r['src_port']), 5201, 6)) == int(r['tx_pkts']) + int(r['rx_replies']))
-eg_ok = sum(1 for r in rows if eg_map.get(('10.200.2.2', '192.168.20.2', 5201, int(r['src_port']), 6)) == int(r['rx_pkts']))
+in_ok = sum(1 for r in rows if in_map.get((tx_ip, pod_ip, int(r['src_port']), 5201, 6)) == int(r['tx_pkts']) + int(r['rx_replies']))
+eg_ok = sum(1 for r in rows if eg_map.get((pod_ip, tx_ip, 5201, int(r['src_port']), 6)) == int(r['rx_pkts']))
 n = len(rows)
 print(f"{label:28s} | {n:6d} | {fwd_wire:10d} | {tcx_in:10d} | {gro_ratio:7.2f}x | {in_ok:4d}/{n:<4d} ({100*in_ok//n:3d}%) | {eg_ok:4d}/{n:<4d} ({100*eg_ok//n:3d}%)")
 PY
 done
 
 rx_mac="$(ssh_rx "cat /sys/class/net/${RX_DEV}/address")"
+cpu_mode_1w="$(cpu_mode_for_workers 1)"
 setup_mode "netkit-bpf+flow5"
 ssh_tx "sudo ${REMOTE_BIN}/xdperf run --send --device ${TX_DEV} \
     --plugin mixed.go --plugin-path ${REMOTE_BIN} \
     --plugin-config '{\"src_ip\":\"${TX_IP}\",\"dst_ip\":\"${POD_IP}\",\"dst_mac\":\"${rx_mac}\",\"tcp_port\":5201,\"udp_port\":5201,\"small_bytes\":\"65536\",\"large_bytes\":\"262144\",\"packet_weight\":3,\"tcp_weight\":1,\"window_segs\":1,\"mss\":1448}' \
-    --tcp-flow-report ${REMOTE_DIR}/flows.csv --count 200000 --pps 20000 --parallelism 1 --cpu-mode ${TX_CPU_POOL} \
+    --tcp-flow-report ${REMOTE_DIR}/flows.csv --count 200000 --pps 20000 --parallelism 1 --cpu-mode ${cpu_mode_1w} \
     >${REMOTE_DIR}/tx.log 2>&1"
 ssh_rx "sudo bash -c 'kill -INT \$(cat ${REMOTE_DIR}/fp.pid) 2>/dev/null || true; sleep 0.3'"
 scp -q "${TX_HOST}:${REMOTE_DIR}/flows.csv" /tmp/e3d_flows.csv
 scp -q "${TX_HOST}:${REMOTE_DIR}/tx.log" /tmp/e3d_tx.log
 scp -q "${RX_HOST}:${REMOTE_DIR}/flow5.json" /tmp/e3d_flow5.json
-python3 - "Mixed 1xUDP + 4xTCP (win1)" /tmp/e3d_flows.csv /tmp/e3d_flow5.json /tmp/e3d_tx.log <<'PY'
+python3 - "Mixed 1xUDP + 4xTCP (win1)" /tmp/e3d_flows.csv /tmp/e3d_flow5.json /tmp/e3d_tx.log "${TX_IP}" "${POD_IP}" <<'PY'
 import csv, json, sys
-label, csv_path, json_path, tx_log = sys.argv[1:]
+label, csv_path, json_path, tx_log, tx_ip, pod_ip = sys.argv[1:]
 with open(csv_path, newline='') as f:
     rows = list(csv.DictReader(f))
 with open(json_path) as f:
@@ -385,10 +409,10 @@ udp_tx = int(mstats['packet_tx'])
 fwd_wire = sum(int(r['tx_pkts']) + int(r['rx_replies']) for r in rows) + udp_tx
 tcx_in = sum(in_map.values())
 gro_ratio = fwd_wire / max(1, tcx_in)
-in_ok = sum(1 for r in rows if in_map.get(('192.168.20.2', '10.200.2.2', int(r['src_port']), 5201, 6)) == int(r['tx_pkts']) + int(r['rx_replies']))
-if in_map.get(('192.168.20.2', '10.200.2.2', 53000, 5201, 17)) == udp_tx:
+in_ok = sum(1 for r in rows if in_map.get((tx_ip, pod_ip, int(r['src_port']), 5201, 6)) == int(r['tx_pkts']) + int(r['rx_replies']))
+if in_map.get((tx_ip, pod_ip, 53000, 5201, 17)) == udp_tx:
     in_ok += 1
-eg_ok = sum(1 for r in rows if eg_map.get(('10.200.2.2', '192.168.20.2', 5201, int(r['src_port']), 6)) == int(r['rx_pkts']))
+eg_ok = sum(1 for r in rows if eg_map.get((pod_ip, tx_ip, 5201, int(r['src_port']), 6)) == int(r['rx_pkts']))
 n_in = len(rows) + 1
 n_eg = len(rows)
 print(f"{label:28s} | {n_in:6d} | {fwd_wire:10d} | {tcx_in:10d} | {gro_ratio:7.2f}x | {in_ok:4d}/{n_in:<4d} ({100*in_ok//n_in:3d}%) | {eg_ok:4d}/{n_eg:<4d} ({100*eg_ok//n_eg:3d}%)")
