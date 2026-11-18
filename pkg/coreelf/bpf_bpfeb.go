@@ -131,7 +131,8 @@ type BpfTcpCfg struct {
 	Abort          uint8
 	MaxDataRetries uint8
 	IpIdShared     uint8
-	Pad            [2]uint8
+	CloseByServer  uint8
+	UntilFin       uint8
 	PseudoSum      uint32
 	SrcIp          [4]uint32
 	DstIp          [4]uint32
@@ -142,7 +143,7 @@ type BpfTcpCfg struct {
 	StartNs        uint64
 	EndNs          uint64
 	TargetCps      uint32
-	CpsPad         uint32
+	RespTimeoutMs  uint32
 	HdrTmpl        [64]uint8
 }
 
@@ -205,6 +206,15 @@ type BpfTcpFlow struct {
 	RxPkts       uint64
 	ConnectionId uint64
 	ClosedNs     uint64
+	RespTarget   uint64
+	RoundsTarget uint32
+	RoundsDone   uint32
+	RxBytes      uint64
+	LastRxNs     uint64
+	RoundStartNs uint64
+	RttSumNs     uint64
+	RttMaxNs     uint64
+	RttSamples   uint64
 }
 
 type BpfTcpLoad struct {
@@ -325,6 +335,11 @@ type BpfTcpStats struct {
 	StartDroppedService    uint64
 	PortReuses             uint64
 	ChallengeAcks          uint64
+	RoundsDone             uint64
+	RespBytes              uint64
+	RespTimeouts           uint64
+	ShortResponses         uint64
+	PeerClosedEarly        uint64
 }
 
 type BpfTcpTemplate struct {
@@ -469,6 +484,7 @@ type BpfVariableSpecs struct {
 	MaxDiffsPerPacket  *ebpf.VariableSpec `ebpf:"max_diffs_per_packet"`
 	MaxPacketSize      *ebpf.VariableSpec `ebpf:"max_packet_size"`
 	MinPacketSize      *ebpf.VariableSpec `ebpf:"min_packet_size"`
+	MixedHasExchange   *ebpf.VariableSpec `ebpf:"mixed_has_exchange"`
 	MixedHasLco        *ebpf.VariableSpec `ebpf:"mixed_has_lco"`
 	MixedHasPayload    *ebpf.VariableSpec `ebpf:"mixed_has_payload"`
 	MixedHasTimestamps *ebpf.VariableSpec `ebpf:"mixed_has_timestamps"`
@@ -566,6 +582,7 @@ type BpfVariables struct {
 	MaxDiffsPerPacket  *ebpf.Variable `ebpf:"max_diffs_per_packet"`
 	MaxPacketSize      *ebpf.Variable `ebpf:"max_packet_size"`
 	MinPacketSize      *ebpf.Variable `ebpf:"min_packet_size"`
+	MixedHasExchange   *ebpf.Variable `ebpf:"mixed_has_exchange"`
 	MixedHasLco        *ebpf.Variable `ebpf:"mixed_has_lco"`
 	MixedHasPayload    *ebpf.Variable `ebpf:"mixed_has_payload"`
 	MixedHasTimestamps *ebpf.Variable `ebpf:"mixed_has_timestamps"`

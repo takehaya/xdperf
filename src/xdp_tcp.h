@@ -95,6 +95,18 @@ struct tcp_flow {
     __u64 rx_pkts;       // frames received from the peer for this flow
     __u64 connection_id; // slot + attempt * slot_count, independent of port index
     __u64 closed_ns;     // terminal transition or last valid retransmitted FIN
+    // Request/response rounds (mixed_has_exchange). Go writes the targets,
+    // which stay fixed across connection generations like bytes_target; with
+    // rounds, bytes_target is the request size per round (0 = no request).
+    __u64 resp_target;   // response bytes per round (R); 0 = one-way upload
+    __u32 rounds_target; // rounds (N); 0 = until drain
+    __u32 rounds_done;   // responses received in full
+    __u64 rx_bytes;      // in-order payload bytes received from the peer
+    __u64 last_rx_ns;    // last new in-order payload from the peer
+    __u64 round_start_ns;
+    __u64 rtt_sum_ns; // request start to full response, summed over rtt_samples
+    __u64 rtt_max_ns;
+    __u64 rtt_samples; // timed rounds (a download sends no request to time)
 };
 
 struct tcp_cfg {
@@ -116,7 +128,8 @@ struct tcp_cfg {
     __u8 abort;            // 1 = reset every open flow with RST and stop (Go: drain timeout / 2nd signal)
     __u8 max_data_retries; // consecutive RTOs before a flow gives up with RST
     __u8 ip_id_shared;     // 1 = one IPv4 ID counter per TX CPU (interleaved flows defeat GRO)
-    __u8 _pad[2];
+    __u8 close_by_server;  // rounds: after the last round wait for the peer FIN
+    __u8 until_fin;        // rounds: one request, the response ends with the peer FIN
     // Go rewrites the whole struct to flip drain/abort while TX/RX run; every
     // other field keeps its value, so a torn read is harmless.
     __u32 pseudo_sum; // 16-bit word sum of src+dst address (pseudo header), unfolded
@@ -129,7 +142,7 @@ struct tcp_cfg {
     __u64 start_ns;
     __u64 end_ns;
     __u32 target_cps;
-    __u32 _cps_pad;
+    __u32 resp_timeout_ms; // rounds: reset a flow idle this long while waiting (0 = never)
     // Ethernet(+VLAN)+IP header template (first l4_off bytes of the frame).
     // Rewritten into every frame: live frames are recycled zero-copy, and a
     // receiver on the same host (veth) may modify the header area in place
@@ -198,6 +211,31 @@ struct {
 } tcp_payload_map SEC(".maps");
 const volatile __u32 mixed_has_timestamps SEC(".rodata.mixed") = 0;
 const volatile __u32 mixed_has_payload SEC(".rodata.mixed") = 0;
+const volatile __u32 mixed_has_exchange SEC(".rodata.mixed") = 0;
+
+// Request/response rounds. A flow waits for responses when it has a response
+// size or reads until the peer FIN; every other flow keeps the one-way upload.
+// Invariant: a flow requests round k + 1 only after the response of round k is
+// complete, so at most one request is unanswered.
+static __always_inline int tcp_flow_exchange(const struct tcp_flow *f, __u8 until_fin)
+{
+    return mixed_has_exchange && (f->resp_target || until_fin);
+}
+// Rounds the flow may request so far: min(N, done + 1), or one with until_fin.
+static __always_inline __u64 tcp_xchg_rounds_allowed(const struct tcp_flow *f, __u8 until_fin)
+{
+    __u64 rounds = (__u64)f->rounds_done + 1;
+    if (until_fin)
+        return 1;
+    if (f->rounds_target && rounds > f->rounds_target)
+        return f->rounds_target;
+    return rounds;
+}
+// Every response of a finite run is in (N = 0 runs until drain).
+static __always_inline int tcp_xchg_all_rounds(const struct tcp_flow *f)
+{
+    return f->rounds_target && f->rounds_done >= f->rounds_target;
+}
 
 // Per-CPU TX state. Flow ownership: this CPU drives flows first, first+stride, ...
 struct tcp_cpu_state {
@@ -253,7 +291,12 @@ struct tcp_stats {
     __u64 start_dropped_scan;
     __u64 start_dropped_service;
     __u64 port_reuses;
-    __u64 challenge_acks; // ACKs sent for an RST whose seq is not rcv_nxt (RFC 5961)
+    __u64 challenge_acks;    // ACKs sent for an RST whose seq is not rcv_nxt (RFC 5961)
+    __u64 rounds_done;       // responses received in full
+    __u64 resp_bytes;        // in-order payload bytes received from peers
+    __u64 resp_timeouts;     // flows reset while waiting for a response
+    __u64 short_responses;   // peer FIN in the middle of a response
+    __u64 peer_closed_early; // peer FIN at a round boundary before the last round
 };
 
 struct {
@@ -458,6 +501,8 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
             n->ts_recent_ns = n->bytes_acked = n->last_send_ns = n->last_ack_ns = 0;
             n->tx_pkts = n->tx_data = n->tx_rtx = n->rx_replies = n->rx_pkts = 0;
             n->closed_ns = 0;
+            n->rx_bytes = n->last_rx_ns = n->round_start_ns = n->rtt_sum_ns = n->rtt_max_ns = n->rtt_samples = 0;
+            n->rounds_done = 0;
         }
         n->connection_id = id;
         bpf_spin_unlock(&n->lock);
@@ -646,8 +691,18 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
         __u32 in_flight = f->snd_nxt - f->snd_una;
         __u32 outstanding = f->snd_max - f->snd_una;
         __u64 remaining = ~0ULL; // payload bytes not yet acked (from snd_una)
-        if (f->bytes_target)
+        int xchg = tcp_flow_exchange(f, cfg->until_fin);
+        __u8 stop = drain;
+        if (xchg) {
+            // One request (Q = bytes_target, 0 = none) per received response.
+            __u64 target = f->bytes_target * tcp_xchg_rounds_allowed(f, cfg->until_fin);
+            remaining = target > f->bytes_acked ? target - f->bytes_acked : 0;
+            // The peer closed: no new request, only what is in flight.
+            if (f->peer_fin)
+                stop = 1;
+        } else if (f->bytes_target) {
             remaining = f->bytes_target > f->bytes_acked ? f->bytes_target - f->bytes_acked : 0;
+        }
 
         if (outstanding && f->rtx_pending) {
             // fast retransmit: resend the oldest unacked segment only and
@@ -694,8 +749,15 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
         if (seq_after(f->snd_max, f->snd_nxt)) {
             avail = f->snd_max - f->snd_nxt;
             rexmit = 1;
-        } else if (!drain && remaining > (__u64)in_flight) {
+        } else if (!stop && remaining > (__u64)in_flight) {
             avail = remaining - in_flight;
+            // A segment never spans two requests: the payload pattern and the
+            // round timer restart at each request.
+            if (xchg && f->bytes_target) {
+                __u64 left = f->bytes_target - (f->bytes_acked + in_flight) % f->bytes_target;
+                if (avail > left)
+                    avail = left;
+            }
         }
         if (avail > 0) {
             __u32 wnd = cfg->window_segs * mss;
@@ -724,6 +786,9 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
                     f->snd_max = f->snd_nxt;
                 f->last_send_ns = now;
                 kind = rexmit ? TXA_RTX_GBN : TXA_DATA;
+                // First byte of a request: RX clears the timer when the response is in.
+                if (xchg && !rexmit && !f->round_start_ns && (f->bytes_acked + in_flight) % f->bytes_target == 0)
+                    f->round_start_ns = now;
             } else {
                 st->window_stalls++;
                 // Window closed with nothing in flight: no ACK will come by
@@ -741,6 +806,16 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
                 }
             }
         } else if (outstanding == 0) {
+            if (xchg && !stop && (cfg->close_by_server || cfg->until_fin || !tcp_xchg_all_rounds(f))) {
+                // Waiting for a response (or the peer FIN): no RTO or persist
+                // timer runs with nothing outstanding, so time the silence.
+                __u64 since = f->last_send_ns > f->last_rx_ns ? f->last_send_ns : f->last_rx_ns;
+                if (cfg->resp_timeout_ms && now > since && now - since > (__u64)cfg->resp_timeout_ms * 1000000) {
+                    kind = tcp_tx_fail(f, st, a);
+                    st->resp_timeouts++;
+                }
+                break;
+            }
             a->seq = f->snd_nxt;
             a->ack = f->rcv_nxt;
             a->flags = TCPF_FIN | TCPF_ACK;
@@ -771,11 +846,19 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
         }
         break;
 
-    case TF_FIN_WAIT_2:
+    case TF_FIN_WAIT_2: {
         // Our FIN is acked, the peer's FIN has not arrived. A reactive peer
         // (--tcp-server) whose FIN+ACK was lost resends it when it sees an
         // ACK that does not cover its FIN, so probe with pure ACKs.
-        if (now - f->last_send_ns > (rto << f->fin_retries)) {
+        __u64 since = f->last_send_ns;
+        // A response still arriving after our FIN (drain) restarts the probe
+        // timer. last_rx_ns comes from the RX CPU's clock: never go backwards.
+        if (tcp_flow_exchange(f, cfg->until_fin) && f->last_rx_ns > since) {
+            since = f->last_rx_ns;
+            if (now < since)
+                break;
+        }
+        if (now - since > (rto << f->fin_retries)) {
             if (f->fin_retries >= cfg->max_fin_retries) {
                 kind = tcp_tx_fail(f, st, a);
                 st->fin_wait2_timeouts++;
@@ -790,6 +873,7 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
             }
         }
         break;
+    }
 
     default:
         break;
@@ -797,8 +881,13 @@ static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cf
 out:
     if (kind != TXA_NONE && kind != TXA_CLOSED)
         a->ip_id = f->ip_id++;
-    if (mixed_mode && mixed_has_payload && a->len)
-        extra->stream_offset = f->bytes_acked + (__u32)(a->seq - f->snd_una);
+    if (mixed_mode && mixed_has_payload && a->len) {
+        __u64 offset = f->bytes_acked + (__u32)(a->seq - f->snd_una);
+        // Every request starts at the beginning of the pattern.
+        if (tcp_flow_exchange(f, cfg->until_fin) && f->bytes_target)
+            offset %= f->bytes_target;
+        extra->stream_offset = offset;
+    }
     if (mixed_mode && mixed_has_timestamps && timestamps) {
         __u32 clock = now / 1000000;
         if ((state != TF_CLOSED || f->connection_id >= global->flow_count) && (__s32)(clock - f->ts_clock) < 0)
@@ -1271,8 +1360,24 @@ static __always_inline void tcp_rx_reply(struct tcp_rx_resp *r, __u32 seq, __u32
 // State machine under the flow lock; fills *r when a reply is needed.
 // Replies (ACK / RST) use seq = snd_max: after a go-back-N rewind snd_nxt may
 // lie below the peer's RCV.NXT, which would make the segment unacceptable.
+// A response (or several: a download may carry more than one per segment) is
+// complete. One RTT sample per timed request.
+static __always_inline void tcp_xchg_complete(struct tcp_flow *f, struct tcp_stats *st, __u64 done, __u64 now)
+{
+    if (f->round_start_ns && now > f->round_start_ns) {
+        __u64 rtt = now - f->round_start_ns;
+        f->rtt_sum_ns += rtt;
+        f->rtt_samples++;
+        if (rtt > f->rtt_max_ns)
+            f->rtt_max_ns = rtt;
+    }
+    f->round_start_ns = 0;
+    st->rounds_done += done - f->rounds_done;
+    f->rounds_done = (__u32)done;
+}
+
 static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *st, const struct tcp_rx_info *in, __u16 cfg_mss,
-                                          __u64 now, struct tcp_rx_resp *r, const struct tcp_rx_timestamp *ts,
+                                          __u8 until_fin, __u64 now, struct tcp_rx_resp *r, const struct tcp_rx_timestamp *ts,
                                           struct tcp_tx_extra *extra, const int timestamps, const int track_closed)
 {
     __u8 flags = in->flags;
@@ -1398,7 +1503,8 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
     __u32 new_wnd = (__u32)in->win << f->wscale;
     // Only an ACK inside [snd_una, snd_max] may change the window: a
     // reordered older ACK (or one beyond what we sent) must not shrink it
-    // (RFC 9293 3.10.7.4, SND.WL2 part; the peer sends no data, so WL1 is moot).
+    // (RFC 9293 3.10.7.4, SND.WL2 part; WL1 is not tracked: a responding peer
+    // sends data, but its ACKs only move forward with ours).
     __u8 ack_ok = seq_leq(f->snd_una, in->ack) && seq_leq(in->ack, f->snd_max);
     if (seq_after(in->ack, f->snd_una) && !seq_after(in->ack, f->snd_max)) {
         __u32 acked = in->ack - f->snd_una;
@@ -1428,8 +1534,28 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
     if (in->payload_len > 0) {
         // the peer sent data: swallow it, acknowledge it
         __u32 end = in->seq + in->payload_len;
-        if (!seq_after(in->seq, f->rcv_nxt) && seq_after(end, f->rcv_nxt))
+        if (!seq_after(in->seq, f->rcv_nxt) && seq_after(end, f->rcv_nxt)) {
+            if (tcp_flow_exchange(f, until_fin)) {
+                __u32 fresh = end - f->rcv_nxt;
+                f->rx_bytes += fresh;
+                f->last_rx_ns = now;
+                st->resp_bytes += fresh;
+                // Still receiving a response after our FIN (drain): TX
+                // restarts the FIN_WAIT_2 probe timer from last_rx_ns.
+                if (state == TF_FIN_WAIT_2)
+                    f->fin_retries = 0;
+                if (f->resp_target) {
+                    __u64 done = f->rx_bytes / f->resp_target;
+                    if (f->rounds_target && done > f->rounds_target)
+                        done = f->rounds_target;
+                    if (done > 0xffffffff)
+                        done = 0xffffffff;
+                    if (done > f->rounds_done)
+                        tcp_xchg_complete(f, st, done, now);
+                }
+            }
             f->rcv_nxt = end; // only the part beyond rcv_nxt is new
+        }
         need_ack = 1;
     }
     if (flags & TCPF_FIN) {
@@ -1437,6 +1563,19 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
         if (!f->peer_fin && in->seq + in->payload_len == f->rcv_nxt) {
             f->peer_fin = 1;
             f->rcv_nxt += 1;
+            // Only a FIN that ends our rounds early says anything about the
+            // peer: after our own FIN (drain) the peer is just answering it.
+            if (state == TF_ESTABLISHED && tcp_flow_exchange(f, until_fin)) {
+                if (until_fin) {
+                    if (!f->rounds_done)
+                        tcp_xchg_complete(f, st, 1, now); // the FIN ends the response
+                } else if (!tcp_xchg_all_rounds(f)) {
+                    if (f->rx_bytes % f->resp_target)
+                        st->short_responses++;
+                    else
+                        st->peer_closed_early++;
+                }
+            }
         }
         need_ack = 1;
     }

@@ -255,7 +255,9 @@ type MixedProgramFeatures struct {
 	Lengths, OuterIPs, UDPs uint32
 	LCO                     bool
 	Timestamps, Payload     bool
-	TemplateEntries         uint32
+	// Exchange enables request/response rounds (response_bytes, rounds).
+	Exchange        bool
+	TemplateEntries uint32
 }
 
 // LoadMixedProgramsWithFeatures specializes builders before verification. The
@@ -301,6 +303,7 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 	for name, value := range map[string]uint32{
 		"mixed_has_timestamps": flag(features.Timestamps),
 		"mixed_has_payload":    flag(features.Payload),
+		"mixed_has_exchange":   flag(features.Exchange),
 		"mixed_max_lengths":    features.Lengths,
 		"mixed_max_outer_ips":  features.OuterIPs,
 		"mixed_max_udps":       features.UDPs,

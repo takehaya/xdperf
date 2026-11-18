@@ -193,6 +193,9 @@ func TestBpfMixedSpecializations(t *testing.T) {
 		"payload":            {Payload: true},
 		"timestamps-payload": {Timestamps: true, Payload: true},
 		"nested-extensions":  {Lengths: 4, OuterIPs: 2, UDPs: 2, LCO: true, Timestamps: true, Payload: true, TemplateEntries: 18},
+		"exchange":           {Exchange: true},
+		"exchange-nested-extensions": {Lengths: 4, OuterIPs: 2, UDPs: 2, LCO: true, Timestamps: true, Payload: true,
+			TemplateEntries: 18, Exchange: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			objs, spec, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1})
