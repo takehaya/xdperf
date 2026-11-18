@@ -50,6 +50,7 @@ func main() {
 	readBuf := flag.Int("read-buf", 256*1024, "per-connection read buffer size")
 	xdpPassDev := flag.String("xdp-pass-dev", "", "attach a pass-through XDP program to this device (veth test beds only, see comment in source)")
 	netkitFastpath := flag.String("netkit-fastpath", "", "attach TCX/netkit redirect fastpath (<ingress-dev>:<netkit-primary-dev>:<pod-ipv4>)")
+	netkitFlowDump := flag.String("netkit-flow-dump", "", "enable 5-tuple LRU_HASH flow counters on -netkit-fastpath and dump JSON to this path on exit")
 	showVersion := flag.Bool("v", false, "print the version and exit")
 	flag.Parse()
 
@@ -75,7 +76,7 @@ func main() {
 		defer detachXDPPass()
 	}
 	if *netkitFastpath != "" {
-		if err := attachNetkitFastpath(*netkitFastpath); err != nil {
+		if err := attachNetkitFastpathWithFlows(*netkitFastpath, *netkitFlowDump); err != nil {
 			log.Fatalf("attach netkit fastpath (%s): %v", *netkitFastpath, err)
 		}
 		defer detachNetkitFastpath()
@@ -204,6 +205,9 @@ func main() {
 			fmt.Println(string(out))
 			if *xdpPassDev != "" {
 				detachXDPPass()
+			}
+			if *netkitFastpath != "" {
+				detachNetkitFastpath()
 			}
 			// Connections still open are not waited for: the summary is the
 			// state at signal time, which is what a test script wants.

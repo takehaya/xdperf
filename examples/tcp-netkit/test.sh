@@ -182,11 +182,15 @@ print_success "Case 3 PASS: mixed UDP + TCP flows verified into netkit L2 Pod"
 # 4. TCP stream into netkit L3 Pod via TCX + netkit_peer BPF redirect fastpath
 # Disable standard IPv4 forwarding on the DUT after neighbor resolution so the
 # test only passes when both BPF redirects (bpf_redirect_peer and
-# bpf_redirect_neigh) actively forward the packets.
-print_info "Case 4 (netkit L3 BPF fastpath): ${FLOWS} TCP flows x ${BYTES} bytes via bpf_redirect_peer + bpf_redirect_neigh (ip_forward=0)"
+# bpf_redirect_neigh) actively forward the packets. Also enable 5-tuple
+# LRU_HASH flow counters on both hooks and verify exact tuple-by-tuple match
+# with --tcp-flow-report.
+print_info "Case 4 (netkit L3 BPF fastpath + 5-tuple ledger): ${FLOWS} TCP flows x ${BYTES} bytes via bpf_redirect_peer + bpf_redirect_neigh (ip_forward=0)"
 ip netns exec "${NS_TX}" ping -c 1 -W 1 "${RX_L3_IP4}" >/dev/null
 ip netns exec "${NS_DUT}" sysctl -qw net.ipv4.ip_forward=0
-start_dut_helper -netkit-fastpath "${VETH_DUT}:${NK_DUT_L3}:${RX_L3_IP4}"
+flow_dump_fp="${XDPERF_EXAMPLE_RUNDIR}/nk-l3-fastpath-flows.json"
+rm -f "${flow_dump_fp}"
+start_dut_helper -netkit-fastpath "${VETH_DUT}:${NK_DUT_L3}:${RX_L3_IP4}" -netkit-flow-dump "${flow_dump_fp}"
 start_nk_sink "${NS_RX_L3}" "${RX_L3_IP4}:${DST_PORT}"
 report_fp="${XDPERF_EXAMPLE_RUNDIR}/nk-l3-fastpath-flows.csv"
 if ! ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
@@ -197,7 +201,26 @@ if ! ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
     exit 1
 fi
 stop_pidfile "${SINK_PID_FILE}" xdperf-sink
+stop_pidfile "${PASS_PID_FILE}" xdperf-sink
 ip netns exec "${NS_DUT}" sysctl -qw net.ipv4.ip_forward=1
 
 verify_tcp_flows "${report_fp}" "${SINK_LOG}" "${FLOWS}" "${expected_bytes}"
-print_success "Case 4 PASS: ${FLOWS} TCP flows (${expected_bytes} bytes) verified via netkit L3 BPF fastpath"
+python3 - "${report_fp}" "${flow_dump_fp}" "${TX_IP4}" "${RX_L3_IP4}" "${DST_PORT}" <<'PY'
+import csv, json, sys
+report_path, dump_path, tx_ip, rx_ip, dst_port = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+with open(report_path, newline='') as f:
+    rows = list(csv.DictReader(f))
+with open(dump_path) as f:
+    dump = json.load(f)
+in_map = {(e['src_ip'], e['dst_ip'], e['src_port'], e['dst_port'], e['proto']): e['packets'] for e in dump['ingress']}
+eg_map = {(e['src_ip'], e['dst_ip'], e['src_port'], e['dst_port'], e['proto']): e['packets'] for e in dump['egress']}
+for r in rows:
+    sp = int(r['src_port'])
+    tx_wire = int(r['tx_pkts']) + int(r['rx_replies'])
+    rx_pkts = int(r['rx_pkts'])
+    in_key = (tx_ip, rx_ip, sp, dst_port, 6)
+    eg_key = (rx_ip, tx_ip, dst_port, sp, 6)
+    assert in_map.get(in_key) == tx_wire, f"ingress mismatch for {in_key}: bpf={in_map.get(in_key)} ledger={tx_wire}"
+    assert eg_map.get(eg_key) == rx_pkts, f"egress mismatch for {eg_key}: bpf={eg_map.get(eg_key)} ledger={rx_pkts}"
+PY
+print_success "Case 4 PASS: ${FLOWS} TCP flows (${expected_bytes} bytes) and 5-tuple BPF counters verified via netkit L3 fastpath"

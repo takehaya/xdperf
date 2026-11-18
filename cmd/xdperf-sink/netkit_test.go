@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -74,5 +77,40 @@ func TestAttachNetkitFastpath(t *testing.T) {
 			t.Fatalf("tcx_to_netkit returned TC_ACT_OK (0) for matching Pod IP %s", podIP)
 		}
 		detachNetkitFastpath()
+	}
+
+	// Verify 5-tuple LRU_HASH flow counting and JSON dump on detach.
+	dumpFile := filepath.Join(t.TempDir(), "flows.json")
+	spec := fmt.Sprintf("%s:%s:10.200.3.200", vname, nkname)
+	if err := attachNetkitFastpathWithFlows(spec, dumpFile); err != nil {
+		t.Fatalf("attachNetkitFastpathWithFlows: %v", err)
+	}
+	pkt := make([]byte, 54)
+	pkt[12], pkt[13] = 0x08, 0x00 // ETH_P_IP
+	pkt[14] = 0x45                // IPv4 IHL=5
+	pkt[23] = 6                   // IPPROTO_TCP
+	copy(pkt[26:30], net.ParseIP("10.200.1.1").To4())
+	copy(pkt[30:34], net.ParseIP("10.200.3.200").To4())
+	binary.BigEndian.PutUint16(pkt[34:36], 20000)
+	binary.BigEndian.PutUint16(pkt[36:38], 5201)
+	for i := 0; i < 3; i++ {
+		if ret, _, err := nkFastpathProgs[0].Test(pkt); err != nil || ret == 0 {
+			detachNetkitFastpath()
+			t.Fatalf("tcx_to_netkit with flows failed: ret=%d err=%v", ret, err)
+		}
+	}
+	detachNetkitFastpath()
+
+	raw, err := os.ReadFile(dumpFile)
+	if err != nil {
+		t.Fatalf("read flow dump: %v", err)
+	}
+	var dump netkitFlowDump
+	if err := json.Unmarshal(raw, &dump); err != nil {
+		t.Fatalf("unmarshal flow dump: %v", err)
+	}
+	if len(dump.Ingress) != 1 || dump.Ingress[0].SrcIP != "10.200.1.1" || dump.Ingress[0].DstIP != "10.200.3.200" ||
+		dump.Ingress[0].SrcPort != 20000 || dump.Ingress[0].DstPort != 5201 || dump.Ingress[0].Proto != 6 || dump.Ingress[0].Packets != 3 {
+		t.Fatalf("unexpected ingress flow dump: %+v", dump.Ingress)
 	}
 }

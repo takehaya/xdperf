@@ -48,11 +48,13 @@ flowchart LR
    packets and four unequal TCP flows into the L2 `netkit` namespace and
    verifies UDP echo counts, TCP flow completion, and opportunity ratios via
    `examples/common/py/verify.py`.
-4. **`netkit` L3 BPF redirect fastpath (`-netkit-fastpath`)**: Attaches a TCX
-   ingress `bpf_redirect_peer` program on `nk-dut-in` and a `BPF_NETKIT_PEER`
-   `bpf_redirect_neigh` program on `nk-dut-l3` (matching Cilium's
-   `bpf.datapathMode=netkit` zero-backlog path) and verifies `FLOWS` concurrent
-   TCP connections end to end.
+4. **`netkit` L3 BPF redirect fastpath + 5-tuple flow ledger (`-netkit-fastpath` / `-netkit-flow-dump`)**:
+   Attaches a TCX ingress `bpf_redirect_peer` program on `nk-dut-in` and a
+   `BPF_NETKIT_PEER` `bpf_redirect_neigh` program on `nk-dut-l3` (matching
+   Cilium's `bpf.datapathMode=netkit` zero-backlog path) with 5-tuple
+   `BPF_MAP_TYPE_LRU_HASH` packet counters on both hooks, and verifies both
+   end-to-end TCP completion and exact tuple-by-tuple counter agreement against
+   `--tcp-flow-report` (`tx_pkts + rx_replies` on ingress, `rx_pkts` on egress).
 
 ## Run
 
