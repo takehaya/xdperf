@@ -159,7 +159,7 @@ func TestParseArgsEnvPrecedence(t *testing.T) {
 		{"count", "XDPERF_COUNT", "2k", "3k", func(c xdperf.Config) any { return c.Count }, uint64(0), uint64(2000), uint64(3000)},
 		{"pps", "XDPERF_PPS", "10k", "20k", func(c xdperf.Config) any { return c.PPS }, uint64(0), uint64(10000), uint64(20000)},
 		{"debugmode", "XDPERF_DEBUGMODE", "1", "0", func(c xdperf.Config) any { return c.LoggerConfig.Verbose }, 0, 1, 0},
-		{"batch-size", "XDPERF_BATCH_SIZE", "32", "16", func(c xdperf.Config) any { return c.BatchSize }, uint32(64), uint32(32), uint32(16)},
+		{"batch-size", "XDPERF_BATCH_SIZE", "32", "16", func(c xdperf.Config) any { return c.BatchSize }, uint32(256), uint32(32), uint32(16)},
 		{"cpu-mode", "XDPERF_CPU_MODE", "local", "balanced", func(c xdperf.Config) any { return c.CPUMode }, "auto", "local", "balanced"},
 		{"xdp-mode", "XDPERF_XDP_MODE", "generic", "native", func(c xdperf.Config) any { return c.XDPMode }, "auto", "generic", "native"},
 		{"otlp-interval", "XDPERF_OTLP_INTERVAL", "5s", "2s", func(c xdperf.Config) any { return c.OTLPInterval }, 10 * time.Second, 5 * time.Second, 2 * time.Second},

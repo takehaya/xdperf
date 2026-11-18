@@ -139,8 +139,8 @@ func newApp(version string) *cli.App {
 		cli.IntFlag{
 			Name:   "batch-size",
 			EnvVar: "XDPERF_BATCH_SIZE",
-			Value:  64,
-			Usage:  "syscall batch size tuning (frames per bpf_prog_run in infinite/max-speed mode; 1 to disable batching)",
+			Value:  256,
+			Usage:  "syscall batch size tuning (frames per bpf_prog_run in infinite/max-speed mode; 1 to disable batching, 256 is the kernel maximum)",
 		},
 		cli.StringFlag{
 			Name:   "wasm-cache-dir",
