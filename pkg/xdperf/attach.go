@@ -119,7 +119,7 @@ func isLiveFrameTXUnsupported(res *probe.ProbeResult, linkType string, flags net
 	case res.XDPFeatures != nil:
 		return !res.XDPDriverMode
 	default:
-		return !res.XDPDriverMode && res.AttachedMode == ""
+		return !res.XDPDriverMode && !(res.AttachedMode != "" && linkType == "veth")
 	}
 }
 

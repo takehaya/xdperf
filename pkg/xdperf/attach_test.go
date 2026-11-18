@@ -61,6 +61,12 @@ func TestIsLiveFrameTXUnsupported(t *testing.T) {
 			want:     false,
 		},
 		{
+			name:     "legacy kernel with active generic attach on non-veth still rejected",
+			res:      probe.ProbeResult{XDPDriverMode: false, AttachedMode: "generic"},
+			linkType: "vlan",
+			want:     true,
+		},
+		{
 			name:     "legacy kernel loopback with active generic attach still rejected",
 			res:      probe.ProbeResult{XDPDriverMode: false, AttachedMode: "generic"},
 			linkType: "device",
