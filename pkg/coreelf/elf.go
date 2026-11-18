@@ -269,6 +269,10 @@ var mixedTxScanDivisors = []uint32{1, 2, 4}
 
 var mixedTxScan, mixedTxScanMax atomic.Uint32
 
+// Spike hook: verifier log level/size for the mixed programs (0 = default).
+var spikeLogLevel ebpf.LogLevel
+var spikeLogSize uint32
+
 // MixedTxScan reports how many flows a TCP TX iteration examines in the last
 // loaded mixed programs, and the full scan they were built for (0, 0 before
 // the first load).
@@ -387,7 +391,7 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 		last := i == len(divisors)-1 || full/divisors[i+1] == 0
 		err = spec.LoadAndAssign(&mixed, &ebpf.CollectionOptions{
 			MapReplacements: replacements,
-			Programs:        ebpf.ProgramOptions{LogDisabled: !last},
+			Programs:        ebpf.ProgramOptions{LogDisabled: !last && spikeLogLevel == 0, LogLevel: spikeLogLevel, LogSizeStart: spikeLogSize},
 		})
 		if err == nil {
 			mixedTxScan.Store(scan)

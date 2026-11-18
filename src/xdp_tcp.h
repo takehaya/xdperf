@@ -556,12 +556,13 @@ static __noinline int tcp_start_permit(const struct tcp_cfg *cfg, struct tcp_cpu
 
 // Scan only CLOSED candidates here; running the full state machine in both scans
 // duplicates verifier paths on older kernels. Its cursor is separate from normal TX.
-static __noinline struct tcp_flow *tcp_start_flow(const struct tcp_cfg *cfg, struct tcp_cpu_state *cs, __u32 first, __u32 count)
+// Returns the flow index of the candidate, or -1.
+static __noinline int tcp_start_flow(const struct tcp_cfg *cfg, struct tcp_cpu_state *cs, __u32 first, __u32 count)
 {
     __u32 zero = 0;
     struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
     if (!st)
-        return NULL;
+        return -1;
     __u64 now = bpf_ktime_get_ns();
     __u32 cursor = cs->start_cursor, quarantine = 0;
     for (int i = 0; i < TCP_TX_SCAN; i++) {
@@ -573,8 +574,11 @@ static __noinline struct tcp_flow *tcp_start_flow(const struct tcp_cfg *cfg, str
             continue;
         struct tcp_flow *f = tcp_slot_flow(idx, cfg, now, &quarantine);
         if (f && f->state == TF_CLOSED) {
+            __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &idx);
+            if (!current)
+                continue;
             cs->start_cursor = cursor;
-            return f;
+            return *current;
         }
     }
     cs->start_cursor = cursor;
@@ -584,7 +588,7 @@ static __noinline struct tcp_flow *tcp_start_flow(const struct tcp_cfg *cfg, str
         st->start_dropped_busy++;
     else
         st->start_dropped_scan++;
-    return NULL;
+    return -1;
 }
 
 static __always_inline int tcp_flow_open(__u8 state)
@@ -630,6 +634,10 @@ struct tcp_mixed_decision {
     struct tcp_tx_extra extra;
     __u64 now;
     int allow_start;
+    // Filled by the step: the decided flow and its template, which the caller
+    // looks up again (a global function returns only a scalar).
+    __u32 flow;
+    __u32 group;
 };
 
 static __noinline int tcp_tx_decide_mixed(struct tcp_flow *f, const struct tcp_template *tmpl, struct tcp_stats *st,
@@ -650,6 +658,60 @@ static __noinline int tcp_tx_decide_mixed_xchg(struct tcp_flow *f, const struct 
         decision->extra.timestamps = 0;
     return tcp_tx_decide_xchg(f, &tmpl->cfg, st, decision->now, &decision->act, &decision->extra, 1,
                               mixed_has_timestamps && tmpl->timestamps, 1, decision->allow_start);
+}
+
+// One scan attempt: resolve the flow at idx (a slot unless allow_start, where
+// tcp_start_flow already resolved it) and decide what it sends. These are
+// global functions on purpose: the verifier checks a global function once,
+// for any arguments, instead of once per scan iteration and per state that
+// reaches it. That is what keeps the TX programs far below the 1M instruction
+// limit on 6.1. Returns the action kind, or -1 when a map lookup failed.
+static __always_inline int tcp_tx_step_run(__u32 idx, struct tcp_mixed_decision *d, const int extended, const int exchange)
+{
+    __u32 zero = 0;
+    if (!d)
+        return -1;
+    const struct tcp_cfg *global = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
+    struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
+    if (!global || !st)
+        return -1;
+    struct tcp_flow *f;
+    __u32 flow = idx;
+    if (global->slot_count && !d->allow_start) {
+        __u32 quarantine = 0;
+        f = tcp_slot_flow(idx, global, d->now, &quarantine);
+        // Only this worker advances its slots: the index is the one just resolved.
+        __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &idx);
+        if (!f || !current)
+            return TXA_NONE;
+        flow = *current;
+    } else {
+        f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
+    }
+    if (!f)
+        return TXA_NONE;
+    __u32 group = f->template_id;
+    struct tcp_template *tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
+    if (!tmpl)
+        return -1;
+    // Do not carry action state between scan attempts.
+    d->act = (struct tcp_tx_action){0};
+    d->extra = (struct tcp_tx_extra){0};
+    d->flow = flow;
+    d->group = group;
+    return exchange ? tcp_tx_decide_mixed_xchg(f, tmpl, st, d) : tcp_tx_decide_mixed(f, tmpl, st, d, extended);
+}
+__noinline int tcp_tx_step(__u32 idx, struct tcp_mixed_decision *d)
+{
+    return tcp_tx_step_run(idx, d, 0, 0);
+}
+__noinline int tcp_tx_step_ext(__u32 idx, struct tcp_mixed_decision *d)
+{
+    return tcp_tx_step_run(idx, d, 1, 0);
+}
+__noinline int tcp_tx_step_xchg(__u32 idx, struct tcp_mixed_decision *d)
+{
+    return tcp_tx_step_run(idx, d, 1, 1);
 }
 
 // Compile separate entry points for basic and extended TCP templates.
@@ -687,9 +749,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended, co
 
     const struct tcp_cfg *global = cfg;
     struct tcp_mixed_decision decision = {.now = bpf_ktime_get_ns()};
-    struct tcp_flow *sel = NULL;
     int kind = TXA_NONE;
-    struct tcp_template *tmpl = NULL;
 
     int permit = tcp_start_permit(global, cs, st, decision.now);
     if (permit && cs->service_pending) {
@@ -699,15 +759,13 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended, co
     // After every new SYN, reserve an iteration for data/retries/FIN even at saturation.
     cs->service_pending = 0;
     if (permit) {
-        sel = tcp_start_flow(global, cs, first, count);
-        if (sel) {
-            __u32 group = sel->template_id;
-            tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
-            if (!tmpl)
-                return XDP_ABORTED;
+        int start = tcp_start_flow(global, cs, first, count);
+        if (start >= 0) {
             decision.allow_start = 1;
-            kind = exchange ? tcp_tx_decide_mixed_xchg(sel, tmpl, st, &decision)
-                            : tcp_tx_decide_mixed(sel, tmpl, st, &decision, extended);
+            kind = exchange ? tcp_tx_step_xchg(start, &decision)
+                            : extended ? tcp_tx_step_ext(start, &decision) : tcp_tx_step(start, &decision);
+            if (kind < 0)
+                return XDP_ABORTED;
             if (kind != TXA_NONE && kind != TXA_CLOSED) {
                 st->start_permits++;
                 cs->start_permits++;
@@ -718,8 +776,6 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended, co
     }
     decision.allow_start = 0;
     kind = TXA_NONE;
-    sel = NULL;
-    __u32 quarantine = 0;
     for (int i = 0; i < TCP_TX_SCAN; i++) {
         if (exchange && i >= mixed_tx_scan)
             break;
@@ -731,34 +787,25 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended, co
         idx = first + cursor * cs->stride;
         if (idx >= MAX_TCP_FLOWS)
             continue;
-        struct tcp_flow *f;
-        if (global->slot_count)
-            f = tcp_slot_flow(idx, global, decision.now, &quarantine);
-        else
-            f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
-        if (!f)
-            continue;
-        __u32 group = f->template_id;
-        tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
-        if (!tmpl)
+        kind = exchange ? tcp_tx_step_xchg(idx, &decision)
+                        : extended ? tcp_tx_step_ext(idx, &decision) : tcp_tx_step(idx, &decision);
+        if (kind < 0)
             return XDP_ABORTED;
-        cfg = &tmpl->cfg;
-        // Do not carry action state between scan attempts into the verifier.
-        decision.act = (struct tcp_tx_action){0};
-        decision.extra = (struct tcp_tx_extra){0};
-        kind = exchange ? tcp_tx_decide_mixed_xchg(f, tmpl, st, &decision) : tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
-        if (kind != TXA_NONE && kind != TXA_CLOSED) {
-            sel = f;
+        if (kind != TXA_NONE && kind != TXA_CLOSED)
             break;
-        }
         kind = TXA_NONE;
     }
-    if (kind == TXA_NONE || !sel) {
+    if (kind == TXA_NONE) {
         st->idle_iters++;
         return XDP_DROP;
     }
 
 build:;
+    __u32 flow = decision.flow, group = decision.group;
+    struct tcp_flow *sel = bpf_map_lookup_elem(&tcp_flow_map, &flow);
+    struct tcp_template *tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
+    if (!sel || !tmpl)
+        return XDP_ABORTED;
     int built;
     if (extended)
         built = tcp_template_build_ext(ctx, tmpl, cs, &decision.act, &decision.extra);
