@@ -61,6 +61,23 @@ func attachNetkitFastpath(spec string) error {
 	}
 
 	// 1. TCX ingress program on inDev -> bpf_redirect_peer(nkDev.Index, 0)
+	//
+	// Equivalent C program:
+	//   SEC("tcx/ingress")
+	//   int tcx_to_netkit(struct __sk_buff *skb) {
+	//       void *data     = (void *)(long)skb->data;
+	//       void *data_end = (void *)(long)skb->data_end;
+	//       struct ethhdr *eth = data;
+	//       if ((void *)(eth + 1) + sizeof(struct iphdr) > data_end)
+	//           return TC_ACT_OK;
+	//       if (eth->h_proto != bpf_htons(ETH_P_IP))
+	//           return TC_ACT_OK;
+	//       struct iphdr *iph = (void *)(eth + 1);
+	//       if (iph->daddr != pod_ip)
+	//           return TC_ACT_OK;
+	//       return bpf_redirect_peer(nk_ifindex, 0);
+	//   }
+	//
 	// Use 32-bit JNE.Imm32 comparisons because LoadMem (Word/Half) zero-extends
 	// into 64-bit registers while 64-bit JNE.Imm sign-extends int32 immediates
 	// (which would mismatch any IPv4 address whose high bit in native order is 1,
@@ -69,20 +86,20 @@ func attachNetkitFastpath(spec string) error {
 		Name: "tcx_to_netkit",
 		Type: ebpf.SchedCLS,
 		Instructions: asm.Instructions{
-			asm.LoadMem(asm.R2, asm.R1, skbDataOffset, asm.Word),
-			asm.LoadMem(asm.R3, asm.R1, skbDataEndOffset, asm.Word),
-			asm.Mov.Reg(asm.R4, asm.R2),
-			asm.Add.Imm(asm.R4, ethHLen+ipv4HLen),
-			asm.JGT.Reg(asm.R4, asm.R3, "pass"),
-			asm.LoadMem(asm.R5, asm.R2, ethProtoOffset, asm.Half),
-			asm.JNE.Imm32(asm.R5, ethPIP, "pass"),
-			asm.LoadMem(asm.R5, asm.R2, ipv4DaddrOffset, asm.Word),
-			asm.JNE.Imm32(asm.R5, podIP, "pass"),
-			asm.Mov.Imm(asm.R1, int32(nkDev.Index)),
-			asm.Mov.Imm(asm.R2, 0),
-			asm.FnRedirectPeer.Call(),
+			asm.LoadMem(asm.R2, asm.R1, skbDataOffset, asm.Word),    // r2 = skb->data
+			asm.LoadMem(asm.R3, asm.R1, skbDataEndOffset, asm.Word), // r3 = skb->data_end
+			asm.Mov.Reg(asm.R4, asm.R2),                             // r4 = data
+			asm.Add.Imm(asm.R4, ethHLen+ipv4HLen),                   // r4 += sizeof(ethhdr) + sizeof(iphdr)
+			asm.JGT.Reg(asm.R4, asm.R3, "pass"),                     // if (r4 > data_end) goto pass
+			asm.LoadMem(asm.R5, asm.R2, ethProtoOffset, asm.Half),   // r5 = eth->h_proto
+			asm.JNE.Imm32(asm.R5, ethPIP, "pass"),                   // if (r5 != htons(ETH_P_IP)) goto pass
+			asm.LoadMem(asm.R5, asm.R2, ipv4DaddrOffset, asm.Word),  // r5 = iph->daddr
+			asm.JNE.Imm32(asm.R5, podIP, "pass"),                    // if (r5 != pod_ip) goto pass
+			asm.Mov.Imm(asm.R1, int32(nkDev.Index)),                 // r1 = nk_ifindex
+			asm.Mov.Imm(asm.R2, 0),                                  // r2 = 0 (flags)
+			asm.FnRedirectPeer.Call(),                               // return bpf_redirect_peer(r1, r2)
 			asm.Return(),
-			asm.Mov.Imm(asm.R0, 0).WithSymbol("pass"), // TC_ACT_OK
+			asm.Mov.Imm(asm.R0, 0).WithSymbol("pass"), // pass: return TC_ACT_OK (0)
 			asm.Return(),
 		},
 		License: "GPL",
@@ -93,19 +110,27 @@ func attachNetkitFastpath(spec string) error {
 
 	// 2. Netkit peer program on nkDev -> bpf_redirect_neigh(inDev.Index, NULL, 0, 0)
 	// Checks skb->protocol so it works identically in both L2 and L3 netkit modes.
+	//
+	// Equivalent C program:
+	//   SEC("netkit/peer")
+	//   int nk_from_pod(struct __sk_buff *skb) {
+	//       if (skb->protocol != bpf_htons(ETH_P_IP))
+	//           return NETKIT_PASS;
+	//       return bpf_redirect_neigh(in_ifindex, NULL, 0, 0);
+	//   }
 	nkProg, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name: "nk_from_pod",
 		Type: ebpf.SchedCLS,
 		Instructions: asm.Instructions{
-			asm.LoadMem(asm.R2, asm.R1, skbProtocolOffset, asm.Word),
-			asm.JNE.Imm32(asm.R2, ethPIP, "pass"),
-			asm.Mov.Imm(asm.R1, int32(inDev.Index)),
-			asm.Mov.Imm(asm.R2, 0),
-			asm.Mov.Imm(asm.R3, 0),
-			asm.Mov.Imm(asm.R4, 0),
-			asm.FnRedirectNeigh.Call(),
+			asm.LoadMem(asm.R2, asm.R1, skbProtocolOffset, asm.Word), // r2 = skb->protocol
+			asm.JNE.Imm32(asm.R2, ethPIP, "pass"),                    // if (r2 != htons(ETH_P_IP)) goto pass
+			asm.Mov.Imm(asm.R1, int32(inDev.Index)),                  // r1 = in_ifindex
+			asm.Mov.Imm(asm.R2, 0),                                   // r2 = NULL (params)
+			asm.Mov.Imm(asm.R3, 0),                                   // r3 = 0 (plen)
+			asm.Mov.Imm(asm.R4, 0),                                   // r4 = 0 (flags)
+			asm.FnRedirectNeigh.Call(),                               // return bpf_redirect_neigh(r1, NULL, 0, 0)
 			asm.Return(),
-			asm.Mov.Imm(asm.R0, 0).WithSymbol("pass"), // NETKIT_PASS
+			asm.Mov.Imm(asm.R0, 0).WithSymbol("pass"), // pass: return NETKIT_PASS (0)
 			asm.Return(),
 		},
 		License: "GPL",
