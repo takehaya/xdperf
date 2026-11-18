@@ -55,8 +55,11 @@ type mixedGroup struct {
 // tcpDefaultResponseTimeout applies when response_timeout_ms is 0.
 const tcpDefaultResponseTimeout = 10 * time.Second
 
-// tcpExchangeFlow is the validated round setup of one flow.
+// tcpExchangeFlow is the validated round setup of one flow. on matches the
+// BPF test for a request/response flow (resp_target != 0 or until_fin);
+// rounds 0 then means until drain.
 type tcpExchangeFlow struct {
+	on     bool
 	resp   uint64
 	rounds uint32
 }
@@ -64,20 +67,25 @@ type tcpExchangeFlow struct {
 // parseTCPExchange validates the request/response fields of one TCP variant.
 // It returns per-flow targets and whether any flow runs rounds.
 func parseTCPExchange(f *guest.TCPFlowVariant, timed bool) ([]tcpExchangeFlow, bool, error) {
+	if f.Close != "" && f.Close != "client" && f.Close != "server" {
+		return nil, false, fmt.Errorf("close must be client or server")
+	}
 	out := make([]tcpExchangeFlow, len(f.Flows))
 	hasRounds := f.ResponseUntilFin
 	for i, flow := range f.Flows {
+		if f.ResponseUntilFin {
+			// One request; the peer's FIN ends the response.
+			if flow.ResponseBytes != "" || flow.Rounds != nil {
+				return nil, false, fmt.Errorf("flow %d: response_until_fin sends one request and ends the response at the peer FIN; leave response_bytes and rounds unset", i)
+			}
+			out[i] = tcpExchangeFlow{on: true, rounds: 1}
+			continue
+		}
 		if flow.ResponseBytes == "" {
 			if flow.Rounds != nil {
 				return nil, false, fmt.Errorf("flow %d: rounds requires response_bytes", i)
 			}
-			if f.ResponseUntilFin {
-				out[i].rounds = 1
-			}
 			continue
-		}
-		if f.ResponseUntilFin {
-			return nil, false, fmt.Errorf("flow %d: response_until_fin takes the response length from the peer FIN; leave response_bytes empty", i)
 		}
 		r, err := decimalUint64(flow.ResponseBytes)
 		if err != nil {
@@ -86,20 +94,24 @@ func parseTCPExchange(f *guest.TCPFlowVariant, timed bool) ([]tcpExchangeFlow, b
 		if r == 0 {
 			return nil, false, fmt.Errorf("flow %d: response_bytes must be above 0", i)
 		}
-		out[i] = tcpExchangeFlow{resp: r, rounds: 1}
+		out[i] = tcpExchangeFlow{on: true, resp: r, rounds: 1}
 		if flow.Rounds != nil {
 			out[i].rounds = *flow.Rounds
-			if out[i].rounds == 0 && (!timed || f.Connections != nil) {
-				return nil, false, fmt.Errorf("flow %d: rounds 0 runs until --duration or --count and cannot be used with connections", i)
-			}
+		}
+		// Without a request nothing marks where the next response starts.
+		if q, err := decimalUint64(flow.Bytes); err == nil && q == 0 && out[i].rounds != 1 {
+			return nil, false, fmt.Errorf("flow %d: a download (bytes 0) has one response; rounds must be 1", i)
+		}
+		if out[i].rounds == 0 && !timed {
+			return nil, false, fmt.Errorf("flow %d: rounds 0 runs until --duration or --count", i)
+		}
+		if out[i].rounds == 0 && f.Connections != nil {
+			return nil, false, fmt.Errorf("flow %d: rounds 0 never closes, so it cannot be used with connections", i)
 		}
 		hasRounds = true
 	}
 	if !hasRounds && (f.Close != "" || f.ResponseTimeoutMillis != 0) {
 		return nil, false, fmt.Errorf("close and response_timeout_ms require response_bytes or response_until_fin")
-	}
-	if f.Close != "" && f.Close != "client" && f.Close != "server" {
-		return nil, false, fmt.Errorf("close must be client or server")
 	}
 	return out, hasRounds, nil
 }
@@ -321,7 +333,7 @@ func (x *Xdperf) prepareMixed(resp *guest.GeneratorProcessResponse) error {
 				return fmt.Errorf("TCP variant %d bytes: %w", i, err)
 			}
 			exchange = append(exchange, xchg[k])
-			if xchg[k].rounds != 0 {
+			if xchg[k].on {
 				// bytes is the request size: 0 is a download, not unlimited.
 				targets = append(targets, b)
 				continue

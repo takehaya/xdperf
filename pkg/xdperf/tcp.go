@@ -262,8 +262,6 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 		cfg.SlotCount = uint32(x.mixed.flows)
 	}
 	cfg.IpIdShared = x.mixed.groups[0].ipIDShared
-	g0 := x.mixed.groups[0]
-	cfg.CloseByServer, cfg.UntilFin, cfg.RespTimeoutMs = g0.closeByServer, g0.untilFin, g0.respTimeoutMs
 	copy(cfg.HdrTmpl[:], template[:min(int(t.l4Off), len(cfg.HdrTmpl))])
 	zero := uint32(0)
 	if err := x.bpfobjs.TcpCfgMap.Put(&zero, &cfg); err != nil {
@@ -896,12 +894,20 @@ loop:
 		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d, response timeouts %d)",
 			s.Failed, x.mixed.connections, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts, s.RespTimeouts)
 	}
-	// A response cut short by the peer FIN is a failed round even though
-	// the connection itself closed cleanly.
-	if s.ShortResponses > 0 {
-		return fmt.Errorf("%d responses ended early with the peer FIN", s.ShortResponses)
+	if err := tcpRoundsError(s); err != nil {
+		return err
 	}
 	return x.writeSummary()
+}
+
+// tcpRoundsError fails a run whose peers closed before the requested rounds
+// were done. Those flows still end cleanly (DONE), so Failed misses them.
+func tcpRoundsError(s coreelf.BpfTcpStats) error {
+	if s.ShortResponses == 0 && s.PeerClosedEarly == 0 {
+		return nil
+	}
+	return fmt.Errorf("peers closed early: %d responses cut short, %d connections closed before the last round",
+		s.ShortResponses, s.PeerClosedEarly)
 }
 
 func (x *Xdperf) showTCPConnectionRates(loadStats coreelf.BpfTcpStats, load, drain time.Duration, reason string) {

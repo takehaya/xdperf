@@ -262,7 +262,8 @@ type TCPFlow struct {
 	// each request with this many bytes. Empty keeps the one-way upload.
 	ResponseBytes string `json:"response_bytes,omitempty"`
 	// Rounds is the number of request/response rounds: nil = 1, 0 = until
-	// --duration or --count. Requires ResponseBytes.
+	// --duration or --count (not with Connections). Requires ResponseBytes;
+	// a download (Bytes "0") has exactly one round.
 	Rounds *uint32 `json:"rounds,omitempty"`
 }
 
