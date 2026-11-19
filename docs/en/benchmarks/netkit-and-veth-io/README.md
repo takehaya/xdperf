@@ -1,18 +1,18 @@
 # Benchmarking `veth`, `netkit`, and Kubernetes / Cilium Datapaths with `xdperf`
 
-> **Japanese version (日本語版)**: [docs/ja/benchmarks/netkit-and-veth-io/README.md](ja/benchmarks/netkit-and-veth-io/README.md)
+> **Japanese version (日本語版)**: [docs/ja/benchmarks/netkit-and-veth-io/README.md](../../../ja/benchmarks/netkit-and-veth-io/README.md)
 
 This document summarizes:
-1. **8-Way Linux Packet Transmission Comparison on `veth` and `netkit` (`n=5`, [veth_io_summary.csv](ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv))**:
+1. **8-Way Linux Packet Transmission Comparison on `veth` and `netkit` (`n=5`, [veth_io_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv))**:
    - Empirical 1-core comparison of `xdperf` (`BPF_F_TEST_XDP_LIVE_FRAMES` + in-kernel XDP Diff) against `AF_XDP` (`XDP_COPY`), `io_uring` (`IORING_OP_SEND`), `AF_PACKET` (`sendmmsg` / `send()` / `PACKET_MMAP`), Linux kernel `pktgen` (`pktgen.ko`), and standard UDP sockets (`sendmmsg`), including a nanosecond-per-packet kernel code-path breakdown and the `1.66 Mpps` `sk_buff` allocation ceiling observed on `netkit`.
-2. **`veth` vs. `netkit` (`netkit-l2` / `netkit-l3` / `netkit-bpf`) & 5-Tuple `LRU_HASH` Counter Benchmarks across Single-Host (`n=5`), 100GbE (ConnectX-5), and 400GbE (ConnectX-7) ([netkit_summary.csv](ja/benchmarks/netkit-and-veth-io/netkit_summary.csv))**:
+2. **`veth` vs. `netkit` (`netkit-l2` / `netkit-l3` / `netkit-bpf`) & 5-Tuple `LRU_HASH` Counter Benchmarks across Single-Host (`n=5`), 100GbE (ConnectX-5), and 400GbE (ConnectX-7) ([netkit_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/netkit_summary.csv))**:
    - Direct comparison of `iperf3` (GSO/GRO ON vs. OFF) and `xdperf`, flow-count scaling under standard `ip_id: "flow"`, sender-side GRO control (`ip_id: "shared"`), short-lived TCP CPS (`/proc/net/softnet_stat` exact `13.00 → 10.00` calls/connection match), high-PPS UDP flood + TCP mixed workloads, and 5-tuple `LRU_HASH` (65,536 entries) overhead & 1-to-1 per-flow verification (`--tcp-flow-report`).
 3. **Recommended Benchmark Topologies for Single-Host (`netns`), 2-Node 100G/400G Physical NICs, and Kubernetes + Cilium (`datapathMode=veth` and `datapathMode=netkit`)**.
 
 Reproducible scripts are available at:
-- [docs/ja/scripts/bench_veth_io.sh](ja/scripts/bench_veth_io.sh)
-- [docs/ja/scripts/bench_netkit.sh](ja/scripts/bench_netkit.sh)
-- [docs/ja/scripts/bench_netkit_realnic.sh](ja/scripts/bench_netkit_realnic.sh)
+- [docs/ja/scripts/bench_veth_io.sh](../../../ja/scripts/bench_veth_io.sh)
+- [docs/ja/scripts/bench_netkit.sh](../../../ja/scripts/bench_netkit.sh)
+- [docs/ja/scripts/bench_netkit_realnic.sh](../../../ja/scripts/bench_netkit_realnic.sh)
 
 ---
 
@@ -23,7 +23,7 @@ Reproducible scripts are available at:
 - **Topology**: Two network namespaces (`io-tx` ↔ `io-rx`) connected by a single-queue `veth` pair (`vtx` ↔ `vrx`). The receiving interface `vrx` runs `xdperf run --recv` (native XDP `XDP_DROP`) to eliminate receiver socket bottlenecks and isolate the single-core transmission ceiling (`taskset -c 2`).
 - **Workload**: 64-byte L2 frames (14B Ethernet + 20B IPv4 + 8B UDP + 22B payload, excluding FCS), sweeping the UDP source port across **16,384 distinct values** (`10000`–`26383`) on every packet (`n=5` rounds, mean ± sample standard deviation SD).
 
-### 1.2 `veth` 1-Core Benchmark Results ([veth_io_summary.csv](ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv))
+### 1.2 `veth` 1-Core Benchmark Results ([veth_io_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv))
 
 | Rank | Transmission Mechanism | Kernel Internal Path on `veth` | TX PPS (Mean ± SD, `n=5`) | Time / Packet | 64B Bandwidth | `xdperf` Speedup |
 |---:|---|---|---:|---:|---:|---:|
@@ -72,7 +72,7 @@ Replacing the `veth` pair with a **`netkit` L2 pair (`ip link add nktx type netk
 
 ## 2. `veth` vs. `netkit` and 5-Tuple `LRU_HASH` Counter Results (Single-Host, 100GbE, 400GbE)
 
-Full data is recorded in [netkit_summary.csv](ja/benchmarks/netkit-and-veth-io/netkit_summary.csv).
+Full data is recorded in [netkit_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/netkit_summary.csv).
 
 1. **Why `iperf3` Hides Datapath & Hook Overhead (`n=5` on 64 vCPU Single Host)**:
    - Default `iperf3 -P 4` (GSO/GRO ON) coalesces segments into 64 KiB super-skbs, reducing `/proc/net/softnet_stat` traversals per 1448B segment (`Softnet/seg`) to **`0.05–0.06`** and hiding the difference between `veth` (`144.36 ± 3.44 Gbps`) and `netkit-bpf` (`150.26 ± 2.87 Gbps`, **`+4.12% ± 2.89 pt`**).
@@ -93,7 +93,7 @@ Because `netkit` lacks `.ndo_xdp_xmit` and caps direct `sk_buff` transmission at
 
 ### 3.1 Pattern 1: Single-Host 3-Namespace Asymmetric Topology (`netns` / CI)
 
-Used in [docs/ja/scripts/bench_netkit.sh](ja/scripts/bench_netkit.sh) and [examples/tcp-netkit/](../examples/tcp-netkit/README.md).
+Used in [docs/ja/scripts/bench_netkit.sh](../../../ja/scripts/bench_netkit.sh) and [examples/tcp-netkit/](../../../../examples/tcp-netkit/README.md).
 
 ```
 +-------------------+      +----------------------------------------+      +-----------------------+
@@ -115,7 +115,7 @@ Used in [docs/ja/scripts/bench_netkit.sh](ja/scripts/bench_netkit.sh) and [examp
 
 ### 3.2 Pattern 2: 2-Node Physical 100GbE / 400GbE Topology
 
-Used in [docs/ja/scripts/bench_netkit_realnic.sh](ja/scripts/bench_netkit_realnic.sh).
+Used in [docs/ja/scripts/bench_netkit_realnic.sh](../../../ja/scripts/bench_netkit_realnic.sh).
 
 ```
 +----------------------------+            +----------------------------------------------------+

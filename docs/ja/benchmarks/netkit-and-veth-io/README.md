@@ -1,6 +1,6 @@
 # `veth` 上のパケット送出機構 8 種の比較および `veth` vs `netkit`（単一ホスト・100GbE・400GbE・K8s/Cilium）実測と推奨トポロジ
 
-> **English version**: [docs/netkit_cilium_benchmark_guide.md](../../../netkit_cilium_benchmark_guide.md)
+> **English version**: [docs/en/benchmarks/netkit-and-veth-io/README.md](../../../en/benchmarks/netkit-and-veth-io/README.md)
 
 コンテナ・Kubernetes データパス（`veth` および `netkit`）における以下の 3 点を記録する。
 

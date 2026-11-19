@@ -11,7 +11,6 @@ In addition, XDPerf provides a flexible mechanism for transmitting arbitrary pac
 Furthermore, since XDPerf is implemented in Go, it runs as a single binary, making deployment simple and convenient.
 
 You can find the project explanation slides at [./docs/xdperf.pdf](https://github.com/takehaya/xdperf/tree/main/docs/xdperf.pdf).
-For `veth` vs. `netkit` packet I/O benchmarks (100GbE / 400GbE) and recommended Kubernetes / Cilium benchmark topologies, see [docs/netkit_cilium_benchmark_guide.md](./docs/netkit_cilium_benchmark_guide.md) ([Japanese version](./docs/ja/benchmarks/netkit-and-veth-io/README.md)).
 
 ## Install
 
