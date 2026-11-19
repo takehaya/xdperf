@@ -38,6 +38,7 @@ type Xdperf struct {
 	cfg             Config
 	bpfSpec         *ebpf.CollectionSpec
 	tcpVariantBytes []uint64 // validated per-flow targets
+	tcpExchange     []tcpExchangeFlow
 	pluginResponse  *guest.GeneratorProcessResponse
 	mixed           *mixedPlan
 	otlpMeter       metric.Meter

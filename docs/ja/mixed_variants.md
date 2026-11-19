@@ -179,7 +179,7 @@ Linux 対向の例は [tcp-vxlan](../../examples/tcp-vxlan/README.md) と [tcp-t
 SYN、データ、FIN、再送、プローブ、RST を含み、idle、build 失敗、RX 側のその場応答 ACK/RST は含みません。
 全 TCP フローが先に完了すれば N 未満で終了します。
 上限に達すると drain を待たず、2×RTO の linger 後に終了します。
-未完了フローが残る場合は `count reached before N flows completed` を Warn で出し、フロー失敗がなければ終了コードは 0 です。
+未完了フローが残っている場合は `count reached before N flows completed` を Warn で出力し、失敗したフローも、最後の往復の前に相手が閉じたフローもなければ、終了コードは 0 です。
 予算が残っていないため RST は送らず、対向の未完了接続はタイムアウトで解消されます。
 時間指定とシグナルによる終了では、従来どおりパケット送信を止めて TCP を drain します。
 この drain / abort で送る閉鎖用フレームは `--count` の制限に含めません。

@@ -154,6 +154,11 @@ type tcpSummary struct {
 	AckProbes              uint64  `json:"ack_probes"`
 	WindowProbes           uint64  `json:"window_probes"`
 	ChallengeAcks          uint64  `json:"challenge_acks"`
+	RoundsDone             uint64  `json:"rounds_done"`
+	ResponseBytes          uint64  `json:"response_bytes"`
+	ResponseTimeouts       uint64  `json:"response_timeouts"`
+	ShortResponses         uint64  `json:"short_responses"`
+	PeerClosedEarly        uint64  `json:"peer_closed_early"`
 }
 
 type tcpServerSummary struct {

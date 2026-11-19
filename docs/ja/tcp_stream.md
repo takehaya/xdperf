@@ -43,7 +43,7 @@ sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin --durati
 `bytes: "0"` を含む場合は、いずれかの上限が必要です。
 `--count` は SYN、再送、FIN を含む TX worker の総フレーム数の上限です。
 全 TCP フローが先に完了すれば count 未満で終了します。
-count 到達時は drain をせず、短い linger 後に未完了フローを警告して終了します (失敗フローがなければ終了コード 0)。
+count に達すると、drain は行わず、短時間の linger の後に未完了フローの警告を出して終了します (失敗したフローも、最後の往復の前に相手が閉じたフローもなければ、終了コードは 0 です)。
 `--duration` とシグナルでは drain で接続を閉じ、この終了処理のフレームは count の対象外です。
 `--pps` は待機を含む TX イテレーション数の上限で、TCP だけの duration 実行には不要です。
 `--infinite`、`--rx-device`、`--swap-resp` は TCP フローと併用できません。
@@ -293,7 +293,7 @@ sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin 
 
 隔離による破棄は所有枠での不足を示し、全ポートの枯渇とは断定しません。
 `port_exhausted` は互換性のため残りますが、このモードでは false です。
-失敗終了時の summary JSON 保存は既存仕様のままです。
+フローが失敗した場合も summary JSON を書き、非ゼロで終了します。
 
 ## 実行結果を JSON に保存する
 
@@ -317,8 +317,9 @@ sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
 `elapsed_seconds` は初期化後から終了処理までの秒数で、TCP の drain 時間を含みます。
 数値は数値型、キーは snake_case です。
 
-正常終了と SIGINT/SIGTERM による終了時に書きます。
-初期化、worker、TCP フロー、最終統計や CSV 出力でエラーがあった場合は書かず、以前のファイルを残します。
+正常終了時と SIGINT/SIGTERM による終了時に書きます。
+TCP フローが失敗した場合や、往復の途中で相手が閉じた場合も、書いてから非ゼロで終了します。
+初期化、worker、最終統計、CSV 出力でエラーが発生した場合は書かず、以前のファイルを残します。
 JSON の読み取りや書き込みに失敗した場合は非ゼロで終了し、書き込み途中のファイルが残る場合があります。
 保存先の親ディレクトリは事前に作成してください。
 既存ファイルは上書きし、`-` は通常のファイル名として扱います。

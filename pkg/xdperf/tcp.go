@@ -3,6 +3,7 @@ package xdperf
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -282,6 +283,8 @@ func (x *Xdperf) initTCPMaps(t *tcpTarget, template []byte) error {
 			SrcPort:      uint16(x.mixed.portBase + i),
 			Iss:          rand.Uint32(),
 			BytesTarget:  x.tcpVariantBytes[i%x.mixed.flows],
+			RespTarget:   x.tcpExchange[i%x.mixed.flows].resp,
+			RoundsTarget: x.tcpExchange[i%x.mixed.flows].rounds,
 		}
 	}
 	for j, g := range x.mixed.groups {
@@ -886,13 +889,34 @@ loop:
 	if countReached && s.Done+s.Failed+s.Skipped < flows {
 		x.Logger.Warn(fmt.Sprintf("count reached before %d flows completed", flows-s.Done-s.Failed-s.Skipped))
 	}
-	// A run whose flows did not complete is a failed measurement: report it
-	// in the exit status, not only in the log (e.g. every SYN refused).
+	return x.finishTCPRun(s)
+}
+
+// finishTCPRun writes the summary and then reports failed flows and early
+// peer closes in the exit status. The summary is written for those runs too:
+// its failure and round counters are what such a run is read for.
+func (x *Xdperf) finishTCPRun(s coreelf.BpfTcpStats) error {
+	return errors.Join(x.tcpRunError(s), x.writeSummary())
+}
+
+// tcpRunError fails a run whose flows did not complete (e.g. every SYN
+// refused) or whose peers closed before the requested rounds were done.
+func (x *Xdperf) tcpRunError(s coreelf.BpfTcpStats) error {
 	if s.Failed > 0 {
-		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d)",
-			s.Failed, x.mixed.connections, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts)
+		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d, response timeouts %d)",
+			s.Failed, x.mixed.connections, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts, s.RespTimeouts)
 	}
-	return x.writeSummary()
+	return tcpRoundsError(s)
+}
+
+// tcpRoundsError fails a run whose peers closed before the requested rounds
+// were done. Those flows still end cleanly (DONE), so Failed misses them.
+func tcpRoundsError(s coreelf.BpfTcpStats) error {
+	if s.ShortResponses == 0 && s.PeerClosedEarly == 0 {
+		return nil
+	}
+	return fmt.Errorf("peers closed early: %d responses cut short, %d connections closed before the last round",
+		s.ShortResponses, s.PeerClosedEarly)
 }
 
 func (x *Xdperf) showTCPConnectionRates(loadStats coreelf.BpfTcpStats, load, drain time.Duration, reason string) {
@@ -974,6 +998,11 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpSt
 			AckProbes:              s.AckProbes,
 			WindowProbes:           s.WindowProbes,
 			ChallengeAcks:          s.ChallengeAcks,
+			RoundsDone:             s.RoundsDone,
+			ResponseBytes:          s.RespBytes,
+			ResponseTimeouts:       s.RespTimeouts,
+			ShortResponses:         s.ShortResponses,
+			PeerClosedEarly:        s.PeerClosedEarly,
 		}
 	}
 	x.Logger.Info("tcp final statistics",
@@ -1018,6 +1047,11 @@ func (x *Xdperf) showTCPFinalStats(recs []coreelf.BpfTcpStats) (coreelf.BpfTcpSt
 		zap.Uint64("ack_probes", s.AckProbes),
 		zap.Uint64("window_probes", s.WindowProbes),
 		zap.Uint64("challenge_acks", s.ChallengeAcks),
+		zap.Uint64("rounds_done", s.RoundsDone),
+		zap.Uint64("response_bytes", s.RespBytes),
+		zap.Uint64("response_timeouts", s.RespTimeouts),
+		zap.Uint64("short_responses", s.ShortResponses),
+		zap.Uint64("peer_closed_early", s.PeerClosedEarly),
 	)
 	return s, nil
 }

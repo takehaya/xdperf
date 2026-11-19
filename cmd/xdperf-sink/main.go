@@ -8,12 +8,16 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -29,6 +33,9 @@ type counters struct {
 	Bytes      atomic.Uint64 `json:"-"`
 	UDPPackets atomic.Uint64 `json:"-"`
 	UDPBytes   atomic.Uint64 `json:"-"`
+	Responses  atomic.Uint64 `json:"-"`
+	RespBytes  atomic.Uint64 `json:"-"`
+	Errors     atomic.Uint64 `json:"-"`
 }
 
 type summary struct {
@@ -40,7 +47,138 @@ type summary struct {
 	Bytes      uint64  `json:"bytes"`
 	UDPPackets uint64  `json:"udp_packets,omitempty"`
 	UDPBytes   uint64  `json:"udp_bytes,omitempty"`
+	Responses  uint64  `json:"responses,omitempty"`
+	RespBytes  uint64  `json:"response_bytes,omitempty"`
+	Errors     uint64  `json:"respond_errors,omitempty"`
 	Seconds    float64 `json:"seconds"`
+}
+
+// respondSpec is -respond Q:R: after every Q request bytes, write R bytes.
+// closeAfter > 0 closes the connection after that many responses.
+type respondSpec struct {
+	request, response uint64
+	closeAfter        uint64
+}
+
+// parseSize reads a byte count with an optional k, m or g (x1000) suffix.
+func parseSize(v string) (uint64, error) {
+	mult, num := uint64(1), v
+	switch {
+	case strings.HasSuffix(v, "k"):
+		mult, num = 1000, strings.TrimSuffix(v, "k")
+	case strings.HasSuffix(v, "m"):
+		mult, num = 1000*1000, strings.TrimSuffix(v, "m")
+	case strings.HasSuffix(v, "g"):
+		mult, num = 1000*1000*1000, strings.TrimSuffix(v, "g")
+	}
+	n, err := strconv.ParseUint(num, 10, 64)
+	if err != nil || n > ^uint64(0)/mult {
+		return 0, fmt.Errorf("invalid size %q", v)
+	}
+	return n * mult, nil
+}
+
+func parseRespond(v string, closeAfter uint64) (*respondSpec, error) {
+	if v == "" {
+		if closeAfter != 0 {
+			return nil, fmt.Errorf("-close-after requires -respond")
+		}
+		return nil, nil
+	}
+	q, r, ok := strings.Cut(v, ":")
+	if !ok {
+		return nil, fmt.Errorf("-respond wants Q:R, got %q", v)
+	}
+	s := respondSpec{closeAfter: closeAfter}
+	var err error
+	if s.request, err = parseSize(q); err != nil {
+		return nil, err
+	}
+	if s.response, err = parseSize(r); err != nil {
+		return nil, err
+	}
+	if s.response == 0 {
+		return nil, fmt.Errorf("-respond needs a response size above 0")
+	}
+	if s.request == 0 && closeAfter > 1 {
+		return nil, fmt.Errorf("-respond 0:R sends one response; -close-after must be 0 or 1")
+	}
+	return &s, nil
+}
+
+// respZeros is the response payload, shared read-only by every connection.
+var respZeros = make([]byte, 1<<20)
+
+// serveRespond answers each Q-byte request with R bytes until the peer
+// closes or closeAfter responses are out. Q = 0 sends one response right
+// away (a download), then reads until EOF. An I/O error other than the
+// peer's close counts in c.Errors.
+func serveRespond(conn net.Conn, spec *respondSpec, buf []byte, c *counters) {
+	var sent uint64
+	write := func() error {
+		for left := spec.response; left > 0; {
+			n, err := conn.Write(respZeros[:min(left, uint64(len(respZeros)))])
+			left -= uint64(n)
+			c.RespBytes.Add(uint64(n))
+			if err != nil {
+				return err
+			}
+		}
+		c.Responses.Add(1)
+		sent++
+		return nil
+	}
+	// done reports whether the server should close now.
+	done := func() bool { return spec.closeAfter != 0 && sent >= spec.closeAfter }
+	// closeFirst sends our FIN, then reads until the peer's: a full close
+	// with unread data would answer a request already in flight with RST.
+	closeFirst := func() {
+		if tc, ok := conn.(*net.TCPConn); ok && tc.CloseWrite() == nil {
+			for {
+				n, err := conn.Read(buf)
+				c.Bytes.Add(uint64(n))
+				if err != nil {
+					return
+				}
+			}
+		}
+	}
+	if spec.request == 0 {
+		if err := write(); err != nil {
+			c.Errors.Add(1)
+			return
+		}
+		if done() {
+			closeFirst()
+			return
+		}
+	}
+	var got uint64
+	for {
+		n, err := conn.Read(buf)
+		c.Bytes.Add(uint64(n))
+		if spec.request != 0 {
+			// A client that waits for each response never has two
+			// requests in one read, but a pipelining one may.
+			for got += uint64(n); got >= spec.request; got -= spec.request {
+				if werr := write(); werr != nil {
+					c.Errors.Add(1)
+					return
+				}
+				if done() {
+					closeFirst()
+					return
+				}
+			}
+		}
+		if err != nil {
+			// A close in the middle of a request is an error too.
+			if !errors.Is(err, io.EOF) || got != 0 {
+				c.Errors.Add(1)
+			}
+			return
+		}
+	}
 }
 
 func main() {
@@ -51,6 +189,8 @@ func main() {
 	xdpPassDev := flag.String("xdp-pass-dev", "", "attach a pass-through XDP program to this device (veth test beds only, see comment in source)")
 	netkitFastpath := flag.String("netkit-fastpath", "", "attach TCX/netkit redirect fastpath (<ingress-dev>:<netkit-primary-dev>:<pod-ipv4>)")
 	netkitFlowDump := flag.String("netkit-flow-dump", "", "enable 5-tuple LRU_HASH flow counters on -netkit-fastpath and dump JSON to this path on exit")
+	respond := flag.String("respond", "", "TCP only: answer every Q request bytes with R bytes (Q:R, k/m/g suffixes; Q 0 = send R once on accept)")
+	closeAfter := flag.Uint64("close-after", 0, "with -respond: close the connection after this many responses (0 = when the peer closes)")
 	showVersion := flag.Bool("v", false, "print the version and exit")
 	flag.Parse()
 
@@ -60,6 +200,13 @@ func main() {
 	}
 	if *readBuf <= 0 {
 		log.Fatalf("invalid -read-buf %d: must be > 0", *readBuf)
+	}
+	spec, err := parseRespond(*respond, *closeAfter)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if spec != nil && *proto == "udp" {
+		log.Fatal("-respond works on TCP only; use -proto tcp or both")
 	}
 
 	// veth quirk: the peer's XDP_TX frames are queued into this device's
@@ -95,7 +242,6 @@ func main() {
 	var ln net.Listener
 	var uc *net.UDPConn
 	if tcpOn {
-		var err error
 		ln, err = net.Listen("tcp", *listen)
 		if err != nil {
 			log.Fatalf("listen tcp %s: %v", *listen, err)
@@ -115,6 +261,10 @@ func main() {
 					defer c.Closed.Add(1)
 					defer conn.Close()
 					buf := make([]byte, *readBuf)
+					if spec != nil {
+						serveRespond(conn, spec, buf, &c)
+						return
+					}
 					for {
 						n, err := conn.Read(buf)
 						c.Bytes.Add(uint64(n))
@@ -176,6 +326,9 @@ func main() {
 			if udpOn {
 				fmt.Printf(" | udp %d pkts %d bytes", c.UDPPackets.Load(), c.UDPBytes.Load())
 			}
+			if spec != nil {
+				fmt.Printf(" | %d responses %d bytes %d errors", c.Responses.Load(), c.RespBytes.Load(), c.Errors.Load())
+			}
 			fmt.Println()
 			prevBytes = b
 			prevT = now
@@ -198,6 +351,9 @@ func main() {
 				Bytes:      c.Bytes.Load(),
 				UDPPackets: c.UDPPackets.Load(),
 				UDPBytes:   c.UDPBytes.Load(),
+				Responses:  c.Responses.Load(),
+				RespBytes:  c.RespBytes.Load(),
+				Errors:     c.Errors.Load(),
 				Seconds:    time.Since(start).Seconds(),
 			}
 			s.Active = s.Accepted - s.Closed
