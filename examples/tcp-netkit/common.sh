@@ -28,7 +28,10 @@ RX_L3_IP4="10.200.3.2"
 DST_PORT="${DST_PORT:-5201}"
 FLOWS="${FLOWS:-16}"
 BYTES="${BYTES:-65536}"
-WINDOW="${WINDOW:-16}"
+# Keep default window_segs * flows (8 * 16 = 128) well within a single veth
+# queue's 256-entry xdp_ring so sender-side veth_xdp_xmit ring drops do not
+# cause spurious retransmits before packets reach the DUT's TCX ingress hook.
+WINDOW="${WINDOW:-8}"
 PARALLELISM="${PARALLELISM:-1}"
 SKIP_EXIT_CODE=3
 
