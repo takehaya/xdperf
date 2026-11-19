@@ -1,0 +1,194 @@
+# Benchmarking `veth`, `netkit`, and Kubernetes / Cilium Datapaths with `xdperf`
+
+> **Japanese version (日本語版)**: [docs/ja/benchmarks/netkit-and-veth-io/README.md](ja/benchmarks/netkit-and-veth-io/README.md)
+
+This document summarizes:
+1. **8-Way Linux Packet Transmission Comparison on `veth` and `netkit` (`n=5`, [veth_io_summary.csv](ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv))**:
+   - Empirical 1-core comparison of `xdperf` (`BPF_F_TEST_XDP_LIVE_FRAMES` + in-kernel XDP Diff) against `AF_XDP` (`XDP_COPY`), `io_uring` (`IORING_OP_SEND`), `AF_PACKET` (`sendmmsg` / `send()` / `PACKET_MMAP`), Linux kernel `pktgen` (`pktgen.ko`), and standard UDP sockets (`sendmmsg`), including a nanosecond-per-packet kernel code-path breakdown and the `1.66 Mpps` `sk_buff` allocation ceiling observed on `netkit`.
+2. **`veth` vs. `netkit` (`netkit-l2` / `netkit-l3` / `netkit-bpf`) & 5-Tuple `LRU_HASH` Counter Benchmarks across Single-Host (`n=5`), 100GbE (ConnectX-5), and 400GbE (ConnectX-7) ([netkit_summary.csv](ja/benchmarks/netkit-and-veth-io/netkit_summary.csv))**:
+   - Direct comparison of `iperf3` (GSO/GRO ON vs. OFF) and `xdperf`, flow-count scaling under standard `ip_id: "flow"`, sender-side GRO control (`ip_id: "shared"`), short-lived TCP CPS (`/proc/net/softnet_stat` exact `13.00 → 10.00` calls/connection match), high-PPS UDP flood + TCP mixed workloads, and 5-tuple `LRU_HASH` (65,536 entries) overhead & 1-to-1 per-flow verification (`--tcp-flow-report`).
+3. **Recommended Benchmark Topologies for Single-Host (`netns`), 2-Node 100G/400G Physical NICs, and Kubernetes + Cilium (`datapathMode=veth` and `datapathMode=netkit`)**.
+
+Reproducible scripts are available at:
+- [docs/ja/scripts/bench_veth_io.sh](ja/scripts/bench_veth_io.sh)
+- [docs/ja/scripts/bench_netkit.sh](ja/scripts/bench_netkit.sh)
+- [docs/ja/scripts/bench_netkit_realnic.sh](ja/scripts/bench_netkit_realnic.sh)
+
+---
+
+## 1. 8-Way Linux Packet Transmission Comparison on `veth` and `netkit` (1 Core, `n=5`)
+
+### 1.1 Experimental Setup
+- **Host**: Intel Xeon 6746E (64 vCPUs, single NUMA node), Linux `6.17.0-41-generic`
+- **Topology**: Two network namespaces (`io-tx` ↔ `io-rx`) connected by a single-queue `veth` pair (`vtx` ↔ `vrx`). The receiving interface `vrx` runs `xdperf run --recv` (native XDP `XDP_DROP`) to eliminate receiver socket bottlenecks and isolate the single-core transmission ceiling (`taskset -c 2`).
+- **Workload**: 64-byte L2 frames (14B Ethernet + 20B IPv4 + 8B UDP + 22B payload, excluding FCS), sweeping the UDP source port across **16,384 distinct values** (`10000`–`26383`) on every packet (`n=5` rounds, mean ± sample standard deviation SD).
+
+### 1.2 `veth` 1-Core Benchmark Results ([veth_io_summary.csv](ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv))
+
+| Rank | Transmission Mechanism | Kernel Internal Path on `veth` | TX PPS (Mean ± SD, `n=5`) | Time / Packet | 64B Bandwidth | `xdperf` Speedup |
+|---:|---|---|---:|---:|---:|---:|
+| **1** | **`xdperf`<br>(`BPF_F_TEST_XDP_LIVE_FRAMES` + In-Kernel XDP Diff)** | **In-kernel `page_pool` `xdp_frame` recycling with zero `sk_buff` allocations and zero userspace copies → `veth_xdp_xmit`** | **`9,557,197 ± 136,988 PPS`** | **`104.6 ns`** | **`4.893 Gbps`** | **Baseline (`1.00x`)** |
+| **2** | **`AF_XDP`<br>(`XDP_COPY`, batch=64)** | `XDP_ZEROCOPY` fails with `errno=95 (EOPNOTSUPP)`.<br>Allocates `sk_buff` and copies from UMEM per packet (`xsk_generic_xmit`) | `1,776,021 ± 18,321 PPS` | `563.1 ns` | `0.909 Gbps` | **`xdperf` is 5.38x faster** |
+| **3** | **`io_uring`<br>(`IORING_OP_SEND`, batch=64 + `QDISC_BYPASS`)** | 64 SQEs batched per `io_uring_enter`, per-packet `sk_buff` allocation + copy from userspace | `1,435,004 ± 37,477 PPS` | `696.9 ns` | `0.735 Gbps` | **`xdperf` is 6.66x faster** |
+| **4** | **`AF_PACKET`<br>(`sendmmsg`, batch=64 + `QDISC_BYPASS`)** | 64 messages batched per syscall, per-packet `sk_buff` allocation + copy from userspace | `1,295,598 ± 28,444 PPS` | `771.8 ns` | `0.663 Gbps` | **`xdperf` is 7.38x faster** |
+| **5** | **`AF_PACKET`<br>(`send()` + `PACKET_QDISC_BYPASS`)** | Per-packet syscall + `sk_buff` allocation + copy from userspace | `1,273,179 ± 3,529 PPS` | `785.4 ns` | `0.652 Gbps` | **`xdperf` is 7.51x faster** |
+| **6** | **`AF_PACKET`<br>(`PACKET_MMAP` / `TPACKET_V2` `TX_RING` + `QDISC_BYPASS`)** | Shared mmap ring, per-packet `sk_buff` allocation + copy in `tpacket_snd()` | `1,251,056 ± 25,586 PPS` | `799.3 ns` | `0.641 Gbps` | **`xdperf` is 7.64x faster** |
+| **7** | **Linux Kernel `pktgen`<br>(`pktgen.ko`, 16,384 port sweep, `clone_skb 0`)** | 100% in-kernel thread (`kpktgend`), but per-packet port modification requires `pktgen_alloc_skb()` + checksum + `veth_xmit` (SKB path) | `632,570 ± 3,900 PPS` | `1,580.9 ns` | `0.324 Gbps` | **`xdperf` is 15.11x faster** |
+| **8** | **Standard UDP Socket<br>(`AF_INET` `SOCK_DGRAM` + `sendmmsg` batch=64)** | Full UDP/IP stack traversal + per-packet `sk_buff` allocation + copy | `425,993 ± 5,630 PPS` | `2,347.5 ns` | `0.218 Gbps` | **`xdperf` is 22.44x faster** |
+
+### 1.3 Why `xdperf` Is 5.38x Faster Than `AF_XDP` on `veth` (Nanosecond Kernel Breakdown)
+
+1. **`xdperf` (`104.6 ns / pkt` = `9.56 Mpps`)**:
+   - In `net/bpf/test_run.c`, `bpf_test_run_xdp_live()` allocates `xdp_frame` buffers from an in-kernel `page_pool` and recycles them across millions of iterations inside a single `bpf_prog_test_run_opts` system call.
+   - **Zero `struct sk_buff` allocations (`kmem_cache_alloc`), zero userspace memory copies, and zero per-batch system calls** occur during transmission.
+   - On each frame, the XDP program (`xdp_tx`) overwrites 2 bytes of the UDP port and 2 bytes of the precomputed checksum diff in L1 cache (~15–20 ns), pushes batches of 64 `xdp_frame` pointers directly into the peer's `xdp_ring` via `veth_xdp_xmit()`, and the peer's `XDP_DROP` immediately returns pages to the `page_pool` ring (`__page_pool_put_page`).
+2. **`AF_XDP` `XDP_COPY` (`563.1 ns / pkt` = `1.78 Mpps`, `+458.5 ns / pkt` penalty)**:
+   - Because `veth` is a virtual software device without hardware DMA rings, binding an `AF_XDP` socket with `XDP_ZEROCOPY` fails with `errno=95 (EOPNOTSUPP)`, forcing fallback to `XDP_COPY` (`xsk_generic_xmit()` in `net/xdp/xsk.c`).
+   - Despite the name `AF_XDP`, **`xsk_generic_xmit()` transmits via the legacy `sk_buff` path rather than `xdp_frame`**:
+     1. Calls `sock_alloc_send_pskb()` on every packet to allocate and initialize a `struct sk_buff` and charge `sk_wmem_alloc` (~150 ns).
+     2. Copies packet bytes from userspace UMEM to kernel `skb->data` (`skb_store_bits`) and sets `skb->destructor = xsk_destruct_skb` (~70 ns).
+     3. Calls `dev_direct_xmit()` → `veth_xmit(skb)` (legacy SKB path, not `veth_xdp_xmit`), forcing the receiving peer (`veth_xdp_rcv_skb()`) to convert the `sk_buff` into an `xdp_buff` (~180 ns).
+     4. Calls `kfree_skb()` → `xsk_destruct_skb()` to update the UMEM completion ring, plus a `sendto()` syscall every 64 packets (~60 ns).
+   - Note that DPDK virtual PMDs (`--vdev=net_af_xdp` and `--vdev=net_af_packet`) and `Netmap` generic (emulated) mode on `veth` invoke the exact same `xsk_generic_xmit` or `tpacket_snd` / `alloc_skb` kernel paths and hit the same ceiling.
+
+### 1.4 Direct Transmission on `netkit` (`nktx` ↔ `nkrx`) and the `1.66 Mpps` `sk_buff` Ceiling
+
+Replacing the `veth` pair with a **`netkit` L2 pair (`ip link add nktx type netkit mode l2 peer nkrx`, dropping incoming UDP at `nkrx` TC ingress)** under the exact same 1-core workload yields:
+
+| Transmission Mechanism | `veth` 1-Core PPS | `netkit` Direct TX 1-Core PPS | Behavior Change and Kernel Explanation |
+|---|---:|---:|---|
+| **`xdperf` (`BPF_F_TEST_XDP_LIVE_FRAMES`)** | **`9,557,197 PPS`** | **Not supported on `netkit`** (Rejected by Phase 0 guardrail) | `netkit` (`drivers/net/netkit.c`) does not implement `.ndo_bpf` or `.ndo_xdp_xmit` (`xdp_features = 0`), so live `xdp_frame` injection cannot run directly on a `netkit` device. Instead, `xdperf` must run on the sending `veth` / physical NIC / SR-IOV VF and redirect into `netkit` via `TCX ingress` (`bpf_redirect_peer`). |
+| **`AF_XDP` (`XDP_COPY`, batch=64)** | `1,776,021 PPS` | **`1,658,604 PPS`** (`zc_errno=95`) | `XDP_ZEROCOPY` fails with `errno=95 (EOPNOTSUPP)`; `xsk_generic_xmit` (per-packet `alloc_skb` + UMEM copy) caps at **`1.66 Mpps` (`602.9 ns/pkt`)**. |
+| **Linux Kernel `pktgen` (`pktgen.ko`, 16,384 port sweep)** | `632,570 PPS` | **`1,658,527 PPS` (+162% faster)** | On `veth`, `veth_xmit(skb)` paid the cost of `veth_xdp_rcv_skb()` on the peer. On `netkit`, `netkit_xmit(skb)` processes the `sk_buff` inline without backlog/XDP conversion, speeding up by **2.62x** and **converging to the exact same `1.66 Mpps` (`602.9 ns/pkt`) ceiling as `AF_XDP (XDP_COPY)`**. |
+| **`io_uring` (`IORING_OP_SEND`, batch=64)** | `1,435,004 PPS` | **`1,274,201 PPS`** | Capped by per-packet `alloc_skb` + userspace copy (~1.27 Mpps). |
+| **`AF_PACKET` (`sendmmsg`, batch=64)** | `1,295,598 PPS` | **`1,184,044 PPS`** | Same (~1.18 Mpps). |
+| **`AF_PACKET` (`send()`)** | `1,273,179 PPS` | **`1,174,318 PPS`** | Same (~1.17 Mpps). |
+| **`AF_PACKET` (`PACKET_MMAP` / `TPACKET_V2`)** | `1,251,056 PPS` | **`1,123,843 PPS`** | Same (~1.12 Mpps). |
+| **Standard UDP Socket (`AF_INET` + `sendmmsg` batch=64)** | `425,993 PPS` | **`886,326 PPS` (+108% faster)** | Inline `netkit_xmit(skb)` doubles standard UDP socket throughput (**2.08x**), capped at 886k PPS by UDP/IP stack + `alloc_skb`. |
+
+- **Key Takeaway**: Once `netkit` removes device-boundary backlog overhead, **userspace `AF_XDP (XDP_COPY)` (`1,658,604 PPS`) and in-kernel `pktgen` (`1,658,527 PPS`) converge to the exact same rate (`1.66 Mpps` = `603 ns/pkt`)**. Any mechanism that allocates and frees a `struct sk_buff` per packet hits this `1.66 Mpps/core` wall. Only `BPF_F_TEST_XDP_LIVE_FRAMES` (`xdperf`, `9.56 Mpps/core`) bypasses `sk_buff` allocation entirely.
+
+---
+
+## 2. `veth` vs. `netkit` and 5-Tuple `LRU_HASH` Counter Results (Single-Host, 100GbE, 400GbE)
+
+Full data is recorded in [netkit_summary.csv](ja/benchmarks/netkit-and-veth-io/netkit_summary.csv).
+
+1. **Why `iperf3` Hides Datapath & Hook Overhead (`n=5` on 64 vCPU Single Host)**:
+   - Default `iperf3 -P 4` (GSO/GRO ON) coalesces segments into 64 KiB super-skbs, reducing `/proc/net/softnet_stat` traversals per 1448B segment (`Softnet/seg`) to **`0.05–0.06`** and hiding the difference between `veth` (`144.36 ± 3.44 Gbps`) and `netkit-bpf` (`150.26 ± 2.87 Gbps`, **`+4.12% ± 2.89 pt`**).
+   - Without touching receiver `ethtool` offloads, `xdperf` drives uncoalesced segment loads (`Softnet/seg = 2.51 → 2.00`), exposing a **`+16.71% ± 1.40 pt`** (`1w/16f`) to **`+19.90% ± 1.18 pt`** (`4w/64f`) advantage for `netkit-bpf`.
+2. **Flow-Count Scaling under Standard `ip_id: "flow"` (`n=5`)**:
+   - Even with standard per-flow sequential IP IDs (`ip_id: "flow"`), increasing concurrent flows from `1` (`+1.55% ± 0.65 pt`, `Softnet/seg = 0.65 → 0.54`, GRO active) to `16` → `64` → `128` → `256` naturally prevents GRO coalescing and exposes the peer-backlog bypass of `netkit-bpf`: **`+16.42% ± 0.62 pt` → `+16.85% ± 1.07 pt` → `+25.53% ± 0.45 pt` → `+31.99% ± 0.67 pt`** (`Softnet/seg = 2.98–3.00 → 2.00`).
+3. **100GbE (ConnectX-5) and 400GbE (ConnectX-7) 2-Node Benchmarks**:
+   - **Sustained TCP (`E3-A`)**: On 100GbE (`4w/64f`), `netkit-bpf` improves goodput by **`+25.4%` (`53.19 → 66.69 Gbps`, `ip_id: flow`)** and **`+32.3%` (`25.46 → 33.67 Gbps`, `ip_id: shared`)**. On 400GbE (`4w/64f`), `netkit-bpf` reaches **`110.42 Gbps` (`9.53M segs/s`, `0` retransmits)** under `ip_id: flow` and **`+10.4%` (`82.10 → 90.62 Gbps`)** under `ip_id: shared` (where the ~110 Gbps ceiling is governed by the single-process `xdperf-sink` socket reader sharing Core i9-12900K P/E cores with RX `ksoftirqd`).
+   - **Short-Lived TCP CPS (`E3-B`)**: Across single-host (`n=5`), 100GbE, and 400GbE, receiver `Softnet/conn` drops from **`13.00–13.01`** on `veth` to **`10.00`** on `netkit-bpf` (eliminating all 3 return-path peer backlog traversals per connection), achieving **`27,050.4 CPS (+45.8%)`** on 400GbE (`4w/256s`).
+   - **Noisy-Neighbor Mixed UDP Flood + TCP (`E3-C`, 100GbE 250k PPS)**: `netkit-bpf` cuts TCP retransmissions by **`54.9%` (`408 → 184`)** and TCP completion time by **`61.2%` (`8.901s → 3.451s`)**.
+   - **5-Tuple `LRU_HASH` (65,536 entries) Overhead & Per-Flow Verification (`E3-D`)**: Counter overhead remains below 1% across `1w/16f` (`+0.41% ± 3.16 pt`), `4w/64f` (`+0.64% ± 3.59 pt`), `4w/256f` (`+0.35% ± 2.41 pt`), `4w/1,024f` (`+0.87% ± 0.90 pt`), high-CPS continuous insertion of **44,479 unique 5-tuples in 3s** (`-6.72% ± 12.67 pt`, 100% tuple match), and 400GbE at 110 Gbps (`-0.3%`, `110.25 → 109.87 Gbps`), with **100% (0 mismatch) 1-to-1 agreement** against `--tcp-flow-report` when uncoalesced (`window_segs=1`).
+
+---
+
+## 3. Recommended Benchmark Topologies (Single-Host, 100G/400G Hardware, and Kubernetes + Cilium)
+
+Because `netkit` lacks `.ndo_xdp_xmit` and caps direct `sk_buff` transmission at `1.66 Mpps/core`, **always place the traffic generator (`xdperf`) on an `.ndo_xdp_xmit`-capable interface (`veth`, physical NIC, or SR-IOV VF), and swap only the DUT receiver Pod boundary between `veth` and `netkit` (Asymmetric Topology)**.
+
+### 3.1 Pattern 1: Single-Host 3-Namespace Asymmetric Topology (`netns` / CI)
+
+Used in [docs/ja/scripts/bench_netkit.sh](ja/scripts/bench_netkit.sh) and [examples/tcp-netkit/](../examples/tcp-netkit/README.md).
+
+```
++-------------------+      +----------------------------------------+      +-----------------------+
+|  Sender (b-tx)    |      |         DUT Host / Node (b-dut)        |      |  Receiver Pod (b-rx)  |
+|  [Load Generator] |      |                                        |      |  [Target Workload]    |
+|                   |      |  (1) Ingress Hook       (2) Pod Egress |      |                       |
+|  xdperf           | veth |  vdut:                  edut:          |      |  erx:                 |
+|  (LIVE_FRAMES +   |======|  - pass-through XDP     - veth OR      |======|  - xdperf-sink        |
+|   In-Kernel TCP)  | vtx  |  - TCX ingress          - netkit       |      |    (or responder)     |
+|                   |      |   (bpf_redirect_peer     (BPF_NETKIT_  |      |                       |
+|  * Always veth    |      |    + fwd 5-tuple count)   PEER rev cnt)|      |  * Swap only this hop |
++-------------------+      +----------------------------------------+      +-----------------------+
+        ^                                      ^
+        |                                      |
+  [Per-Flow CSV] ──────── 1-to-1 Verification ─┘
+ (--tcp-flow-report)    (Forward: tx_pkts + rx_replies == TCX ingress)
+                        (Reverse: rx_pkts              == BPF_NETKIT_PEER)
+```
+
+### 3.2 Pattern 2: 2-Node Physical 100GbE / 400GbE Topology
+
+Used in [docs/ja/scripts/bench_netkit_realnic.sh](ja/scripts/bench_netkit_realnic.sh).
+
+```
++----------------------------+            +----------------------------------------------------+
+| Sender Node (Node 1)       |            | Receiver DUT Node (Node 2)                         |
+|                            |            |                                                    |
+|  xdperf (Native XDP)       | 100G/400G  | Physical NIC (mlx5, etc.)   Receiver Pod (b-rx)    |
+|  - ip_id: "flow" (GRO ON)  |============| - TCX ingress          edut  erx:                  |
+|  - ip_id: "shared"(No GRO) |  Physical  |  (bpf_redirect_peer   ====== - xdperf-sink         |
+|  - --tcp-flow-report       |    Link    |   + fwd 5-tuple count)  ^    (or --tcp-server)     |
++----------------------------+            |                         |                          |
+                                          |                BPF_NETKIT_PEER                     |
+                                          |               (bpf_redirect_neigh + rev count)     |
+                                          +----------------------------------------------------+
+```
+
+### 3.3 Pattern 3: Kubernetes + Cilium Topologies and Required Settings
+
+When benchmarking Cilium on Kubernetes, choose the topology based on Cilium's `bpf.datapathMode` (**`veth`** vs. **`netkit`**):
+
+#### (A) Cilium with `bpf.datapathMode=veth` (Default)
+Deploy both the client (`xdperf`) and server (`xdperf-sink`) as standard Kubernetes Pods on separate worker nodes.
+
+```
+[Worker Node 1 (Sender)]                          [Worker Node 2 (Receiver)]
++-----------------------------------+           +-----------------------------------+
+| Client Pod (privileged: true)     |           | Server Pod                        |
+|  xdperf (--xdp-mode generic)      |           |  xdperf-sink (or --tcp-server)    |
+|         |                         |           |         ^                         |
+|       eth0 (veth)                 |           |       eth0 (veth)                 |
++---------||------------------------+           +---------||------------------------+
+          || veth pair                                    || veth pair
++---------||------------------------+           +---------||------------------------+
+|       lxcXXX (* GRO on required!) |           |       lxcYYY                      |
+|         v                         |           |         ^  |                      |
+|  [cil_from_container] (fwd count) |           |         |  v [cil_from_container] |
+|         |                         |           |  [cil_to_container]  (rev count)  |
+|         v (Native Routing/VXLAN)  |           |         ^                         |
+|   Physical NIC / eth0 ============|===========|===> Physical NIC / eth0           |
++-----------------------------------+           +-----------------------------------+
+```
+
+- **Three Essential Settings for Cilium `veth` Mode**:
+  1. **Enable GRO on the sender Pod's host-side `lxcXXX` interface (`ethtool -K lxcXXX gro on`)**: Cilium disables GRO on host `lxc*` interfaces by default. In the Linux kernel `veth` driver, `veth_xdp_xmit()` drops live frames when the peer interface has neither an XDP program attached nor GRO enabled (`rq->napi == NULL`). Enabling GRO on the sender's host-side `lxcXXX` activates NAPI and allows live frames to flow into `cil_from_container`.
+  2. **Run `xdperf` inside the client Pod with `--xdp-mode generic`**: Because Cilium attaches TCX (`cil_from_container`) rather than XDP to `lxc*`, native XDP on the Pod `eth0` cannot wake the peer NAPI via `veth_xdp_flush()`. `--xdp-mode generic` transmits via `dev_queue_xmit()` directly into `cil_from_container`.
+  3. **Use direct Pod IP or set `socketLB.hostNamespaceOnly=true` for `ClusterIP` Services**: Cilium's default Socket-LB hooks `connect()` syscalls, which raw XDP frames bypass. Target the receiver **Pod IP** directly, or set `socketLB.hostNamespaceOnly=true` so Cilium performs per-packet Service translation inside `cil_from_container`.
+
+#### (B) Cilium with `bpf.datapathMode=netkit` (or `netkit-l2`)
+Because Cilium-managed Pod `eth0` interfaces are `netkit` devices (no `.ndo_xdp_xmit`), keep the receiver as a standard Cilium `netkit` Pod and use either **Topology 2A** or **Topology 2B** for the sender:
+
+- **Topology 2A (Maximum Throughput / 100G–400G Physical NIC or SR-IOV VF Sender)**:
+  - Run the sender `xdperf` Pod on Worker Node 1 with **`hostNetwork: true`** (using the node's physical NIC or `kind` node `eth0` with `--xdp-mode native`) or with a **Cilium DRA / Multus SR-IOV VF**.
+  - Run the receiver `xdperf-sink` Pod on Worker Node 2 as a standard **Cilium `netkit` Pod**. Traffic traverses Worker Node 2's `cil_from_netdev` (`bpf_redirect_peer`) into the `netkit` Pod and returns through `BPF_NETKIT_PEER` (`cil_from_container`).
+- **Topology 2B (Full Pod-to-Pod East-West Traversing `cil_from_container` on Both Ends)**:
+  - Use a `CiliumNodeConfig` resource to run **Worker Node 1 (Sender) in `datapath-mode: veth`** and **Worker Node 2 (Receiver DUT) in `datapath-mode: netkit`**:
+    ```yaml
+    apiVersion: cilium.io/v2
+    kind: CiliumNodeConfig
+    metadata:
+      name: netkit-dut-node
+      namespace: kube-system
+    spec:
+      nodeSelector:
+        matchLabels:
+          kubernetes.io/hostname: worker-node-2
+      defaults:
+        datapath-mode: netkit
+    ```
+  - This allows the sender Pod on Worker Node 1 to inject traffic from a standard `veth` Pod through `cil_from_container`, while the receiver Pod on Worker Node 2 is tested as a native Cilium `netkit` Pod.
+
+#### (C) Quick Reference Matrix for Kubernetes + Cilium
+
+| Benchmark Goal | Sender Pod (`xdperf`) Placement | Receiver Pod (`xdperf-sink`) Placement | Key Configuration |
+|---|---|---|---|
+| **1. Standard Cilium (`veth`) Pod-to-Pod & Datapath Plugins** | Standard Pod (`veth`) on Worker 1<br>`--xdp-mode generic` | Standard Pod (`veth`) on Worker 2 | `ethtool -K lxcXXX gro on` on Worker 1 (`socketLB.hostNamespaceOnly=true` if testing `ClusterIP`) |
+| **2. Cilium `netkit` Mode Maximum Throughput (100G/400G)** | **`hostNetwork: true` Pod** (or **DRA / SR-IOV VF Pod**) on Worker 1<br>`--xdp-mode native` | Standard Pod (**`netkit`**) on Worker 2 | Drive line-rate traffic from Worker 1's physical NIC/VF into Worker 2's `netkit` Pod |
+| **3. Cilium `netkit` Mode Traversing Pod `cil_from_container` on Both Ends** | Standard Pod on Worker 1 (**`veth` node**)<br>`--xdp-mode generic` | Standard Pod on Worker 2 (**`netkit` node**) | Use `CiliumNodeConfig` to set Worker 2 to `netkit` and keep Worker 1 on `veth` (`lxcXXX gro on`) |

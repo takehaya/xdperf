@@ -1,11 +1,15 @@
-# `veth` 上のパケット送出機構 8 種の比較および `veth` vs `netkit`（単一ホスト・100GbE・400GbE）実測結果
+# `veth` 上のパケット送出機構 8 種の比較および `veth` vs `netkit`（単一ホスト・100GbE・400GbE・K8s/Cilium）実測と推奨トポロジ
 
-コンテナ・Kubernetes データパス（`veth` および `netkit`）における以下の 2 つの実験データとカーネル内部の挙動解析を記録する。
+> **English version**: [docs/netkit_cilium_benchmark_guide.md](../../../netkit_cilium_benchmark_guide.md)
 
-1. **`veth` 1 コアにおける Linux 全 8 種のパケット送出機構の比較（`n=5` 反復、[veth_io_summary.csv](veth_io_summary.csv)）**:
-   - `xdperf`（`BPF_F_TEST_XDP_LIVE_FRAMES` + カーネル内 XDP Diff）と、`AF_XDP`（`XDP_COPY`）、`io_uring`（`IORING_OP_SEND`）、`AF_PACKET`（`sendmmsg` / `send()` / `PACKET_MMAP`）、カーネル標準 `pktgen`（`pktgen.ko`）、標準 UDP ソケット（`sendmmsg`）の同一条件比較。
+コンテナ・Kubernetes データパス（`veth` および `netkit`）における以下の 3 点を記録する。
+
+1. **`veth` / `netkit` 1 コアにおける Linux 全 8 種のパケット送出機構の比較（`n=5` 反復、[veth_io_summary.csv](veth_io_summary.csv)）**:
+   - `xdperf`（`BPF_F_TEST_XDP_LIVE_FRAMES` + カーネル内 XDP Diff）と、`AF_XDP`（`XDP_COPY`）、`io_uring`（`IORING_OP_SEND`）、`AF_PACKET`（`sendmmsg` / `send()` / `PACKET_MMAP`）、カーネル標準 `pktgen`（`pktgen.ko`）、標準 UDP ソケット（`sendmmsg`）の同一条件比較、および `netkit` 直接送信時に現れる「`sk_buff` 割り当ての壁（1.66 Mpps）」。
 2. **`veth` vs `netkit`（`netkit-l2` / `netkit-l3` / `netkit-bpf`）および 5-Tuple `LRU_HASH` カウンタの単一ホスト（`n=5`）・100GbE（ConnectX-5）・400GbE（ConnectX-7）実測（[netkit_summary.csv](netkit_summary.csv)）**:
    - `iperf3`（GSO/GRO ON vs OFF）と `xdperf` の対照、標準 `ip_id: "flow"` でのフロー数スケーリングと送信側 GRO 制御（`ip_id: "shared"`）、短命 TCP（CPS）における `/proc/net/softnet_stat` 理論値一致（`13.00 → 10.00` 回/接続）、高 PPS UDP フラッド＋TCP 混合、および 5-tuple `LRU_HASH`（65,536 エントリ）の負荷と `--tcp-flow-report` 送信記録照合。
+3. **単一ホスト・実機 100G/400G・Kubernetes + Cilium（`datapathMode=veth` / `netkit`）における推奨実験トポロジと必須設定**:
+   - なぜ送信側を `.ndo_xdp_xmit` 対応デバイスに置く非対称トポロジが必要か、および Cilium 環境でハマりやすい設定（`lxc*` の GRO、`--xdp-mode generic`、`socketLB.hostNamespaceOnly`、`hostNetwork` / `CiliumNodeConfig`）の早見表。
 
 再現スクリプトは [docs/ja/scripts/bench_veth_io.sh](../../scripts/bench_veth_io.sh)、[docs/ja/scripts/bench_netkit.sh](../../scripts/bench_netkit.sh)、[docs/ja/scripts/bench_netkit_realnic.sh](../../scripts/bench_netkit_realnic.sh) に収録している。
 
@@ -101,3 +105,123 @@
   - 持続 TCP（`4w / 64f`）において、再送 0 のまま `veth` `105.422 Gbps` → `netkit-bpf` **`110.423 Gbps`（`9,532,398 segs/s`、`+4.7%`）**、`ip_id: "shared"` で `82.097 Gbps` → **`90.623 Gbps (+10.4%)`**（110 Gbps 付近の上限は受信側単一プロセス `xdperf-sink` のソケット `read()` と受信 `ksoftirqd` の CPU 共有律速）。
   - 短命 TCP（CPS, `4w / 256s`）で `veth` `18,549.2 CPS`（`Softnet/conn = 13.01`）→ `netkit-bpf` **`27,050.4 CPS (+45.8%)`**（`Softnet/conn = 10.00`）。
   - 110 Gbps（950 万 segs/s）領域での 5-tuple `LRU_HASH` カウンタのオーバーヘッドは **`-0.3%`（`110.247 → 109.868 Gbps`）** と誤差範囲内であり、`window_segs=1`（128/256 フロー）および UDP+TCP 混合（35,412 パケット）で `--tcp-flow-report` の送信記録と **100%（不一致 0）完全一致**した。
+
+---
+
+## 3. 推奨実験トポロジ（単一ホスト・実機 100G/400G・Kubernetes + Cilium）
+
+1.4 節で示したとおり、`netkit` は `sk_buff` の転送は高速だが `.ndo_xdp_xmit` を持たないため、`netkit` 自体を送信デバイスにすると `1.66 Mpps`（`sk_buff` 割り当ての壁）を超えられず、`xdperf`（`BPF_F_TEST_XDP_LIVE_FRAMES`）による直接送信もできない。
+
+そのため、データパスや BPF プラグインを評価する際は、**「送信側（Load Generator）は常に `.ndo_xdp_xmit` を持つデバイス（`veth` / 物理 NIC / SR-IOV VF）に置いて `sk_buff` の壁を超えた負荷を生成し、テスト対象（DUT）側の Pod 境界だけを `veth` と `netkit` で差し替える『非対称トポロジ』」** を基本とする。
+
+### 3.1 パターン 1：単一ホスト（ローカル netns / CI）での 3-Namespace 非対称トポロジ
+
+[docs/ja/scripts/bench_netkit.sh](../../scripts/bench_netkit.sh) および [examples/tcp-netkit/](../../../../examples/tcp-netkit/README.md) で採用している構成。
+
+```
++-------------------+      +----------------------------------------+      +-----------------------+
+|  送信側 (b-tx)    |      |         DUT ホスト / Node (b-dut)      |      |  受信側 Pod (b-rx)    |
+|  [Load Generator] |      |                                        |      |  [Target Workload]    |
+|                   |      |  (1) 入口フック         (2) Pod 出口   |      |                       |
+|  xdperf           | veth |  vdut:                  edut:          |      |  erx:                 |
+|  (LIVE_FRAMES +   |======|  ・pass-through XDP     ・veth または  |======|  ・xdperf-sink        |
+|   In-Kernel TCP)  | vtx  |  ・TCX ingress          ・netkit       |      |    (または responder) |
+|                   |      |   (bpf_redirect_peer     (BPF_NETKIT_  |      |                       |
+|  ※ ここは常にveth |      |    + 往路 5-tuple 計数)   PEER 復路計数)|      |  ※ ここだけ差し替える |
++-------------------+      +----------------------------------------+      +-----------------------+
+        ▲                                      ▲
+        │                                      │
+  [送信記録 CSV] ────── 1対1 答え合わせ ───────┘
+ (--tcp-flow-report)    (往路: tx_pkts + rx_replies == TCX ingress)
+                        (復路: rx_pkts              == BPF_NETKIT_PEER)
+```
+
+- **設計の要点**:
+  1. 送信側（`vtx` ↔ `vdut`）はマルチキュー `veth`（`numtxqueues 8 numrxqueues 8`）に固定し、`vdut` に `pass-through XDP`（`-xdp-pass-dev vdut`）をアタッチして `veth_xdp_xmit` の NAPI パスを有効化する。
+  2. 受信側境界（`edut` ↔ `erx`）だけを `veth` / `netkit-l2` / `netkit-l3` / `netkit-bpf` で差し替えることで、送信条件を 100% 揃えたまま受信側境界の純粋な差を測定できる。
+  3. スループット（Goodput / CPS）と同時に `/proc/net/softnet_stat`（`Softnet/seg`, `Softnet/conn`）と `--tcp-flow-report` を取得し、backlog キュー通過回数と全フローの計数一致を同時に検証する。
+
+### 3.2 パターン 2：実機 2 ノード（100GbE / 400GbE）での非対称トポロジ
+
+[docs/ja/scripts/bench_netkit_realnic.sh](../../scripts/bench_netkit_realnic.sh) で採用している構成。
+
+```
++----------------------------+            +----------------------------------------------------+
+| 送信ノード (Node 1)        |            | 受信 DUT ノード (Node 2)                           |
+|                            |            |                                                    |
+|  xdperf (Native XDP)       | 100G/400G  | 物理 NIC (mlx5 等)          受信 Pod netns (b-rx)  |
+|  ・ip_id: "flow" (GRO ON)  |============| ・TCX ingress          edut  erx:                  |
+|  ・ip_id: "shared"(GRO抑制)|  物理リンク|  (bpf_redirect_peer   ====== ・xdperf-sink         |
+|  ・--tcp-flow-report       |            |   + 往路 5-tuple 計数)  ▲    (または --tcp-server) |
++----------------------------+            |                         │                          |
+                                          |                BPF_NETKIT_PEER                     |
+                                          |               (bpf_redirect_neigh + 復路計数)      |
+                                          +----------------------------------------------------+
+```
+
+- **設計の要点**:
+  1. 物理 NIC（`mlx5_core` 等）は NAPI GRO が強力なため、少数フローで `ip_id: "flow"` のみを流すと入口で 8〜10 セグメントが 1 つの super-skb に束ねられ、後段の `veth` vs `netkit` の差が隠れる。**受信側（DUT）の `ethtool` オフロード設定には一切触れず、送信側の `ip_id: "flow"`（GRO 有効）と `ip_id: "shared"`（GRO 抑制）または並行フロー数（1 → 256 本）を切り替えて両方測定する**。
+  2. Linux ソケットアプリまでの E2E 性能を測る場合は `xdperf-sink` を、ソケット層の `read()` CPU 律速（約 110 Gbps）を超えてデータパス自体の上限を測る場合は `xdperf --tcp-server`（XDP レスポンダ）や複数リスナーを対向に置く。
+
+### 3.3 パターン 3：Kubernetes + Cilium 環境での推奨トポロジと必須設定
+
+Kubernetes クラスタ上で Cilium を動かしている場合、Cilium の `bpf.datapathMode` が **`veth`（既定）** か **`netkit`（`netkit` / `netkit-l2`）** かによって以下の構成を採る。
+
+#### (A) Cilium `bpf.datapathMode=veth`（標準モード）の場合
+送信側・受信側ともに通常の Kubernetes Pod（別ワーカーノードに配置）としてデプロイし、送信 Pod 内の `eth0 (veth)` から直接 `cil_from_container` フックを通してテストできる。
+
+```
+[Worker Node 1 (送信側)]                         [Worker Node 2 (受信側)]
++-----------------------------------+           +-----------------------------------+
+| Client Pod (privileged: true)     |           | Server Pod                        |
+|  xdperf (--xdp-mode generic)      |           |  xdperf-sink (または --tcp-server)|
+|         │                         |           |         ▲                         |
+|       eth0 (veth)                 |           |       eth0 (veth)                 |
++---------║-------------------------+           +---------║-------------------------+
+          ║ veth ペア                                     ║ veth ペア
++---------║-------------------------+           +---------║-------------------------+
+|       lxcXXX (※ GRO on が必須！) |           |       lxcYYY                      |
+|         ▼                         |           |         ▲  │                      |
+|  [cil_from_container] (往路計数)  |           |         │  ▼ [cil_from_container] |
+|         │                         |           |  [cil_to_container]  (復路計数)   |
+|         ▼ (Native Routing/VXLAN)  |           |         ▲                         |
+|      物理 NIC / eth0 =============|===========|====> 物理 NIC / eth0              |
++-----------------------------------+           +-----------------------------------+
+```
+
+- **必須の 3 設定（忘れるとパケットが送出されない）**:
+  1. **送信ノードのホスト側 `lxcXXX` で `ethtool -K lxcXXX gro on` を有効化する**: Cilium は既定でホスト側 `lxc*` の GRO を `off` にするが、Linux カーネルの `veth_xdp_xmit()` は対向に XDP も GRO も無い（`rq->napi == NULL`）と live-frame をすべて破棄する仕様のため、送信 Pod 対向の `lxcXXX` だけ `gro on` にする。
+  2. **送信 Pod 内の `xdperf` に `--xdp-mode generic` を指定する**: Cilium は `lxc*` に TCX（`cil_from_container`）をアタッチしており XDP をアタッチしていないため、Pod 側で `native` にすると `veth_xdp_flush()` が対向 NAPI を起こせない。`--xdp-mode generic` なら `dev_queue_xmit()` 経由で確実に `cil_from_container` へ入る。
+  3. **宛先に `ClusterIP`（Service）を使う場合は `socketLB.hostNamespaceOnly=true` にする**: 既定の Socket-LB は `connect()` syscall をフックするため、ソケットを使わない `xdperf` の SYN は未変換のまま出る。Pod 間直通は **Pod IP 直指定** でそのまま動作し、Service LB を通したい場合は `socketLB.hostNamespaceOnly=true` でパケット単位の Service 変換を有効化する。
+
+#### (B) Cilium `bpf.datapathMode=netkit`（または `netkit-l2`）の場合
+通常の Pod の `eth0` は `netkit`（`.ndo_xdp_xmit` 非対応）になるため、受信側は通常の Cilium `netkit` Pod とし、送信側は以下の **2A** または **2B** を選ぶ。
+
+- **構成 2A（最高速・100G/400G 実機や別ノードからの負荷注入）**:
+  - **送信 Pod を Worker Node 1 の `hostNetwork: true` Pod（または Cilium DRA / Multus で SR-IOV VF を渡した Pod）** にし、ノードの物理 NIC / VF（または `kind` ノードの `eth0`）から `--xdp-mode native` で送信する。
+  - **受信 Pod は Worker Node 2 の通常の Cilium `netkit` Pod** とする。これにより受信ノードの物理 NIC（`cil_from_netdev` → `bpf_redirect_peer`）→ 受信 Pod `netkit` と、復路の `BPF_NETKIT_PEER`（`cil_from_container`）をフルレートで試験できる。
+- **構成 2B（送信側・受信側の両方で Pod の `cil_from_container` を通す East-West 試験）**:
+  - Cilium のノード別設定（`CiliumNodeConfig`）を用い、**送信用の Worker Node 1 を `datapath-mode: veth`**、**受信用（DUT）の Worker Node 2 を `datapath-mode: netkit`** に構成する：
+    ```yaml
+    apiVersion: cilium.io/v2
+    kind: CiliumNodeConfig
+    metadata:
+      name: netkit-dut-node
+      namespace: kube-system
+    spec:
+      nodeSelector:
+        matchLabels:
+          kubernetes.io/hostname: worker-node-2
+      defaults:
+        datapath-mode: netkit
+    ```
+  - これにより、送信 Pod（Worker Node 1）は通常の Pod として `veth` から `cil_from_container` を通って送信でき、受信 Pod（Worker Node 2）は本物の Cilium `netkit` Pod として受信・応答できる。
+
+#### (C) Kubernetes + Cilium トポロジ選択早見表
+
+| 測りたい対象 | 送信 Pod（`xdperf`）の置き方 | 受信 Pod（`xdperf-sink`）の置き方 | 必須のワンポイント設定 |
+|---|---|---|---|
+| **① Cilium 標準 (`veth`) の Pod 間通信 & プラグイン** | Worker 1 の通常 Pod (`veth`)<br>`--xdp-mode generic` | Worker 2 の通常 Pod (`veth`) | 送信ノードの `lxcXXX` で `ethtool -K lxcXXX gro on`（Service 経由なら `socketLB.hostNamespaceOnly=true`） |
+| **② Cilium `netkit` モードの最大性能（100G/400G 実機含む）** | Worker 1 の **`hostNetwork: true` Pod**（または **DRA / SR-IOV VF Pod**）<br>`--xdp-mode native` | Worker 2 の通常 Pod (**`netkit`**) | 送信側は物理 NIC / VF から Native XDP で撃ち、Worker 2 の `netkit` Pod で受ける |
+| **③ Cilium `netkit` モードで両端とも Pod `cil_from_container` を通す試験** | Worker 1（**`veth` ノード**）の通常 Pod<br>`--xdp-mode generic` | Worker 2（**`netkit` ノード**）の通常 Pod | `CiliumNodeConfig` で Worker 1 を `veth`、Worker 2 を `netkit` に分ける（Worker 1 の `lxcXXX` は `gro on`） |
+
