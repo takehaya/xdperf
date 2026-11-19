@@ -62,6 +62,11 @@ var (
 
 func loadTCPObjs(t *testing.T) *BpfObjects {
 	t.Helper()
+	return loadTCPObjsWith(t, MixedProgramFeatures{})
+}
+
+func loadTCPObjsWith(t *testing.T, features MixedProgramFeatures) *BpfObjects {
+	t.Helper()
 	objs, spec, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1, "tcp_srv_flow_map": 1024})
 	if err != nil {
 		var ve *ebpf.VerifierError
@@ -70,7 +75,7 @@ func loadTCPObjs(t *testing.T) *BpfObjects {
 		}
 		t.Fatalf("ReadBaseCollectionWithSizes failed: %v", err)
 	}
-	if err := LoadMixedProgramsWithFeatures(objs, spec, MixedProgramFeatures{}); err != nil {
+	if err := LoadMixedProgramsWithFeatures(objs, spec, features); err != nil {
 		objs.Close()
 		t.Fatal(err)
 	}
@@ -294,6 +299,9 @@ type clientOpts struct {
 	maxData  uint8
 	bytesPer uint64
 	sharedID bool // one IPv4 ID counter per CPU instead of per flow
+	// request/response rounds (needs loadTCPObjsWith Exchange)
+	closeByServer, untilFin bool
+	respTimeoutMs           uint32
 }
 
 // clientTemplate is the L2+L3 header the TX program copies into every frame
@@ -336,6 +344,13 @@ func clientTemplate(t *testing.T, o clientOpts) (cfg BpfTcpCfg, frame []byte) {
 	if o.drain {
 		cfg.Drain = 1
 	}
+	if o.closeByServer {
+		cfg.CloseByServer = 1
+	}
+	if o.untilFin {
+		cfg.UntilFin = 1
+	}
+	cfg.RespTimeoutMs = o.respTimeoutMs
 	if o.abort {
 		cfg.Abort = 1
 	}

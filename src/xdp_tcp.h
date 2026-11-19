@@ -95,6 +95,18 @@ struct tcp_flow {
     __u64 rx_pkts;       // frames received from the peer for this flow
     __u64 connection_id; // slot + attempt * slot_count, independent of port index
     __u64 closed_ns;     // terminal transition or last valid retransmitted FIN
+    // Request/response rounds (mixed_has_exchange). Go writes the targets,
+    // which stay fixed across connection generations like bytes_target; with
+    // rounds, bytes_target is the request size per round (0 = no request).
+    __u64 resp_target;   // response bytes per round (R); 0 = one-way upload
+    __u32 rounds_target; // rounds (N); 0 = until drain
+    __u32 rounds_done;   // responses received in full
+    __u64 rx_bytes;      // in-order payload bytes received from the peer
+    __u64 last_rx_ns;    // last new in-order payload from the peer
+    __u64 round_start_ns;
+    __u64 rtt_sum_ns; // request start to full response, summed over rtt_samples
+    __u64 rtt_max_ns;
+    __u64 rtt_samples; // timed rounds (a download sends no request to time)
 };
 
 struct tcp_cfg {
@@ -116,7 +128,8 @@ struct tcp_cfg {
     __u8 abort;            // 1 = reset every open flow with RST and stop (Go: drain timeout / 2nd signal)
     __u8 max_data_retries; // consecutive RTOs before a flow gives up with RST
     __u8 ip_id_shared;     // 1 = one IPv4 ID counter per TX CPU (interleaved flows defeat GRO)
-    __u8 _pad[2];
+    __u8 close_by_server;  // rounds: after the last round wait for the peer FIN
+    __u8 until_fin;        // rounds: one request, the response ends with the peer FIN
     // Go rewrites the whole struct to flip drain/abort while TX/RX run; every
     // other field keeps its value, so a torn read is harmless.
     __u32 pseudo_sum; // 16-bit word sum of src+dst address (pseudo header), unfolded
@@ -129,7 +142,7 @@ struct tcp_cfg {
     __u64 start_ns;
     __u64 end_ns;
     __u32 target_cps;
-    __u32 _cps_pad;
+    __u32 resp_timeout_ms; // rounds: reset a flow idle this long while waiting (0 = never)
     // Ethernet(+VLAN)+IP header template (first l4_off bytes of the frame).
     // Rewritten into every frame: live frames are recycled zero-copy, and a
     // receiver on the same host (veth) may modify the header area in place
@@ -198,6 +211,33 @@ struct {
 } tcp_payload_map SEC(".maps");
 const volatile __u32 mixed_has_timestamps SEC(".rodata.mixed") = 0;
 const volatile __u32 mixed_has_payload SEC(".rodata.mixed") = 0;
+// RX handles rounds behind this constant; TX has its own entry point
+// (xdp_tx_tcp_mixed_xchg), so the other TX entries compile without them.
+const volatile __u32 mixed_has_exchange SEC(".rodata.mixed") = 0;
+
+// Request/response rounds. A flow waits for responses when it has a response
+// size or reads until the peer FIN; every other flow keeps the one-way upload.
+// Invariant: a flow requests round k + 1 only after the response of round k is
+// complete, so at most one request is unanswered.
+static __always_inline int tcp_flow_exchange(const int exchange, const struct tcp_flow *f, __u8 until_fin)
+{
+    return exchange && (f->resp_target || until_fin);
+}
+// Rounds the flow may request so far: min(N, done + 1), or one with until_fin.
+static __always_inline __u64 tcp_xchg_rounds_allowed(const struct tcp_flow *f, __u8 until_fin)
+{
+    __u64 rounds = (__u64)f->rounds_done + 1;
+    if (until_fin)
+        return 1;
+    if (f->rounds_target && rounds > f->rounds_target)
+        return f->rounds_target;
+    return rounds;
+}
+// Every response of a finite run is in (N = 0 runs until drain).
+static __always_inline int tcp_xchg_all_rounds(const struct tcp_flow *f)
+{
+    return f->rounds_target && f->rounds_done >= f->rounds_target;
+}
 
 // Per-CPU TX state. Flow ownership: this CPU drives flows first, first+stride, ...
 struct tcp_cpu_state {
@@ -253,7 +293,12 @@ struct tcp_stats {
     __u64 start_dropped_scan;
     __u64 start_dropped_service;
     __u64 port_reuses;
-    __u64 challenge_acks; // ACKs sent for an RST whose seq is not rcv_nxt (RFC 5961)
+    __u64 challenge_acks;    // ACKs sent for an RST whose seq is not rcv_nxt (RFC 5961)
+    __u64 rounds_done;       // responses received in full
+    __u64 resp_bytes;        // in-order payload bytes received from peers
+    __u64 resp_timeouts;     // flows reset while waiting for a response
+    __u64 short_responses;   // peer FIN in the middle of a response
+    __u64 peer_closed_early; // peer FIN at a round boundary before the last round
 };
 
 struct {
@@ -420,15 +465,24 @@ static __always_inline int mixed_flow_closed(__u8 state)
 }
 
 // A slot owns indices slot, slot+N, ...; wrapping to slot also works when P%N != 0.
-static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cfg *cfg, __u64 now, __u32 *quarantine)
+// Returns the flow index of the slot's current flow, -1 without one, -2 when
+// the next generation is still quarantined. A global function, so the verifier
+// checks it once instead of once per scan iteration (see tcp_tx_step_run).
+__noinline int tcp_slot_resolve(__u32 slot, __u64 now)
 {
+    __u32 zero = 0;
+    const struct tcp_cfg *cfg = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
+    if (!cfg)
+        return -1;
     __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &slot);
     if (!current || *current >= cfg->flow_count)
-        return NULL;
+        return -1;
     __u32 idx = *current;
     struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
-    if (!f || !mixed_flow_closed(f->state))
-        return f;
+    if (!f)
+        return -1;
+    if (!mixed_flow_closed(f->state))
+        return idx;
     __u64 id = f->connection_id + cfg->slot_count;
     if (!cfg->drain && !cfg->abort && (!cfg->end_ns || now < cfg->end_ns) && (!cfg->connections || id < cfg->connections)) {
         __u32 next = idx + cfg->slot_count;
@@ -436,14 +490,13 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
             next = slot;
         struct tcp_flow *n = bpf_map_lookup_elem(&tcp_flow_map, &next);
         if (!n)
-            return NULL;
+            return -1;
         __u32 iss = bpf_get_prandom_u32();
         bpf_spin_lock(&n->lock);
         if (mixed_flow_closed(n->state)) {
             if (now < n->closed_ns || now - n->closed_ns < cfg->reuse_delay_ns) {
                 bpf_spin_unlock(&n->lock);
-                *quarantine = 1;
-                return NULL;
+                return -2;
             }
             // shortcut: quarantine >= 1s outlasts microsecond frame construction outside
             // the lock; revisit with reference protection if sub-second reuse is added.
@@ -455,6 +508,8 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
             n->snd_una = n->snd_nxt = n->snd_max = n->rcv_nxt = n->snd_wnd = 0;
             n->ts_recent = 0;
             // ts_clock is monotonic across generations; bytes_target/template are immutable.
+            // Round state (rx_bytes, rounds_done, ...) is reset by the exchange
+            // decision at SYN, so this function stays the one-way code.
             n->ts_recent_ns = n->bytes_acked = n->last_send_ns = n->last_ack_ns = 0;
             n->tx_pkts = n->tx_data = n->tx_rtx = n->rx_replies = n->rx_pkts = 0;
             n->closed_ns = 0;
@@ -462,7 +517,7 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
         n->connection_id = id;
         bpf_spin_unlock(&n->lock);
         *current = next;
-        return n;
+        return next;
     }
     *current = 0xffffffff;
     struct mixed_cfg *mix = bpf_map_lookup_elem(&mixed_cfg_map, &(__u32){0});
@@ -472,7 +527,7 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
         if (closed)
             __sync_fetch_and_add(closed, 1);
     }
-    return NULL;
+    return -1;
 }
 
 // Burst capacity is one. Expired opportunities are discarded, never caught up.
@@ -506,35 +561,42 @@ static __noinline int tcp_start_permit(const struct tcp_cfg *cfg, struct tcp_cpu
 
 // Scan only CLOSED candidates here; running the full state machine in both scans
 // duplicates verifier paths on older kernels. Its cursor is separate from normal TX.
-static __noinline struct tcp_flow *tcp_start_flow(const struct tcp_cfg *cfg, struct tcp_cpu_state *cs, __u32 first, __u32 count)
+// Returns the flow index of the candidate, or -1.
+static __noinline int tcp_start_flow(struct tcp_cpu_state *cs, __u32 first, __u32 count)
 {
     __u32 zero = 0;
     struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
     if (!st)
-        return NULL;
+        return -1;
     __u64 now = bpf_ktime_get_ns();
-    __u32 cursor = cs->start_cursor, quarantine = 0;
+    __u32 quarantine = 0;
+    // The cursor stays in the map between iterations (like the TX scan), so
+    // every iteration reaches the loop head in the same verifier state.
     for (int i = 0; i < TCP_TX_SCAN; i++) {
+        __u32 cursor = cs->start_cursor;
         if (cursor >= count)
             cursor = 0;
+        cs->start_cursor = cursor + 1;
         __u32 idx = first + cursor * cs->stride;
-        cursor++;
         if (idx >= MAX_TCP_FLOWS)
             continue;
-        struct tcp_flow *f = tcp_slot_flow(idx, cfg, now, &quarantine);
-        if (f && f->state == TF_CLOSED) {
-            cs->start_cursor = cursor;
-            return f;
-        }
+        int flow = tcp_slot_resolve(idx, now);
+        if (flow == -2)
+            quarantine = 1;
+        if (flow < 0)
+            continue;
+        __u32 key = flow;
+        struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &key);
+        if (f && f->state == TF_CLOSED)
+            return flow;
     }
-    cs->start_cursor = cursor;
     if (quarantine)
         st->start_dropped_quarantine++;
     else if (count <= TCP_TX_SCAN)
         st->start_dropped_busy++;
     else
         st->start_dropped_scan++;
-    return NULL;
+    return -1;
 }
 
 static __always_inline int tcp_flow_open(__u8 state)
@@ -560,268 +622,16 @@ static __always_inline int tcp_tx_fail(struct tcp_flow *f, struct tcp_stats *st,
     return TXA_RST;
 }
 
-// Returns the action kind; fills *a. No helper calls inside the lock region.
-static __always_inline int tcp_tx_decide(struct tcp_flow *f, const struct tcp_cfg *cfg, struct tcp_stats *st, __u64 now,
-                                         struct tcp_tx_action *a, struct tcp_tx_extra *extra, const int mixed_mode,
-                                         const int timestamps, const int track_closed, int allow_start)
-{
-    int kind = TXA_NONE;
-    __u64 rto = cfg->rto_ns;
-    // Scheduling and TCP decisions share one stop flag, even during template updates.
-    __u32 zero = 0;
-    struct tcp_cfg *global = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
-    if (!global)
-        return TXA_NONE;
-    struct tcp_load *load = bpf_map_lookup_elem(&tcp_load_map, &zero);
-    if (!load)
-        return TXA_NONE;
-    __u32 opened = 0;
-    __u8 drain = global->drain;
-    __u8 abort = global->abort;
-
-    bpf_spin_lock(&f->lock);
-    a->src_port = f->src_port;
-    __u8 state = f->state;
-
-    if (state == TF_CLOSED) {
-        if (drain || abort) {
-            f->state = TF_SKIPPED;
-            st->skipped++;
-            kind = TXA_CLOSED;
-        } else if ((!global->start_ns || now >= global->start_ns) && (!global->end_ns || now < global->end_ns) &&
-                   (!global->target_cps || allow_start)) {
-            f->state = TF_SYN_SENT;
-            opened = __sync_fetch_and_add(&load->in_use, 1) + 1;
-            f->snd_una = f->iss;
-            f->snd_nxt = f->iss + 1;
-            f->snd_max = f->iss + 1;
-            f->last_send_ns = now;
-            a->seq = f->iss;
-            a->ack = 0;
-            a->flags = TCPF_SYN;
-            a->len = 0;
-            kind = TXA_SYN;
-        }
-        goto out;
-    }
-    if (abort && (state == TF_SYN_SENT || tcp_flow_open(state))) {
-        kind = tcp_tx_fail(f, st, a);
-        st->aborted++;
-        goto out;
-    }
-
-    switch (state) {
-    case TF_SYN_SENT:
-        if (f->syn_rst & 1) {
-            // TCP RX just reset a stale peer connection on this port:
-            // retry once right away, then fall back to the normal backoff
-            // (so a peer that keeps answering with challenge ACKs cannot make
-            // us loop without consuming retries).
-            f->syn_rst = 2;
-            f->last_send_ns = now;
-            a->seq = f->iss;
-            a->ack = 0;
-            a->flags = TCPF_SYN;
-            a->len = 0;
-            kind = TXA_SYN;
-        } else if (now - f->last_send_ns > (rto << f->syn_retries)) {
-            if (f->syn_retries >= cfg->max_syn_retries) {
-                f->state = TF_FAILED;
-                st->failed++;
-                kind = TXA_CLOSED;
-            } else {
-                f->syn_retries++;
-                f->last_send_ns = now;
-                a->seq = f->iss;
-                a->ack = 0;
-                a->flags = TCPF_SYN;
-                a->len = 0;
-                kind = TXA_SYN;
-            }
-        }
-        break;
-
-    case TF_ESTABLISHED: {
-        __u32 mss = f->mss ? f->mss : cfg->mss;
-        __u32 in_flight = f->snd_nxt - f->snd_una;
-        __u32 outstanding = f->snd_max - f->snd_una;
-        __u64 remaining = ~0ULL; // payload bytes not yet acked (from snd_una)
-        if (f->bytes_target)
-            remaining = f->bytes_target > f->bytes_acked ? f->bytes_target - f->bytes_acked : 0;
-
-        if (outstanding && f->rtx_pending) {
-            // fast retransmit: resend the oldest unacked segment only and
-            // keep snd_nxt (the later in-flight segments are probably fine)
-            __u32 len = mss < outstanding ? mss : outstanding;
-            kind = TXA_RTX_DUPACK;
-            f->rtx_pending = 0;
-            f->dup_acks = 0;
-            f->last_send_ns = now;
-            a->seq = f->snd_una;
-            a->ack = f->rcv_nxt;
-            a->flags = TCPF_ACK | TCPF_PSH;
-            a->len = len;
-            break;
-        }
-        __u8 shift = f->rtx_retries < 6 ? f->rtx_retries : 6;
-        if (outstanding && now - f->last_send_ns > (rto << shift)) {
-            if (f->rtx_retries >= cfg->max_data_retries) {
-                kind = tcp_tx_fail(f, st, a);
-                st->rtx_giveups++;
-                break;
-            }
-            // RTO: go-back-N from snd_una (snd_max is kept, so ACKs for data
-            // the peer had buffered are still accepted), exponential backoff
-            __u32 len = mss < outstanding ? mss : outstanding;
-            kind = TXA_RTX_TO;
-            f->rtx_retries++;
-            f->rtx_pending = 0;
-            f->dup_acks = 0;
-            f->snd_nxt = f->snd_una + len;
-            f->last_send_ns = now;
-            a->seq = f->snd_una;
-            a->ack = f->rcv_nxt;
-            a->flags = TCPF_ACK | TCPF_PSH;
-            a->len = len;
-            break;
-        }
-
-        // Next segment at snd_nxt: either the rest of a go-back-N region
-        // (allowed even while draining, otherwise the flow could never reach
-        // FIN) or new data.
-        __u64 avail = 0;
-        __u8 rexmit = 0;
-        if (seq_after(f->snd_max, f->snd_nxt)) {
-            avail = f->snd_max - f->snd_nxt;
-            rexmit = 1;
-        } else if (!drain && remaining > (__u64)in_flight) {
-            avail = remaining - in_flight;
-        }
-        if (avail > 0) {
-            __u32 wnd = cfg->window_segs * mss;
-            if (wnd > f->snd_wnd)
-                wnd = f->snd_wnd;
-            __u32 len = mss;
-            if ((__u64)len > avail)
-                len = (__u32)avail;
-            // A peer window smaller than one segment (a slow receiver): with
-            // nothing in flight, send what fits instead of waiting for a
-            // window that may never reach a full segment. Only then, so a
-            // partly filled window does not turn into small segments.
-            if (in_flight == 0 && wnd > 0 && len > wnd)
-                len = wnd;
-            if (in_flight + len <= wnd) {
-                // PSH on the last segment and whenever the next one would not
-                // fit the window: a responder that acks every N segments
-                // (--tcp-ack-every) then acks at least once per window.
-                __u8 push = ((__u64)len >= avail) || (in_flight + len + mss > wnd);
-                a->seq = f->snd_nxt;
-                a->ack = f->rcv_nxt;
-                a->flags = TCPF_ACK | (push ? TCPF_PSH : 0);
-                a->len = len;
-                f->snd_nxt += len;
-                if (seq_after(f->snd_nxt, f->snd_max))
-                    f->snd_max = f->snd_nxt;
-                f->last_send_ns = now;
-                kind = rexmit ? TXA_RTX_GBN : TXA_DATA;
-            } else {
-                st->window_stalls++;
-                // Window closed with nothing in flight: no ACK will come by
-                // itself, and a lost window update would stall the flow
-                // forever. Persist: every RTO send a pure ACK with an old seq,
-                // which the peer must answer with its current window
-                // (RFC 9293 3.8.6.1). Never gives up, like a persist timer.
-                if (outstanding == 0 && now - f->last_send_ns > rto) {
-                    a->seq = f->snd_una - 1;
-                    a->ack = f->rcv_nxt;
-                    a->flags = TCPF_ACK;
-                    a->len = 0;
-                    f->last_send_ns = now;
-                    kind = TXA_WND_PROBE;
-                }
-            }
-        } else if (outstanding == 0) {
-            a->seq = f->snd_nxt;
-            a->ack = f->rcv_nxt;
-            a->flags = TCPF_FIN | TCPF_ACK;
-            a->len = 0;
-            f->snd_nxt += 1;
-            f->snd_max = f->snd_nxt;
-            f->state = TF_FIN_WAIT_1;
-            f->fin_retries = 0;
-            f->last_send_ns = now;
-            kind = TXA_FIN;
-        }
-        break;
-    }
-
-    case TF_FIN_WAIT_1:
-        if (now - f->last_send_ns > (rto << f->fin_retries)) {
-            if (f->fin_retries >= cfg->max_fin_retries) {
-                kind = tcp_tx_fail(f, st, a);
-            } else {
-                f->fin_retries++;
-                f->last_send_ns = now;
-                a->seq = f->snd_max - 1;
-                a->ack = f->rcv_nxt;
-                a->flags = TCPF_FIN | TCPF_ACK;
-                a->len = 0;
-                kind = TXA_FIN;
-            }
-        }
-        break;
-
-    case TF_FIN_WAIT_2:
-        // Our FIN is acked, the peer's FIN has not arrived. A reactive peer
-        // (--tcp-server) whose FIN+ACK was lost resends it when it sees an
-        // ACK that does not cover its FIN, so probe with pure ACKs.
-        if (now - f->last_send_ns > (rto << f->fin_retries)) {
-            if (f->fin_retries >= cfg->max_fin_retries) {
-                kind = tcp_tx_fail(f, st, a);
-                st->fin_wait2_timeouts++;
-            } else {
-                f->fin_retries++;
-                f->last_send_ns = now;
-                a->seq = f->snd_max;
-                a->ack = f->rcv_nxt;
-                a->flags = TCPF_ACK;
-                a->len = 0;
-                kind = TXA_ACK;
-            }
-        }
-        break;
-
-    default:
-        break;
-    }
-out:
-    if (kind != TXA_NONE && kind != TXA_CLOSED)
-        a->ip_id = f->ip_id++;
-    if (mixed_mode && mixed_has_payload && a->len)
-        extra->stream_offset = f->bytes_acked + (__u32)(a->seq - f->snd_una);
-    if (mixed_mode && mixed_has_timestamps && timestamps) {
-        __u32 clock = now / 1000000;
-        if ((state != TF_CLOSED || f->connection_id >= global->flow_count) && (__s32)(clock - f->ts_clock) < 0)
-            clock = f->ts_clock;
-        f->ts_clock = clock;
-        extra->timestamps = (a->flags & TCPF_SYN) || f->ts_enabled;
-        extra->tsval = clock;
-        extra->tsecr = (a->flags & TCPF_ACK) ? f->ts_recent : 0;
-    }
-    if (!mixed_flow_closed(state) && mixed_flow_closed(f->state)) {
-        f->closed_ns = now;
-        if (state != TF_CLOSED && load && load->in_use)
-            __sync_fetch_and_sub(&load->in_use, 1);
-    }
-    int closed = track_closed && !mixed_flow_closed(state) && mixed_flow_closed(f->state);
-    bpf_spin_unlock(&f->lock);
-    if (closed)
-        mixed_count_closed(f);
-    if (opened)
-        tcp_count_peak(opened);
-    a->kind = kind;
-    return kind;
-}
+#define TCP_DECIDE_NAME tcp_tx_decide
+#define TCP_DECIDE_XCHG 0
+#include "xdp_tcp_tx_decide.h"
+#undef TCP_DECIDE_NAME
+#undef TCP_DECIDE_XCHG
+#define TCP_DECIDE_NAME tcp_tx_decide_xchg
+#define TCP_DECIDE_XCHG 1
+#include "xdp_tcp_tx_decide.h"
+#undef TCP_DECIDE_NAME
+#undef TCP_DECIDE_XCHG
 
 #include "xdp_tcp_template.h"
 #include "xdp_tcp_template_ext.h"
@@ -832,6 +642,10 @@ struct tcp_mixed_decision {
     struct tcp_tx_extra extra;
     __u64 now;
     int allow_start;
+    // Filled by the step: the decided flow and its template, which the caller
+    // looks up again (a global function returns only a scalar).
+    __u32 flow;
+    __u32 group;
 };
 
 static __noinline int tcp_tx_decide_mixed(struct tcp_flow *f, const struct tcp_template *tmpl, struct tcp_stats *st,
@@ -843,9 +657,83 @@ static __noinline int tcp_tx_decide_mixed(struct tcp_flow *f, const struct tcp_t
     return tcp_tx_decide(f, &tmpl->cfg, st, decision->now, &decision->act, &decision->extra, extended,
                          extended && mixed_has_timestamps && tmpl->timestamps, 1, decision->allow_start);
 }
+// A separate function, not a flag: the one-way entries keep their code (and
+// their verifier cost on old kernels) free of the round logic.
+static __noinline int tcp_tx_decide_mixed_xchg(struct tcp_flow *f, const struct tcp_template *tmpl, struct tcp_stats *st,
+                                               struct tcp_mixed_decision *decision)
+{
+    if (mixed_has_timestamps)
+        decision->extra.timestamps = 0;
+    return tcp_tx_decide_xchg(f, &tmpl->cfg, st, decision->now, &decision->act, &decision->extra, 1,
+                              mixed_has_timestamps && tmpl->timestamps, 1, decision->allow_start);
+}
+
+// One scan attempt: resolve the flow at idx (a slot unless allow_start, where
+// tcp_start_flow already resolved it) and decide what it sends. Returns the
+// action kind (TXA_NONE when idx has no flow), or -1 when the config, stats or
+// template lookup failed (the caller aborts).
+//
+// The entries below are global functions on purpose: the verifier checks a
+// global function once, for any arguments, instead of once per scan iteration
+// and per state that reaches it. A static decision called from the scan loop
+// cost 945k of the 1M instruction limit on 6.1; this costs under 40k, and
+// TestBpfMixedSpecializations enforces a budget. On 6.1 a global function takes
+// only scalars and pointers to fixed-size memory that may be NULL, and returns
+// a scalar: flows are passed by index, never by pointer (a flow pointer would
+// lose its spin lock), and the caller looks the flow and template up again by
+// d->flow and d->group.
+static __always_inline int tcp_tx_step_run(__u32 idx, struct tcp_mixed_decision *d, const int extended, const int exchange)
+{
+    __u32 zero = 0;
+    if (!d)
+        return -1;
+    const struct tcp_cfg *global = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
+    struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
+    if (!global || !st)
+        return -1;
+    struct tcp_flow *f;
+    __u32 flow = idx;
+    if (global->slot_count && !d->allow_start) {
+        int resolved = tcp_slot_resolve(idx, d->now);
+        if (resolved < 0)
+            return TXA_NONE;
+        flow = resolved;
+    }
+    f = bpf_map_lookup_elem(&tcp_flow_map, &flow);
+    if (!f)
+        return TXA_NONE;
+    __u32 group = f->template_id;
+    struct tcp_template *tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
+    if (!tmpl)
+        return -1;
+    // Do not carry action state between scan attempts.
+    d->act = (struct tcp_tx_action){0};
+    d->extra = (struct tcp_tx_extra){0};
+    d->flow = flow;
+    d->group = group;
+    return exchange ? tcp_tx_decide_mixed_xchg(f, tmpl, st, d) : tcp_tx_decide_mixed(f, tmpl, st, d, extended);
+}
+__noinline int tcp_tx_step(__u32 idx, struct tcp_mixed_decision *d)
+{
+    return tcp_tx_step_run(idx, d, 0, 0);
+}
+__noinline int tcp_tx_step_ext(__u32 idx, struct tcp_mixed_decision *d)
+{
+    return tcp_tx_step_run(idx, d, 1, 0);
+}
+__noinline int tcp_tx_step_xchg(__u32 idx, struct tcp_mixed_decision *d)
+{
+    return tcp_tx_step_run(idx, d, 1, 1);
+}
+static __always_inline int tcp_tx_step_any(__u32 idx, struct tcp_mixed_decision *d, const int extended, const int exchange)
+{
+    if (exchange)
+        return tcp_tx_step_xchg(idx, d);
+    return extended ? tcp_tx_step_ext(idx, d) : tcp_tx_step(idx, d);
+}
 
 // Compile separate entry points for basic and extended TCP templates.
-static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
+static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended, const int exchange)
 {
     __u32 zero = 0;
     struct tcp_cfg *cfg = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
@@ -879,9 +767,7 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
 
     const struct tcp_cfg *global = cfg;
     struct tcp_mixed_decision decision = {.now = bpf_ktime_get_ns()};
-    struct tcp_flow *sel = NULL;
     int kind = TXA_NONE;
-    struct tcp_template *tmpl = NULL;
 
     int permit = tcp_start_permit(global, cs, st, decision.now);
     if (permit && cs->service_pending) {
@@ -891,14 +777,12 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
     // After every new SYN, reserve an iteration for data/retries/FIN even at saturation.
     cs->service_pending = 0;
     if (permit) {
-        sel = tcp_start_flow(global, cs, first, count);
-        if (sel) {
-            __u32 group = sel->template_id;
-            tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
-            if (!tmpl)
-                return XDP_ABORTED;
+        int start = tcp_start_flow(cs, first, count);
+        if (start >= 0) {
             decision.allow_start = 1;
-            kind = tcp_tx_decide_mixed(sel, tmpl, st, &decision, extended);
+            kind = tcp_tx_step_any(start, &decision, extended, exchange);
+            if (kind < 0)
+                return XDP_ABORTED;
             if (kind != TXA_NONE && kind != TXA_CLOSED) {
                 st->start_permits++;
                 cs->start_permits++;
@@ -909,8 +793,6 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
     }
     decision.allow_start = 0;
     kind = TXA_NONE;
-    sel = NULL;
-    __u32 quarantine = 0;
     for (int i = 0; i < TCP_TX_SCAN; i++) {
         __u32 idx;
         __u32 cursor = *next;
@@ -920,34 +802,25 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended)
         idx = first + cursor * cs->stride;
         if (idx >= MAX_TCP_FLOWS)
             continue;
-        struct tcp_flow *f;
-        if (global->slot_count)
-            f = tcp_slot_flow(idx, global, decision.now, &quarantine);
-        else
-            f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
-        if (!f)
-            continue;
-        __u32 group = f->template_id;
-        tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
-        if (!tmpl)
+        // Keep the decision inside the global step: see tcp_tx_step_run.
+        kind = tcp_tx_step_any(idx, &decision, extended, exchange);
+        if (kind < 0)
             return XDP_ABORTED;
-        cfg = &tmpl->cfg;
-        // Do not carry action state between scan attempts into the verifier.
-        decision.act = (struct tcp_tx_action){0};
-        decision.extra = (struct tcp_tx_extra){0};
-        kind = tcp_tx_decide_mixed(f, tmpl, st, &decision, extended);
-        if (kind != TXA_NONE && kind != TXA_CLOSED) {
-            sel = f;
+        if (kind != TXA_NONE && kind != TXA_CLOSED)
             break;
-        }
         kind = TXA_NONE;
     }
-    if (kind == TXA_NONE || !sel) {
+    if (kind == TXA_NONE) {
         st->idle_iters++;
         return XDP_DROP;
     }
 
 build:;
+    __u32 flow = decision.flow, group = decision.group;
+    struct tcp_flow *sel = bpf_map_lookup_elem(&tcp_flow_map, &flow);
+    struct tcp_template *tmpl = bpf_map_lookup_elem(&tcp_template_map, &group);
+    if (!sel || !tmpl)
+        return XDP_ABORTED;
     int built;
     if (extended)
         built = tcp_template_build_ext(ctx, tmpl, cs, &decision.act, &decision.extra);
@@ -1031,13 +904,20 @@ build:;
 SEC("xdp")
 int xdp_tx_tcp_mixed(struct xdp_md *ctx)
 {
-    return tcp_tx_run(ctx, 0);
+    return tcp_tx_run(ctx, 0, 0);
 }
 
 SEC("xdp")
 int xdp_tx_tcp_mixed_ext(struct xdp_md *ctx)
 {
-    return tcp_tx_run(ctx, 1);
+    return tcp_tx_run(ctx, 1, 0);
+}
+
+// Extended entry with request/response rounds (MixedProgramFeatures.Exchange).
+SEC("xdp")
+int xdp_tx_tcp_mixed_xchg(struct xdp_md *ctx)
+{
+    return tcp_tx_run(ctx, 1, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,8 +1151,24 @@ static __always_inline void tcp_rx_reply(struct tcp_rx_resp *r, __u32 seq, __u32
 // State machine under the flow lock; fills *r when a reply is needed.
 // Replies (ACK / RST) use seq = snd_max: after a go-back-N rewind snd_nxt may
 // lie below the peer's RCV.NXT, which would make the segment unacceptable.
+// A response (or several: a download may carry more than one per segment) is
+// complete. One RTT sample per timed request.
+static __always_inline void tcp_xchg_complete(struct tcp_flow *f, struct tcp_stats *st, __u64 done, __u64 now)
+{
+    if (f->round_start_ns && now > f->round_start_ns) {
+        __u64 rtt = now - f->round_start_ns;
+        f->rtt_sum_ns += rtt;
+        f->rtt_samples++;
+        if (rtt > f->rtt_max_ns)
+            f->rtt_max_ns = rtt;
+    }
+    f->round_start_ns = 0;
+    st->rounds_done += done - f->rounds_done;
+    f->rounds_done = (__u32)done;
+}
+
 static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *st, const struct tcp_rx_info *in, __u16 cfg_mss,
-                                          __u64 now, struct tcp_rx_resp *r, const struct tcp_rx_timestamp *ts,
+                                          __u8 until_fin, __u64 now, struct tcp_rx_resp *r, const struct tcp_rx_timestamp *ts,
                                           struct tcp_tx_extra *extra, const int timestamps, const int track_closed)
 {
     __u8 flags = in->flags;
@@ -1398,7 +1294,8 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
     __u32 new_wnd = (__u32)in->win << f->wscale;
     // Only an ACK inside [snd_una, snd_max] may change the window: a
     // reordered older ACK (or one beyond what we sent) must not shrink it
-    // (RFC 9293 3.10.7.4, SND.WL2 part; the peer sends no data, so WL1 is moot).
+    // (RFC 9293 3.10.7.4, SND.WL2 part; WL1 is not tracked: a responding peer
+    // sends data, but its ACKs only move forward with ours).
     __u8 ack_ok = seq_leq(f->snd_una, in->ack) && seq_leq(in->ack, f->snd_max);
     if (seq_after(in->ack, f->snd_una) && !seq_after(in->ack, f->snd_max)) {
         __u32 acked = in->ack - f->snd_una;
@@ -1428,8 +1325,28 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
     if (in->payload_len > 0) {
         // the peer sent data: swallow it, acknowledge it
         __u32 end = in->seq + in->payload_len;
-        if (!seq_after(in->seq, f->rcv_nxt) && seq_after(end, f->rcv_nxt))
+        if (!seq_after(in->seq, f->rcv_nxt) && seq_after(end, f->rcv_nxt)) {
+            if (tcp_flow_exchange(mixed_has_exchange, f, until_fin)) {
+                __u32 fresh = end - f->rcv_nxt;
+                f->rx_bytes += fresh;
+                f->last_rx_ns = now;
+                st->resp_bytes += fresh;
+                // Still receiving a response after our FIN (drain): TX
+                // restarts the FIN_WAIT_2 probe timer from last_rx_ns.
+                if (state == TF_FIN_WAIT_2)
+                    f->fin_retries = 0;
+                if (f->resp_target) {
+                    __u64 done = f->rx_bytes / f->resp_target;
+                    if (f->rounds_target && done > f->rounds_target)
+                        done = f->rounds_target;
+                    if (done > 0xffffffff)
+                        done = 0xffffffff;
+                    if (done > f->rounds_done)
+                        tcp_xchg_complete(f, st, done, now);
+                }
+            }
             f->rcv_nxt = end; // only the part beyond rcv_nxt is new
+        }
         need_ack = 1;
     }
     if (flags & TCPF_FIN) {
@@ -1437,6 +1354,19 @@ static __always_inline void tcp_rx_update(struct tcp_flow *f, struct tcp_stats *
         if (!f->peer_fin && in->seq + in->payload_len == f->rcv_nxt) {
             f->peer_fin = 1;
             f->rcv_nxt += 1;
+            // Only a FIN that ends our rounds early says anything about the
+            // peer: after our own FIN (drain) the peer is just answering it.
+            if (state == TF_ESTABLISHED && tcp_flow_exchange(mixed_has_exchange, f, until_fin)) {
+                if (until_fin) {
+                    if (!f->rounds_done)
+                        tcp_xchg_complete(f, st, 1, now); // the FIN ends the response
+                } else if (!tcp_xchg_all_rounds(f)) {
+                    if (f->rx_bytes % f->resp_target)
+                        st->short_responses++;
+                    else
+                        st->peer_closed_early++;
+                }
+            }
         }
         need_ack = 1;
     }

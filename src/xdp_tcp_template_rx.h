@@ -14,7 +14,8 @@ struct tcp_rx_decision {
 static __noinline void tcp_rx_decide_mixed(struct tcp_flow *f, struct tcp_stats *st, const struct tcp_template *t,
                                            struct tcp_rx_decision *d, int timestamps)
 {
-    tcp_rx_update(f, st, &d->in, t->cfg.mss, bpf_ktime_get_ns(), &d->resp, &d->ts, &d->extra, timestamps, 1);
+    __u8 until_fin = mixed_has_exchange ? t->cfg.until_fin : 0;
+    tcp_rx_update(f, st, &d->in, t->cfg.mss, until_fin, bpf_ktime_get_ns(), &d->resp, &d->ts, &d->extra, timestamps, 1);
 }
 
 static __always_inline int tcp_rx_mixed_run(struct xdp_md *ctx, const int extended)

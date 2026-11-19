@@ -255,7 +255,9 @@ type MixedProgramFeatures struct {
 	Lengths, OuterIPs, UDPs uint32
 	LCO                     bool
 	Timestamps, Payload     bool
-	TemplateEntries         uint32
+	// Exchange enables request/response rounds (response_bytes, rounds).
+	Exchange        bool
+	TemplateEntries uint32
 }
 
 // LoadMixedProgramsWithFeatures specializes builders before verification. The
@@ -301,6 +303,7 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 	for name, value := range map[string]uint32{
 		"mixed_has_timestamps": flag(features.Timestamps),
 		"mixed_has_payload":    flag(features.Payload),
+		"mixed_has_exchange":   flag(features.Exchange),
 		"mixed_max_lengths":    features.Lengths,
 		"mixed_max_outer_ips":  features.OuterIPs,
 		"mixed_max_udps":       features.UDPs,
@@ -322,9 +325,16 @@ func LoadMixedProgramsWithFeatures(objs *BpfObjects, spec *ebpf.CollectionSpec, 
 			replacements[name] = m
 		}
 	}
-	if features.Timestamps || features.Payload {
+	if features.Timestamps || features.Payload || features.Exchange {
 		spec.Programs["xdp_tx_tcp_mixed"] = spec.Programs["xdp_tx_tcp_mixed_ext"]
 		spec.Programs["xdp_rx_tcp_mixed"] = spec.Programs["xdp_rx_tcp_mixed_ext"]
+	}
+	// Rounds have their own TX entry (extended builder): the other entries
+	// carry none of that code. RX handles them behind mixed_has_exchange, set
+	// above from the same flag: the two must agree, or a flow would wait for
+	// responses RX never counts.
+	if features.Exchange {
+		spec.Programs["xdp_tx_tcp_mixed"] = spec.Programs["xdp_tx_tcp_mixed_xchg"]
 	}
 	var mixed struct {
 		XdpRxMixed    *ebpf.Program `ebpf:"xdp_rx_mixed"`

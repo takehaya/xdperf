@@ -50,6 +50,7 @@ func TestBpfProgramsLoad(t *testing.T) {
 		{"xdp_rx_tcp_mixed", objs.XdpRxTcpMixed},
 		{"xdp_tx_tcp_mixed_ext", objs.XdpTxTcpMixedExt},
 		{"xdp_rx_tcp_mixed_ext", objs.XdpRxTcpMixedExt},
+		{"xdp_tx_tcp_mixed_xchg", objs.XdpTxTcpMixedXchg},
 	} {
 		if p.prog == nil {
 			t.Errorf("program %s is nil", p.name)
@@ -193,6 +194,9 @@ func TestBpfMixedSpecializations(t *testing.T) {
 		"payload":            {Payload: true},
 		"timestamps-payload": {Timestamps: true, Payload: true},
 		"nested-extensions":  {Lengths: 4, OuterIPs: 2, UDPs: 2, LCO: true, Timestamps: true, Payload: true, TemplateEntries: 18},
+		"exchange":           {Exchange: true},
+		"exchange-nested-extensions": {Lengths: 4, OuterIPs: 2, UDPs: 2, LCO: true, Timestamps: true, Payload: true,
+			TemplateEntries: 18, Exchange: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			objs, spec, err := ReadBaseCollectionWithSizes(defaultConsts(), map[string]uint32{"diff_map": 1})
@@ -236,6 +240,31 @@ func TestBpfMixedSpecializations(t *testing.T) {
 					t.Fatalf("tail call %d: %d, want %d", i, got, id)
 				}
 			}
+			checkTxTCPVerifierBudget(t, objs.XdpTxTcpMixed)
 		})
+	}
+}
+
+// TCP TX verifies one scan attempt as a global function (tcp_tx_step_run in
+// src/xdp_tcp.h): every CI kernel needs under 40k instructions. A static
+// helper called from a scan loop multiplies its cost by the scan length: the
+// decision in the loop took 148k-262k on 7.0 and up to 954k on 6.1, and the
+// slot helper in the start loop 97k-120k on 6.1. 80k catches both.
+const txTCPVerifierBudget = 80_000
+
+func checkTxTCPVerifierBudget(t *testing.T, prog *ebpf.Program) {
+	t.Helper()
+	info, err := prog.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := info.VerifiedInstructions()
+	if !ok {
+		t.Log("kernel does not report verified instructions")
+		return
+	}
+	t.Logf("xdp_tx_tcp_mixed: %d verified instructions", n)
+	if n > txTCPVerifierBudget {
+		t.Fatalf("xdp_tx_tcp_mixed: %d verified instructions, budget %d: is a static function called from a TX scan loop?", n, txTCPVerifierBudget)
 	}
 }
