@@ -87,6 +87,15 @@ TCP 側では固定ヘッダまで縮小してから拡張し、パケット側�
 6.1 の global 関数はスカラと、NULL を取りうる固定長メモリへのポインタしか引数に取れない。そのため、フローはポインタではなく番号で渡し、フレームを組む前に番号から引き直す。
 走査ループから static な関数を呼ぶと、この効果が失われる。`TestBpfMixedSpecializations` は、TX 入口が 8 万命令を超えたら失敗する。
 
+RX でも同じ理由で命令数が増えていた。
+GENEVE オプションを走査する `tcp_geneve_options` と外側ヘッダを修正する `tcp_encap_patch` は static 関数であり、decap の層や呼び出し元の状態ごとに再検証されるため、6.1 の RX 入口の命令数は 220k〜278k だった。
+この 2 つを global 関数にすると、6.1 では 73k〜108k 命令に減った。
+削減の大半は `tcp_geneve_options` の変更によるもので、`tcp_encap_patch` の変更では外側ヘッダを入れ子にした場合だけ 15k〜37k 命令減る。
+`tcp_encap_patch` は TX 入口からも呼ばれるため、6.1 では TX の命令数が 1k〜5k 増えるが、TX の予算には十分な余裕がある。
+`tcp_encap_patch` はテンプレートへのポインタを受け取るため、関数の先頭で NULL かどうかを確認する。
+`TestBpfMixedSpecializations` は、RX 入口の命令数が 12.5 万を超えた場合にも失敗する。
+どちらか一方を static に戻すと、6.1 で予算を超える。
+
 2026-10-22、Linux 7.0.0-38-generic の veth と netns で、main の B、PR2 の A、PR2 の B を各 1 回、逐次実行した。
 対向は RX netns の `xdperf-sink -listen 192.168.110.2:5201 -interval 0 -xdp-pass-dev tcp-rx` とした。
 A は単独 `--tcp`、B は `tcpflow.go` とし、16 フロー、各 67108864 バイト、window 32、parallelism 1、worker CPU 4、MTU 1500、使用中 RX/TX キュー各 1、MSS 1460、RTO 200 ms に揃えた。

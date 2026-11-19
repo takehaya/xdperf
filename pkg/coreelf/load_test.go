@@ -240,7 +240,7 @@ func TestBpfMixedSpecializations(t *testing.T) {
 					t.Fatalf("tail call %d: %d, want %d", i, got, id)
 				}
 			}
-			checkTxTCPVerifierBudget(t, objs.XdpTxTcpMixed)
+			checkTCPVerifierBudgets(t, objs)
 		})
 	}
 }
@@ -252,7 +252,23 @@ func TestBpfMixedSpecializations(t *testing.T) {
 // slot helper in the start loop 97k-120k on 6.1. 80k catches both.
 const txTCPVerifierBudget = 80_000
 
-func checkTxTCPVerifierBudget(t *testing.T, prog *ebpf.Program) {
+// TCP RX verifies the GENEVE option walk (tcp_geneve_options in
+// src/xdp_tcp_decap.h) and the outer header fixups (tcp_encap_patch in
+// src/xdp_tcp_encap.h) once, as global functions: 73k-108k on 6.1 and under
+// 90k on 7.0. As static functions they are verified once per decap layer or
+// caller state: the GENEVE walk alone took RX to 206k-241k on 6.1, and the
+// fixups alone to 146k with nested outer headers. 125k catches both on 6.1.
+const rxTCPVerifierBudget = 125_000
+
+func checkTCPVerifierBudgets(t *testing.T, objs *BpfObjects) {
+	t.Helper()
+	checkVerifierBudget(t, "xdp_tx_tcp_mixed", objs.XdpTxTcpMixed, txTCPVerifierBudget,
+		"is a static function called from a TX scan loop?")
+	checkVerifierBudget(t, "xdp_rx_tcp_mixed", objs.XdpRxTcpMixed, rxTCPVerifierBudget,
+		"is tcp_geneve_options or tcp_encap_patch static again?")
+}
+
+func checkVerifierBudget(t *testing.T, name string, prog *ebpf.Program, budget uint32, hint string) {
 	t.Helper()
 	info, err := prog.Info()
 	if err != nil {
@@ -260,11 +276,11 @@ func checkTxTCPVerifierBudget(t *testing.T, prog *ebpf.Program) {
 	}
 	n, ok := info.VerifiedInstructions()
 	if !ok {
-		t.Log("kernel does not report verified instructions")
+		t.Logf("%s: kernel does not report verified instructions", name)
 		return
 	}
-	t.Logf("xdp_tx_tcp_mixed: %d verified instructions", n)
-	if n > txTCPVerifierBudget {
-		t.Fatalf("xdp_tx_tcp_mixed: %d verified instructions, budget %d: is a static function called from a TX scan loop?", n, txTCPVerifierBudget)
+	t.Logf("%s: %d verified instructions", name, n)
+	if n > budget {
+		t.Fatalf("%s: %d verified instructions, budget %d: %s", name, n, budget, hint)
 	}
 }

@@ -9,8 +9,13 @@ const volatile __u32 mixed_max_udps SEC(".rodata.mixed") = 4;
 const volatile __u32 mixed_has_lco SEC(".rodata.mixed") = 1;
 
 // Outer headers use a validated fixup table, independent of tunnel protocol.
-static __noinline int tcp_encap_patch(struct xdp_md *ctx, const struct tcp_template *t, __u32 tcp_len, __u32 flow, __u16 ip_id)
+// A global function, so the verifier checks the unrolled fixups once instead of
+// once per caller state: 15k-37k fewer RX instructions on 6.1 with nested
+// outer headers. The verifier treats t as memory that may be NULL.
+__noinline int tcp_encap_patch(struct xdp_md *ctx, const struct tcp_template *t, __u32 tcp_len, __u32 flow, __u16 ip_id)
 {
+    if (!t)
+        return -1;
     __u8 *data = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     if (t->length_count > 8 || t->outer_ip_count > 4 || t->udp_count > 4)

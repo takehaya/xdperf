@@ -11,7 +11,10 @@ struct tcp_inner_packet {
     __u8 neighbor;
 };
 
-static __noinline int tcp_geneve_options(struct xdp_md *ctx, __u32 off, __u32 end)
+// A global function, so the verifier checks it once instead of once per decap
+// layer and caller state. As a static function it cost xdp_rx_tcp_mixed about
+// 130k instructions on 6.1 (see rxTCPVerifierBudget in pkg/coreelf/load_test.go).
+__noinline int tcp_geneve_options(struct xdp_md *ctx, __u32 off, __u32 end)
 {
     __u8 h[4];
 #pragma unroll
