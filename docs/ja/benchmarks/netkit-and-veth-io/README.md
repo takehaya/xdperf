@@ -225,3 +225,77 @@ Kubernetes クラスタ上で Cilium を動かしている場合、Cilium の `b
 | **② Cilium `netkit` モードの最大性能（100G/400G 実機含む）** | Worker 1 の **`hostNetwork: true` Pod**（または **DRA / SR-IOV VF Pod**）<br>`--xdp-mode native` | Worker 2 の通常 Pod (**`netkit`**) | 送信側は物理 NIC / VF から Native XDP で撃ち、Worker 2 の `netkit` Pod で受ける |
 | **③ Cilium `netkit` モードで両端とも Pod `cil_from_container` を通す試験** | Worker 1（**`veth` ノード**）の通常 Pod<br>`--xdp-mode generic` | Worker 2（**`netkit` ノード**）の通常 Pod | `CiliumNodeConfig` で Worker 1 を `veth`、Worker 2 を `netkit` に分ける（Worker 1 の `lxcXXX` は `gro on`） |
 
+---
+
+### 3.4 マルチキュー `veth` スケーリング（UDP 301.5 Mpps / TCP 225.7 Gbps）と Kubernetes Pod（動的 `ethtool -L`・cgroup CPU 制限）の実測検証
+
+#### (1) マルチキュー `veth` の線形スケーリング上限（64 vCPU Xeon 6746E, Linux `6.17.0-41-generic`）
+
+`veth` のキュー数（`numtxqueues N numrxqueues N`）と `xdperf` の worker 数（`--parallelism N`）を `1 → 32` まで増やした際の単一ホスト `veth` ペアでの実測値：
+
+| `veth` キュー数 / Worker 数 | 64B UDP (16,384 ポートスイープ, 対向 `--recv`) | ステートフル双方向 TCP (MSS 1448, 対向 `--tcp-server` XDP レスポンダ) | TCP 再送数 (`RTX`) |
+|---:|---:|---:|---:|
+| **1 キュー / 1 worker** | `8.43 Mpps` (`4.32 Gbps`) | `5.19 Gbps` (`0.45 M segs/s`, 16 フロー) | **0** |
+| **4 キュー / 4 workers** | `37.18 Mpps` (`19.04 Gbps`) | `31.10 Gbps` (`2.69 M segs/s`, 64 フロー) | **0** |
+| **8 キュー / 8 workers** | `79.59 Mpps` (`40.75 Gbps`) | `61.09 Gbps` (`5.27 M segs/s`, 128 フロー) | **0** |
+| **16 キュー / 16 workers** | `153.43 Mpps` (`78.56 Gbps`) | `111.90 Gbps` (`9.66 M segs/s`, 256 フロー) | **0** |
+| **24 キュー / 24 workers** | — | `169.73 Gbps` (`14.65 M segs/s`, 384 フロー) | **0** |
+| **32 キュー / 32 workers** | **`301.50 Mpps`（毎秒 3 億 150 万 pkt, `154.37 Gbps`）** | **`225.69 Gbps`（`19.48 M segs/s`, 512 フロー）** | **0** |
+
+#### (2) Kubernetes CNI が作成した既定 1 キュー `veth` を Pod 起動後に `ethtool -L` で動的マルチキュー化する検証
+
+Cilium や Calico 等の CNI は、Pod 作成時に `veth` ペア（Pod 側 `eth0` ↔ ホスト側 `lxcXXX`）の有効キュー数（`real_num_tx_queues` / `real_num_rx_queues`）を **`1`** に初期化する。しかし Linux カーネルの `veth_newlink()`（`drivers/net/veth.c`）は作成時にホストの最大論理 CPU 数（`num_possible_cpus()`）分のキュー構造体を確保しているため、**Pod を再作成したり CNI を改造したりすることなく、稼働中の Pod の両端に `ethtool -L` を実行するだけで動的にマルチキュー化できる**。
+
+```bash
+# 1. Pod 側の eth0 を 16 キューに動的拡張
+kubectl exec -it <pod-name> -- ethtool -L eth0 rx 16 tx 16
+
+# 2. ホスト側の対向 lxcXXX を特定して 16 キューに動的拡張 (+ Cilium veth モードなら GRO on)
+IFINDEX=$(kubectl exec <pod-name> -- cat /sys/class/net/eth0/iflink)
+HOST_LXC=$(ip -o link | awk -F': ' -v idx="$IFINDEX" '$1 == idx {split($2, a, "@"); print a[1]}')
+sudo ethtool -L "$HOST_LXC" rx 16 tx 16
+sudo ethtool -K "$HOST_LXC" gro on
+```
+
+実際に `ip link add vtx type veth peer name vrx`（キュー数指定なし＝CNI 既定の 1 キュー状態）で作成した `veth` ペアに対して、16 worker（256 TCP フロー、3 秒間）で送信した比較実測値は以下のとおりである：
+
+| 条件（同一の 1 キュー作成済み `veth` ペア） | Goodput (Gbps) | Data Segs/s | `xdp_xmit_errors` (リング溢れドロップ) | TCP 再送数 (`RTX`) | `warnVethQueues` 警告 |
+|---|---:|---:|---:|---:|---|
+| **1A: CNI 既定の 1 キューのまま送信 (`16w / 256f`)** | `8.79 Gbps` | `0.76 M segs/s` | `10,375` | `25,584` | `True` (警告出力) |
+| **1B: 作成後に両端へ `ethtool -L <dev> rx 16 tx 16` を動的実行** | **`112.61 Gbps (+12.8x)`** | **`9.72 M segs/s`** | **`0`** | **`0`** | `False` |
+
+#### (3) Kubernetes Pod で cgroup vCPU 制限（① CFS クォータ `cpu.max`、② コア固定 `cpuset.cpus`）が掛かっている場合の挙動と実測検証
+
+Kubernetes Pod に CPU 制限（`resources.limits.cpu`）を設定している場合、cgroup の制限方式によって以下の **3 つの現象** が発生することを実機（cgroup v2 / `systemd-run --scope`）で検証した。
+
+##### 検証 A：標準の CFS クォータ制限（`CPUQuota=200%` ＝ `limits.cpu: "2"`）で `--parallelism` を超過させた場合のスロットリング崩壊
+`xdperf` の各 TX worker は 1 コアを 100% 消費するため、2 vCPU クォータ（100ms 周期あたり 200ms の CPU 時間）の cgroup 内で worker 数（`--parallelism`）を `2 → 8 → 16` に増やすと、100ms 周期の途中でクォータを使い果たして全 worker が CFS スケジューラにより強制凍結され、TCP の ACK 処理とウィンドウ進行がストールして性能が激減する：
+
+| cgroup CFS クォータ設定 | `--parallelism` (Worker 数) | Goodput (Gbps) | Data Segs/s | `window_stalls` | 挙動 |
+|---|---:|---:|---:|---:|---|
+| `CPUQuota=200%` (`limits.cpu: "2"`) | **`2`（クォータ以下）** | **`24.04 Gbps`** | **`2.08 M segs/s`** | `9,791,318` | 凍結なしで連続送信 |
+| `CPUQuota=200%` (`limits.cpu: "2"`) | `8`（クォータの 4 倍） | `2.78 Gbps (-88.4%)` | `0.24 M segs/s` | `17,287,522` | 周期ごとに 75ms 凍結し約 1/9 に激減 |
+| `CPUQuota=200%` (`limits.cpu: "2"`) | `16`（クォータの 8 倍） | `1.49 Gbps (-93.8%)` | `0.13 M segs/s` | `21,577,179` | 周期ごとに 87.5ms 凍結し約 1/16 に激減 |
+
+* **対策**: CFS クォータ環境では、必ず **`--parallelism <= limits.cpu`** に設定する。
+
+##### 検証 B：`cpuset.cpus` コア固定（Kubernetes CPU Manager `static` ポリシー、例：`AllowedCPUs=2,6,10,14` の 4 コア割り当て）における 2 つの罠
+1. **既定 `--cpu-mode auto` での `SchedSetaffinity` エラー（`EINVAL`）**:
+   - `AllowedCPUs=2,6,10,14` に制限された cgroup 内で既定の `--cpu-mode auto --parallelism 4` を実行すると、ホスト全体の `/sys/devices/system/node/node*/cpulist` から `CPU 0,1,2,3` を選んで `SchedSetaffinity` を呼ぶため、以下のとおり `invalid argument (EINVAL)` で即座に失敗する：
+     ```text
+     xdperf client start failed: worker failed: failed to set CPU affinity: invalid argument
+     ```
+   - **対策**: `cpuset` 制限下の Pod では、`--cpu-mode 2,6,10,14`（`/sys/fs/cgroup/cpuset.cpus.effective` の値）を明示指定する。
+2. **`veth_xdp_xmit()` のキュー選択式 `cpu % peer_rx_queues` による「剰余衝突（Modulo Collision）」の罠**:
+   - カーネルの `veth_xdp_xmit()` は、対向（`vrx` / `lxcXXX`）のどの RX キュー（`xdp_ring`）にフレームを入れるかを **`送信元の物理 CPU 番号 % 対向の有効 RX キュー数`** で決定する。
+   - もし Pod に飛び飛びの 4 コア **`CPU 2, 6, 10, 14`** が割り当てられた状態で、4 worker に合わせて **`ethtool -L vrx rx 4 tx 4`（4 キュー）** に設定すると、`2%4 = 6%4 = 10%4 = 14%4 = 2` となり、**4 worker 全員のパケットが `rx_queue_2` の単一 `xdp_ring`（256 エントリ）に 100% 集中してリング溢れと大量再送を引き起こす**。
+   - ここで対向のキュー数を **`ethtool -L vrx rx 16 tx 16`（16 キュー：最大 CPU 番号 $14 + 1$ 以上）** に増やすと、`cpu % 16` が `2, 6, 10, 14` の 4 つの独立キューに完璧に分散し、ドロップと再送がゼロになって性能が **3.92 倍** に回復する：
+
+| `AllowedCPUs=2,6,10,14` (`--cpu-mode 2,6,10,14`, 4w/64f) | 対向 `ethtool -L` キュー数 | Goodput (Gbps) | `xdp_xmit_errors` | TCP 再送数 (`RTX`) | 対向 `ethtool -S vrx` のキュー別受信パケット実測内訳 |
+|---|---:|---:|---:|---:|---|
+| **3B: worker 数と同じ 4 キュー (`cpu % 4 == 2` で全員衝突)** | `rx 4 tx 4` | `8.27 Gbps` | `1,936` | `6,713` | **`rx_queue_2: 2,146,911`** (`rx_queue_0: 3`, `rx_queue_1: 2`, `rx_queue_3: 0`) |
+| **3C: 剰余が衝突しない 16 キュー (`cpu % 16 = 2,6,10,14`)** | **`rx 16 tx 16`** | **`32.41 Gbps (+3.92x)`** | **`0`** | **`0`** | **`rx_queue_2: 2,125,632` / `rx_queue_6: 2,079,424` / `rx_queue_10: 2,107,328` / `rx_queue_14: 2,082,898`** |
+
+* **対策**: `cpuset` で非連続な CPU 番号 $c_1, \dots, c_W$ が割り当てられている場合は、必ず **$c_i \bmod Q$ がすべて異なるキュー数 $Q$（最も確実なのは最大 CPU 番号 $\max(c_i) + 1$ 以上）** を `ethtool -L` で設定する。
+
+

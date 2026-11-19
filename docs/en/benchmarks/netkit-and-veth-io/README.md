@@ -192,3 +192,77 @@ Because Cilium-managed Pod `eth0` interfaces are `netkit` devices (no `.ndo_xdp_
 | **1. Standard Cilium (`veth`) Pod-to-Pod & Datapath Plugins** | Standard Pod (`veth`) on Worker 1<br>`--xdp-mode generic` | Standard Pod (`veth`) on Worker 2 | `ethtool -K lxcXXX gro on` on Worker 1 (`socketLB.hostNamespaceOnly=true` if testing `ClusterIP`) |
 | **2. Cilium `netkit` Mode Maximum Throughput (100G/400G)** | **`hostNetwork: true` Pod** (or **DRA / SR-IOV VF Pod**) on Worker 1<br>`--xdp-mode native` | Standard Pod (**`netkit`**) on Worker 2 | Drive line-rate traffic from Worker 1's physical NIC/VF into Worker 2's `netkit` Pod |
 | **3. Cilium `netkit` Mode Traversing Pod `cil_from_container` on Both Ends** | Standard Pod on Worker 1 (**`veth` node**)<br>`--xdp-mode generic` | Standard Pod on Worker 2 (**`netkit` node**) | Use `CiliumNodeConfig` to set Worker 2 to `netkit` and keep Worker 1 on `veth` (`lxcXXX gro on`) |
+
+---
+
+### 3.4 Multi-Queue `veth` Scaling (301.5 Mpps UDP / 225.7 Gbps TCP) and Kubernetes Pod Verification (Dynamic `ethtool -L` & cgroup CPU Limits)
+
+#### (1) Multi-Queue `veth` Linear Scaling Ceiling (64 vCPU Xeon 6746E, Linux `6.17.0-41-generic`)
+
+Scaling `veth` queues (`numtxqueues N numrxqueues N`) and `xdperf` workers (`--parallelism N`) from `1` to `32` on a single-host `veth` pair achieves linear scaling up to **301.50 Mpps** (64B UDP) and **225.69 Gbps** (stateful 1448B-MSS TCP with 0 retransmissions):
+
+| `veth` Queues / Workers | 64B UDP (16,384 Port Sweep, Peer `--recv`) | Stateful Bidirectional TCP (MSS 1448, Peer `--tcp-server` XDP Responder) | TCP Retransmits (`RTX`) |
+|---:|---:|---:|---:|
+| **1 queue / 1 worker** | `8.43 Mpps` (`4.32 Gbps`) | `5.19 Gbps` (`0.45 M segs/s`, 16 flows) | **0** |
+| **4 queues / 4 workers** | `37.18 Mpps` (`19.04 Gbps`) | `31.10 Gbps` (`2.69 M segs/s`, 64 flows) | **0** |
+| **8 queues / 8 workers** | `79.59 Mpps` (`40.75 Gbps`) | `61.09 Gbps` (`5.27 M segs/s`, 128 flows) | **0** |
+| **16 queues / 16 workers** | `153.43 Mpps` (`78.56 Gbps`) | `111.90 Gbps` (`9.66 M segs/s`, 256 flows) | **0** |
+| **24 queues / 24 workers** | — | `169.73 Gbps` (`14.65 M segs/s`, 384 flows) | **0** |
+| **32 queues / 32 workers** | **`301.50 Mpps` (`154.37 Gbps` at 64B)** | **`225.69 Gbps` (`19.48 M segs/s`, 512 flows)** | **0** |
+
+#### (2) Dynamic Post-Creation Multi-Queue Expansion on CNI-Created 1-Queue `veth` Pairs via `ethtool -L`
+
+Kubernetes CNIs (such as Cilium and Calico) initialize Pod `veth` pairs (Pod `eth0` ↔ host `lxcXXX`) with `1` active TX/RX queue (`real_num_tx_queues = 1`). However, because Linux's `veth_newlink()` (`drivers/net/veth.c`) allocates `num_possible_cpus()` queue structures up front at device creation time, **you can dynamically expand an already-running Pod's `veth` pair to 16 or 32 queues on the fly using `ethtool -L` on both ends without recreating the Pod or modifying the CNI**:
+
+```bash
+# 1. Expand Pod eth0 to 16 TX/RX queues dynamically
+kubectl exec -it <pod-name> -- ethtool -L eth0 rx 16 tx 16
+
+# 2. Identify the host-side peer lxcXXX and expand it to 16 TX/RX queues (+ enable GRO for Cilium veth mode)
+IFINDEX=$(kubectl exec <pod-name> -- cat /sys/class/net/eth0/iflink)
+HOST_LXC=$(ip -o link | awk -F': ' -v idx="$IFINDEX" '$1 == idx {split($2, a, "@"); print a[1]}')
+sudo ethtool -L "$HOST_LXC" rx 16 tx 16
+sudo ethtool -K "$HOST_LXC" gro on
+```
+
+Empirical verification on a default 1-queue `veth` pair (`ip link add vtx type veth peer name vrx`) driving 16 workers / 256 TCP flows for 3s:
+
+| Configuration (Same Default-Created `veth` Pair) | Goodput (Gbps) | Data Segs/s | `xdp_xmit_errors` (Ring Overflow Drops) | TCP Retransmits (`RTX`) | `warnVethQueues` Triggered |
+|---|---:|---:|---:|---:|---|
+| **1A: Default CNI 1-Queue State (`16w / 256f`)** | `8.79 Gbps` | `0.76 M segs/s` | `10,375` | `25,584` | `True` |
+| **1B: Post-Creation Dynamic `ethtool -L <dev> rx 16 tx 16` on Both Ends** | **`112.61 Gbps (+12.8x)`** | **`9.72 M segs/s`** | **`0`** | **`0`** | `False` |
+
+#### (3) Empirical Verification of cgroup vCPU Limits (`cpu.max` CFS Quota and `cpuset.cpus` Pinning)
+
+When a Kubernetes Pod runs under cgroup vCPU restrictions, three critical interactions occur between the kernel scheduler, `veth_xdp_xmit()`, and `xdperf`:
+
+##### Verification A: CFS Quota Throttling Collapse When `--parallelism` Exceeds `limits.cpu` (`CPUQuota=200%` = 2 vCPUs)
+Because each `xdperf` TX worker consumes 100% of one core, setting `--parallelism` higher than the Pod's CFS quota (`limits.cpu`) exhausts the 100ms period quota early and freezes all worker threads for the remainder of every 100ms window, stalling TCP ACK processing and collapsing throughput:
+
+| cgroup v2 CFS Quota | `--parallelism` (Workers) | Goodput (Gbps) | Data Segs/s | `window_stalls` | Observed Behavior |
+|---|---:|---:|---:|---:|---|
+| `CPUQuota=200%` (`limits.cpu: "2"`) | **`2` (Matches Quota)** | **`24.04 Gbps`** | **`2.08 M segs/s`** | `9,791,318` | Continuous unthrottled transmission |
+| `CPUQuota=200%` (`limits.cpu: "2"`) | `8` (4x Quota) | `2.78 Gbps (-88.4%)` | `0.24 M segs/s` | `17,287,522` | Frozen 75ms per 100ms period (~8.6x collapse) |
+| `CPUQuota=200%` (`limits.cpu: "2"`) | `16` (8x Quota) | `1.49 Gbps (-93.8%)` | `0.13 M segs/s` | `21,577,179` | Frozen 87.5ms per 100ms period (~16.1x collapse) |
+
+* **Rule**: Under CFS quota (`limits.cpu: N`), always set **`--parallelism <= N`**.
+
+##### Verification B: Two Pitfalls Under `cpuset.cpus` Pinning (Kubernetes CPU Manager `static` Policy, e.g., `AllowedCPUs=2,6,10,14`)
+1. **`SchedSetaffinity` (`EINVAL`) with Default `--cpu-mode auto`**:
+   - Because `DetectTopology()` reads host-wide `/sys/devices/system/node/node*/cpulist` (`CPU 0..63`), running `--cpu-mode auto --parallelism 4` inside a cgroup restricted to `AllowedCPUs=2,6,10,14` attempts to pin worker 0 to `CPU 0` and fails immediately with:
+     ```text
+     xdperf client start failed: worker failed: failed to set CPU affinity: invalid argument
+     ```
+   - **Rule**: Inside a `cpuset`-restricted Pod, pass the Pod's `/sys/fs/cgroup/cpuset.cpus.effective` list explicitly via `--cpu-mode 2,6,10,14`.
+2. **`veth_xdp_xmit()` Modulo Queue Collision (`cpu % peer_rx_queues`) on Non-Contiguous CPUs**:
+   - In the Linux kernel, `veth_xdp_xmit()` selects the peer's RX `xdp_ring` using **`smp_processor_id() % rcv->real_num_rx_queues`**.
+   - When a Pod is assigned 4 non-contiguous CPUs **`2, 6, 10, 14`** and the peer `veth` is configured with `4` queues (`ethtool -L vrx rx 4 tx 4`), all 4 CPUs hash to the exact same queue (`2%4 = 6%4 = 10%4 = 14%4 = 2`), funneling 100% of traffic from all 4 workers into `rx_queue_2` (256-frame ring) and causing severe drops and retransmissions.
+   - Raising the peer queue count to **`ethtool -L vrx rx 16 tx 16` ($\ge \max(c_i) + 1$)** maps `cpu % 16` to 4 distinct queues (`rx_queue_2`, `rx_queue_6`, `rx_queue_10`, `rx_queue_14`), eliminating all drops and restoring full 4-core throughput (**`8.27 → 32.41 Gbps`, +3.92x**):
+
+| `AllowedCPUs=2,6,10,14` (`--cpu-mode 2,6,10,14`, 4w/64f) | Peer `ethtool -L` Queues | Goodput (Gbps) | `xdp_xmit_errors` | TCP Retransmits (`RTX`) | Measured Peer `ethtool -S vrx` Per-Queue Packet Distribution |
+|---|---:|---:|---:|---:|---|
+| **3B: 4 Queues (`cpu % 4 == 2` Modulo Collision)** | `rx 4 tx 4` | `8.27 Gbps` | `1,936` | `6,713` | **`rx_queue_2: 2,146,911`** (`rx_queue_0: 3`, `rx_queue_1: 2`, `rx_queue_3: 0`) |
+| **3C: 16 Queues (`cpu % 16 = 2,6,10,14` Collision-Free)** | **`rx 16 tx 16`** | **`32.41 Gbps (+3.92x)`** | **`0`** | **`0`** | **`rx_queue_2: 2,125,632` / `rx_queue_6: 2,079,424` / `rx_queue_10: 2,107,328` / `rx_queue_14: 2,082,898`** |
+
+* **Rule**: When pinned to non-contiguous CPU IDs $c_1, \dots, c_W$, set `ethtool -L` queue count $Q$ so that all $c_i \bmod Q$ are distinct (most reliably **$Q \ge \max(c_i) + 1$**).
+
