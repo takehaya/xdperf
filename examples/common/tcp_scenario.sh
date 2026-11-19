@@ -140,12 +140,13 @@ kill_stale_sink() {
 # the receive veth is required on veth: without an XDP program on the peer,
 # the kernel does not wake the peer's NAPI for XDP_TX'd frames and the
 # sender's last ACK stays queued (see cmd/xdperf-sink/main.go).
-# Usage: start_sink <listen-addr>
+# Usage: start_sink <listen-addr> [extra xdperf-sink args...]
 start_sink() {
     local listen="$1"
+    shift
     kill_stale_sink
     : > "${SINK_LOG}" # the readiness check must not see the previous case's line
-    setsid ip netns exec "${NS_RX}" "${SINK_BIN}" -listen "$listen" -interval 0 -xdp-pass-dev "${VETH_RX}" \
+    setsid ip netns exec "${NS_RX}" "${SINK_BIN}" -listen "$listen" -interval 0 -xdp-pass-dev "${VETH_RX}" "$@" \
         > "${SINK_LOG}" 2>&1 &
     SINK_PID=$!
     echo "${SINK_PID}" > "${SINK_PID_FILE}"

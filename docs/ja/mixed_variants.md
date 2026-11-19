@@ -102,6 +102,8 @@ packet 側は有限の重み付き Diff プールを使うため、丸めも生�
 | `tcp_flow.encapsulation` | トンネルの内側 L3/L4 オフセットと、外側の長さ、IPv4/UDP チェックサムの修正表。明示的な base_packet が必要 |
 | `tcp_flow.timestamps` | `true` で SYN に Timestamps を提示する。合意した相手だけに以後も付け、TSval、TSecr、PAWS はエンジンが管理する。RTO の動的推定は行わない |
 | `tcp_flow.payload_pattern` | 最大 256 バイトの base64 列。64 bit のストリーム位置に合わせて繰り返し、再送でも同じ位置の内容を生成する。省略と全ゼロはゼロペイロード経路を使う |
+| `tcp_flow.flows[].response_bytes` / `rounds` | リクエスト/レスポンスの往復。`response_bytes` は 0 より大きい十進文字列で、指定時の `bytes` はリクエスト 1 回あたりのバイト数。`rounds` は省略時に 1、0 は `--duration` または `--count` の上限までの繰り返し。`bytes: "0"` はリクエストなしのダウンロードで、指定可能な `rounds` は 1 のみ |
+| `tcp_flow.close` / `response_until_fin` / `response_timeout_ms` | 往復するバリアントの設定。`close` は `client` (既定) または `server`。`response_until_fin` は相手の FIN までを 1 回の応答として扱う設定で、`response_bytes` と `rounds` は指定不可。`response_timeout_ms` は省略時に 10000。往復しないバリアントでは指定不可。詳細は [tcp_stream.md](tcp_stream.md#リクエストとレスポンスの往復) を参照 |
 | `variable_params` | tcp_flow の子ではなくバリアント直下に置く。明示的な base_packet が必要。内側送信元 IP のバイト部分範囲だけを、起動時にフローごとに一度評価する |
 | `checksums` | TCP バリアントでは使用できない。TCP と IP のチェックサムはエンジンが生成する |
 

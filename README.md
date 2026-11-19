@@ -101,9 +101,15 @@ sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin --durati
   --cfg '{"dst_ip":"fd00::2","tcp_port":5201,"flows":16,"bytes":"0"}'
 
 # XDP responder: answer SYN / data / FIN from XDP too (no kernel socket on either side).
-# Works with the tcpflow.go client above or with any one-way Linux TCP sender (socat, nc).
+# Works with one-way tcpflow.go clients or with any one-way Linux TCP sender (socat, nc).
 # It never sends data back, so request/response clients (iperf3 -c, curl) do not work.
 sudo xdperf run --tcp-server --device eth0 --tcp-listen 10.0.0.2:5201
+
+# request/response: 10 rounds of a 1000-byte request and a 4000-byte response per connection.
+# The peer must answer, so use xdperf-sink -respond, not the XDP responder.
+xdperf-sink -listen 10.0.0.2:5201 -respond 1000:4000
+sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
+  --cfg '{"dst_ip":"10.0.0.2","tcp_port":5201,"flows":64,"bytes":"1000","response_bytes":"4000","rounds":10}'
 ```
 
 ### Mixed Packet and TCP Variants

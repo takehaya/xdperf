@@ -62,7 +62,7 @@ CLI (cmd/xdperf/main.go) → 設定パース → Xdperf初期化
 ### 主要パッケージ
 
 - **cmd/xdperf/** — urfave/cliを使用したCLIエントリポイント。`run` (トラフィック生成/受信) と `probe` (XDP機能検出) の2コマンド。
-- **cmd/xdperf-sink/** — TCP/UDP を受けてコネクション数・バイト数を数える小さなシンク。TCP フロー送信の対向や、Kubernetes 上のバックエンド Pod として使う。veth 向けに pass-through XDP を attach する `-xdp-pass-dev` を持つ。
+- **cmd/xdperf-sink/** — TCP/UDP を受信し、コネクション数・バイト数を数える小さなシンク。TCP フローの送信先や Kubernetes 上のバックエンド Pod として使う。`-respond Q:R` を指定すると、Q バイトのリクエストごとに R バイトを返し、往復通信 (`response_bytes`) の相手になる。veth 向けに pass-through XDP を attach する `-xdp-pass-dev` を備える。
 - **pkg/xdperf/** — コアロジック: `Xdperf`構造体がライフサイクル全体を管理。設定バリデーション、eBPFアタッチ、Diff生成、PPSレート制限、統計収集。
   - `generator.go` — Diffベースパケット生成のコア。プラグインからの`PacketVariantSet`をBPF用の`DiffEntry`に変換。Sequential/Mixedの2つのバリアント選択モード、重み付き分配をサポート。
   - `bpf.go` — BPFマップ初期化 (`initBasePacketMaps`, `initDiffMap`, `initChecksumMetaMaps`, `initPktStateMap`)。エントリをCPUごとに分配。
