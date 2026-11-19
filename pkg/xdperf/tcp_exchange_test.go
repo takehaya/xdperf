@@ -1,12 +1,16 @@
 package xdperf
 
 import (
+	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/takehaya/xdperf/pkg/coreelf"
 	"github.com/takehaya/xdperf/pkg/guest"
 	"go.uber.org/zap"
@@ -190,6 +194,72 @@ func TestTCPRoundsError(t *testing.T) {
 		if (err != nil) != tc.fail {
 			t.Fatalf("short %d early %d: %v", tc.short, tc.early, err)
 		}
+	}
+}
+
+// TestTCPFailedRunSummary checks that a run with failed flows or early peer
+// closes still writes the summary, with the counters that explain the exit.
+func TestTCPFailedRunSummary(t *testing.T) {
+	stats, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.PerCPUArray, KeySize: 4, ValueSize: 32, MaxEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stats.Close()
+	for _, tc := range []struct {
+		name  string
+		stats coreelf.BpfTcpStats
+		key   string
+		want  uint64
+	}{
+		{"none", coreelf.BpfTcpStats{Done: 4}, "", 0},
+		{"timeout", coreelf.BpfTcpStats{Done: 3, Failed: 1, RespTimeouts: 1}, "response_timeouts", 1},
+		{"short", coreelf.BpfTcpStats{Done: 4, ShortResponses: 2}, "short_responses", 2},
+		{"early", coreelf.BpfTcpStats{Done: 4, PeerClosedEarly: 4}, "peer_closed_early", 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "summary.json")
+			x := &Xdperf{cfg: Config{SummaryJSON: path}, mixed: &mixedPlan{connections: 4},
+				bpfobjs: &coreelf.BpfObjects{BpfMaps: coreelf.BpfMaps{TxStatsMap: stats, RxStatsMap: stats}}}
+			x.beginSummary()
+			s := tc.stats
+			x.summary.TCP = &tcpSummary{Flows: 4, Done: s.Done, Failed: s.Failed, ResponseTimeouts: s.RespTimeouts,
+				ShortResponses: s.ShortResponses, PeerClosedEarly: s.PeerClosedEarly}
+			runErr := x.finishTCPRun(s)
+			if (runErr != nil) != (tc.key != "") {
+				t.Fatalf("error %v, want failure %v", runErr, tc.key != "")
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("summary not written: %v", err)
+			}
+			var got struct {
+				TCP map[string]any `json:"tcp"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if tc.key != "" && got.TCP[tc.key] != float64(tc.want) {
+				t.Fatalf("%s = %v, want %d", tc.key, got.TCP[tc.key], tc.want)
+			}
+		})
+	}
+}
+
+// TestTCPFailedRunSummaryWriteError keeps both errors when the summary write
+// fails after flows failed.
+func TestTCPFailedRunSummaryWriteError(t *testing.T) {
+	stats, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.PerCPUArray, KeySize: 4, ValueSize: 32, MaxEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stats.Close()
+	x := &Xdperf{cfg: Config{SummaryJSON: filepath.Join(t.TempDir(), "missing", "summary.json")}, mixed: &mixedPlan{connections: 4},
+		bpfobjs: &coreelf.BpfObjects{BpfMaps: coreelf.BpfMaps{TxStatsMap: stats, RxStatsMap: stats}}}
+	x.beginSummary()
+	x.summary.TCP = &tcpSummary{Flows: 4, Done: 3, Failed: 1}
+	err = x.finishTCPRun(coreelf.BpfTcpStats{Done: 3, Failed: 1})
+	if err == nil || !strings.Contains(err.Error(), "1 of 4 flows failed") || !strings.Contains(err.Error(), "write summary JSON") {
+		t.Fatalf("error %v, want the flow failure and the write failure", err)
 	}
 }
 

@@ -62,7 +62,7 @@ Finite TCP-only sets need neither `--count` nor `--duration`; they finish when a
 `--count N` limits TX worker frames, including SYN, data, FIN, retransmissions, probes, and RST.
 RX replies and idle/build failures do not consume this budget.
 All flows can finish before the limit.
-At the limit, the sender skips drain, lingers for 2×RTO, and warns about unfinished flows; the exit status is 0 unless a flow failed.
+At the limit, the sender skips drain, lingers for 2×RTO, and warns about unfinished flows; the exit status is 0 unless a flow failed or a peer closed before the last round.
 To stream for a fixed duration, add `--duration 10s` and set `"bytes":"0"`; TCP-only duration needs no PPS.
 Count and duration cannot be explicitly combined.
 
@@ -122,4 +122,4 @@ After each new SYN, at least one iteration services data, retransmissions or FIN
 CSV remains available for finite attempts within the port capacity, with the connection number in `flow`.
 `--tcp-flow-report` is rejected when reuse is possible (`connections: 0` or a limit above port capacity), since retained states cannot preserve the complete CSV history.
 Source-IP `variable_params` are rejected with positive CPS or possible reuse.
-Failure exit behavior for summary JSON remains unchanged.
+Runs with failed connections still write the summary JSON and exit non-zero.

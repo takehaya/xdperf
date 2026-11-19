@@ -164,7 +164,7 @@ RX replies, idle iterations, and build failures do not consume the budget.
 The mixed count limit is at most 9223372036854775807.
 Closing frames sent during duration/signal drain or abort are outside this count limit.
 All TCP flows completing first ends the run below count.
-At count, the sender skips drain, lingers for 2×RTO, and warns about unfinished flows; the exit status is 0 unless a flow failed.
+At count, the sender skips drain, lingers for 2×RTO, and warns about unfinished flows; the exit status is 0 unless a flow failed or a peer closed before the last round.
 Finite TCP-only sets need neither count nor duration, and TCP-only duration needs no PPS.
 A zero-byte (unlimited) flow requires count or duration.
 Sets containing packets require count or duration, and PPS with duration.
@@ -452,7 +452,8 @@ For `--tcp-server`, `tcp_server` contains its final counters, including `accepte
 Sections that do not apply are omitted; zero counters within a section are included.
 
 The file is written after successful completion, including handled SIGINT/SIGTERM or context cancellation.
-Initialization errors, worker errors, failed TCP flows, and final statistics/report errors skip the JSON output and leave any previous file untouched.
+It is also written when TCP flows failed or peers closed before the last round; the run then exits non-zero.
+Initialization errors, worker errors, and final statistics/report errors skip the JSON output and leave any previous file untouched.
 SIGKILL and crashes cannot produce a summary.
 A JSON statistics read or file write failure returns a nonzero exit status; a file write failure may leave a partial file.
 

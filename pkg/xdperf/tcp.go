@@ -3,6 +3,7 @@ package xdperf
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -888,16 +889,24 @@ loop:
 	if countReached && s.Done+s.Failed+s.Skipped < flows {
 		x.Logger.Warn(fmt.Sprintf("count reached before %d flows completed", flows-s.Done-s.Failed-s.Skipped))
 	}
-	// A run whose flows did not complete is a failed measurement: report it
-	// in the exit status, not only in the log (e.g. every SYN refused).
+	return x.finishTCPRun(s)
+}
+
+// finishTCPRun writes the summary and then reports failed flows and early
+// peer closes in the exit status. The summary is written for those runs too:
+// its failure and round counters are what such a run is read for.
+func (x *Xdperf) finishTCPRun(s coreelf.BpfTcpStats) error {
+	return errors.Join(x.tcpRunError(s), x.writeSummary())
+}
+
+// tcpRunError fails a run whose flows did not complete (e.g. every SYN
+// refused) or whose peers closed before the requested rounds were done.
+func (x *Xdperf) tcpRunError(s coreelf.BpfTcpStats) error {
 	if s.Failed > 0 {
 		return fmt.Errorf("%d of %d flows failed (aborted %d, retransmit give-ups %d, FIN_WAIT_2 timeouts %d, response timeouts %d)",
 			s.Failed, x.mixed.connections, s.Aborted, s.RtxGiveups, s.FinWait2Timeouts, s.RespTimeouts)
 	}
-	if err := tcpRoundsError(s); err != nil {
-		return err
-	}
-	return x.writeSummary()
+	return tcpRoundsError(s)
 }
 
 // tcpRoundsError fails a run whose peers closed before the requested rounds
