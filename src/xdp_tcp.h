@@ -214,9 +214,6 @@ const volatile __u32 mixed_has_payload SEC(".rodata.mixed") = 0;
 // RX handles rounds behind this constant; TX has its own entry point
 // (xdp_tx_tcp_mixed_xchg), so the other TX entries compile without them.
 const volatile __u32 mixed_has_exchange SEC(".rodata.mixed") = 0;
-// Flows a TX iteration of the exchange entry examines (at most TCP_TX_SCAN).
-// Go lowers it when an old verifier (6.1) rejects the full scan as too large.
-const volatile __u32 mixed_tx_scan SEC(".rodata.mixed") = TCP_TX_SCAN;
 
 // Request/response rounds. A flow waits for responses when it has a response
 // size or reads until the peer FIN; every other flow keeps the one-way upload.
@@ -793,8 +790,6 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended, co
     decision.allow_start = 0;
     kind = TXA_NONE;
     for (int i = 0; i < TCP_TX_SCAN; i++) {
-        if (exchange && i >= mixed_tx_scan)
-            break;
         __u32 idx;
         __u32 cursor = *next;
         if (cursor >= count)

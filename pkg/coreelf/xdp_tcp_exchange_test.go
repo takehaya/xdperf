@@ -355,29 +355,3 @@ func TestTcpXchgOffKeepsUpload(t *testing.T) {
 		t.Fatalf("flags %#x, want FIN", tcpFlags(d.tcp))
 	}
 }
-
-// The load-time fallback for old verifiers examines fewer flows per TX
-// iteration: idle flows then take more iterations to skip, nothing else changes.
-func TestTcpTxReducedScan(t *testing.T) {
-	saved := mixedTxScanDivisors
-	mixedTxScanDivisors = []uint32{4} // 8 / 4: two flows per iteration
-	t.Cleanup(func() { mixedTxScanDivisors = saved })
-	objs := loadTCPObjsWith(t, MixedProgramFeatures{Exchange: true}) // only the exchange entry reads mixed_tx_scan
-	if scan, full := MixedTxScan(); scan != 2 || full != 8 {
-		t.Fatalf("scan %d of %d, want 2 of 8", scan, full)
-	}
-	idle := established(0)
-	idle.State = tfFinWait2 // FIN acked, no probe due
-	idle.LastSendNs = monoNow(t)
-	frame := setupClient(t, objs, clientOpts{}, idle, idle, established(0))
-	if ret, _ := txOnce(t, objs, frame); ret != xdpDrop {
-		t.Fatalf("first iteration ret %d, want DROP after two idle flows", ret)
-	}
-	ret, out := txOnce(t, objs, frame)
-	if ret != xdpTx {
-		t.Fatalf("second iteration ret %d", ret)
-	}
-	if d := decode(t, out); uint16(d.tcp.SrcPort) != testPortBase+2 || len(d.tcp.Payload) != 1000 {
-		t.Fatalf("port %d len %d, want flow 2's data", d.tcp.SrcPort, len(d.tcp.Payload))
-	}
-}

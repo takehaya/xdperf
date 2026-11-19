@@ -2,11 +2,9 @@ package coreelf
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/cilium/ebpf"
-	"golang.org/x/sys/unix"
 )
 
 func defaultConsts() map[string]any {
@@ -221,10 +219,11 @@ func TestBpfMixedSpecializations(t *testing.T) {
 			if err := LoadMixedProgramsWithFeatures(objs, spec, features); err != nil {
 				t.Fatal(err)
 			}
-			// A reduced scan is a fallback for 6.1, never a silent budget
-			// regression on newer kernels or for other feature sets.
-			if scan, full := MixedTxScan(); scan != full && (name != "exchange-nested-extensions" || !kernelBefore(t, 6, 2)) {
-				t.Fatalf("TX scan reduced to %d of %d", scan, full)
+			// TCP TX verifies one scan attempt as a global function: 6.1
+			// needs under 40k instructions. A static helper back in the
+			// scan loop multiplies that by the scan length (945k on 6.1).
+			if n := verifiedInstructions(t, objs.XdpTxTcpMixed); n > txTCPVerifierBudget {
+				t.Fatalf("xdp_tx_tcp_mixed: %d verified instructions, budget %d", n, txTCPVerifierBudget)
 			}
 			var original uint32
 			if err := spec.Variables["mixed_max_udps"].Get(&original); err != nil {
@@ -251,15 +250,17 @@ func TestBpfMixedSpecializations(t *testing.T) {
 	}
 }
 
-func kernelBefore(t *testing.T, major, minor int) bool {
+const txTCPVerifierBudget = 200_000
+
+func verifiedInstructions(t *testing.T, prog *ebpf.Program) uint32 {
 	t.Helper()
-	var u unix.Utsname
-	if err := unix.Uname(&u); err != nil {
+	info, err := prog.Info()
+	if err != nil {
 		t.Fatal(err)
 	}
-	var maj, mnr int
-	if _, err := fmt.Sscanf(unix.ByteSliceToString(u.Release[:]), "%d.%d", &maj, &mnr); err != nil {
-		t.Fatal(err)
+	n, ok := info.VerifiedInstructions()
+	if !ok {
+		t.Skip("kernel does not report verified instructions")
 	}
-	return maj < major || (maj == major && mnr < minor)
+	return n
 }

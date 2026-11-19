@@ -492,7 +492,6 @@ type BpfVariableSpecs struct {
 	MixedMaxLengths    *ebpf.VariableSpec `ebpf:"mixed_max_lengths"`
 	MixedMaxOuterIps   *ebpf.VariableSpec `ebpf:"mixed_max_outer_ips"`
 	MixedMaxUdps       *ebpf.VariableSpec `ebpf:"mixed_max_udps"`
-	MixedTxScan        *ebpf.VariableSpec `ebpf:"mixed_tx_scan"`
 	SwapResp           *ebpf.VariableSpec `ebpf:"swap_resp"`
 }
 
@@ -591,7 +590,6 @@ type BpfVariables struct {
 	MixedMaxLengths    *ebpf.Variable `ebpf:"mixed_max_lengths"`
 	MixedMaxOuterIps   *ebpf.Variable `ebpf:"mixed_max_outer_ips"`
 	MixedMaxUdps       *ebpf.Variable `ebpf:"mixed_max_udps"`
-	MixedTxScan        *ebpf.Variable `ebpf:"mixed_tx_scan"`
 	SwapResp           *ebpf.Variable `ebpf:"swap_resp"`
 }
 
