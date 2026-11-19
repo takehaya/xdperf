@@ -41,7 +41,7 @@ sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin --durati
 
 数値の 0 は既定値を使い、`ip_id` の空文字列は `flow` を使います。
 全フローが有限なら `--count` と `--duration` は省略できます。
-`bytes: "0"` を含む場合は、いずれかの上限が必要です。
+`bytes: "0"` を含む場合は、いずれかの上限が必要です (`response_bytes` を指定したダウンロードを除きます)。
 `--count` は SYN、再送、FIN を含む TX worker の総フレーム数の上限です。
 全 TCP フローが先に完了すれば count 未満で終了します。
 count に達すると、drain は行わず、短時間の linger の後に未完了フローの警告を出して終了します (失敗したフローも、最後の往復の前に相手が閉じたフローもなければ、終了コードは 0 です)。
@@ -102,9 +102,11 @@ Datapath Plugin のような、経路上で観測するプログラムの計数�
 ## XDP レスポンダ (`xdperf run --tcp-server`)
 
 受信側もカーネル TCP を使わずに XDP だけで応答するモードです。UDP の `--recv --swap-resp` (エコー) の TCP 版で、
-SYN に SYN-ACK、データに ACK (中身は捨てる)、FIN に FIN+ACK を返します。相手は `tcpflow.go` クライアントでも、
+SYN には SYN-ACK、データには ACK (受信データは破棄)、FIN には FIN+ACK を返します。
+相手は一方向に送信する `tcpflow.go` クライアントでも、
 socat や nc のように「一方向に送って閉じる」普通の Linux TCP クライアントでも構いません。
-レスポンダはデータを送り返さないので、応答を待つクライアント (iperf3 の制御コネクション、curl など) は使えません。
+レスポンダはデータを送り返さないため、応答を待つクライアント (iperf3 の制御コネクション、curl、`response_bytes` を指定した `tcpflow.go` など) は使えません。
+往復通信の相手には `xdperf-sink -respond` を使います。
 
 ```bash
 # 受信側: 10.0.0.2:5201 で待つ (10.0.0.2 は eth0 に付いていること。ARP/NDP はカーネルが答える)
@@ -300,7 +302,9 @@ sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin 
 
 `response_bytes` を指定すると、各接続は `bytes` バイトのリクエストを送信し、相手から `response_bytes` バイトの応答を受信するまで待ちます。
 これを `rounds` 回繰り返してから接続を閉じます。
-応答をすべて受信するまで次のリクエストは送信せず、応答待ちの間は FIN も送信しません。
+応答をすべて受信するまで次のリクエストを送信せず、応答待ちの間は FIN も送信しません。
+ただし、`--duration` の終了時やシグナルによる drain では、応答待ちでもすぐに FIN を送信します。
+その後に届いた応答も数えますが、相手には最後のリクエストが途中で途切れたように見えることがあります。
 `xdperf-sink -respond Q:R` は、Q バイトのリクエストごとに R バイトを返す対向プログラムです。
 
 ```bash
@@ -315,10 +319,10 @@ sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
 | tcpflow.go の設定 | 既定 | 意味 |
 |---|---|---|
 | `response_bytes` | 省略 | リクエスト 1 回あたりの応答バイト数です。0 より大きい十進文字列で指定します。指定すると、`bytes` はリクエスト 1 回あたりのバイト数になります |
-| `rounds` | 1 | 1 接続あたりの往復回数です。0 の場合は `--duration` または `--count` の上限まで繰り返します |
+| `rounds` | 1 | 1 接続あたりの往復回数です。0 の場合は `--duration` または `--count` の上限に達するまで繰り返します。`response_bytes` が必要です |
 | `close` | `client` | `client` は最後の応答を受信したあとに FIN を送信し、`server` は相手の FIN を待ちます |
 | `response_until_fin` | `false` | リクエストを 1 回送信し、相手の FIN までを応答として扱います (HTTP/1.0 形式) |
-| `response_timeout_ms` | 10000 | 応答待ち中にこの時間にわたって何も受信しなかったフローを、RST で失敗させます |
+| `response_timeout_ms` | 10000 | 応答待ちの間 (`close: "server"` では相手の FIN を待つ間も)、指定時間にわたってデータも FIN も受信しなかったフローを RST で失敗扱いにします |
 
 ほかにも、次の使い方があります。
 
@@ -331,6 +335,7 @@ sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
 
 ダウンロードではリクエストを送信せず、往復は 1 回だけです。
 `rounds: 0` は `close: "server"` や `connections` と併用できません。
+`--count` と併用すると、上限に達しても drain を行わないため、`rounds: 0` のフローは開いたまま残ります。
 `connections` を指定すると、各接続が同じ回数だけ往復します。
 `close` と `response_timeout_ms` は、`response_bytes` または `response_until_fin` を指定したときだけ使用できます。
 `xdperf-sink -close-after N` は N 回応答したあとに送信を終了し、残りの受信データを読み捨ててから接続を閉じます。
@@ -344,12 +349,15 @@ sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
 | `response_bytes` | 応答として受信したバイト数 |
 | `response_timeouts` | 応答待ちのタイムアウトで失敗したフロー数 |
 | `short_responses` | 応答の途中で相手が FIN を送信したフロー数 |
-| `peer_closed_early` | 最後の往復に入る前に、往復の合間で相手が FIN を送信したフロー数 |
+| `peer_closed_early` | すべての往復が終わる前に、応答の区切りで相手が FIN を送信したフロー数 |
 
 `short_responses` と `peer_closed_early` に該当するフローは正常に閉じますが、どちらかが 1 以上の場合、実行の終了コードは非ゼロになります。
+応答タイムアウトもフローの失敗とみなし、非ゼロで終了します。
+非ゼロで終了した実行では `--summary-json` を書き出さないため、`response_timeouts`、`short_responses`、`peer_closed_early` の 0 以外の値は最終ログでのみ確認できます。
 xdperf-sink の JSON 要約には `responses`、`response_bytes`、`respond_errors` が追加されます。
 
-`--pps` を指定すると、各フローは 10 ms のペーシング間隔ごとにおよそ 1 往復しか進まず、往復の間隔は 8 ms 以上になります。
+`--pps` を指定すると、worker はおよそ 10 ms ごとにまとめて動作します (worker あたり 100 pps 未満では、間隔がさらに長くなります)。
+各フローは応答を受け取るたびに次の動作タイミングを待つため、veth では往復の間隔が 8〜16 ms 以上になりました。
 `--pps` を指定しない場合、フロー数が少なければ、応答の受信から次のリクエストの送信までの間隔は数マイクロ秒以内です。
 veth 上ですべての使い方を確認する例は、[examples/tcp-exchange](../../examples/tcp-exchange/README.md) にあります。
 

@@ -25,7 +25,7 @@ trap stop_sink EXIT
 send() {
     local want="$1" fields="$2" got=0
     shift 2
-    local config="{\"dst_ip\":\"${RX_IP4}\",\"tcp_port\":${DST_PORT},\"flows\":${FLOWS},\"window_segs\":16,${fields}}"
+    local config="{\"dst_ip\":\"${RX_IP4}\",\"tcp_port\":${DST_PORT},\"flows\":${FLOWS},\"window_segs\":${WINDOW},${fields}}"
     ip netns exec "${NS_TX}" "${XDPERF_BIN}" run --device "${VETH_TX}" \
         --plugin tcpflow.go --plugin-path "${PLUGIN_PATH}" --plugin-config "$config" \
         --parallelism 1 "$@" < /dev/null > "${TX_LOG}" 2>&1 || got=$?
@@ -64,58 +64,69 @@ check_flows() {
     expect sink.closed "$(sink_field closed)" "${FLOWS}"
     expect sink.bytes "$(sink_field bytes)" $(( rounds * $2 ))
     expect sink.responses "$(sink_field responses)" "$rounds"
+    expect sink.respond_errors "$(sink_field respond_errors || true)" ""
 }
 
+# run_case runs on the left of ||, where set -e is off: every check sets ok=0.
 run_case() {
     local name="$1"
     ok=1
+    TX_LOG="${XDPERF_EXAMPLE_RUNDIR}/xchg-${name}-tx.log"
+    SINK_LOG="${XDPERF_EXAMPLE_RUNDIR}/xchg-${name}-sink.log"
     print_info "case ${name}"
     case "$name" in
         rounds)
             # Each flow sends REQ bytes, waits for RESP bytes, ROUNDS times, then sends FIN.
-            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:${RESP}"
-            send 0 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":${ROUNDS}"
+            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:${RESP}" || return 1
+            send 0 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":${ROUNDS}" || ok=0
             stop_sink; report
             check_flows "${ROUNDS}" "${REQ}" "${RESP}"
             ;;
         download)
             # bytes 0 sends no request: the sink writes once on accept.
-            start_sink "${RX_IP4}:${DST_PORT}" -respond "0:1000000"
-            send 0 "\"bytes\":\"0\",\"response_bytes\":\"1000000\""
+            start_sink "${RX_IP4}:${DST_PORT}" -respond "0:1000000" || return 1
+            send 0 "\"bytes\":\"0\",\"response_bytes\":\"1000000\"" || ok=0
             stop_sink; report
             check_flows 1 0 1000000
             ;;
         until-fin)
             # One request; the response is everything up to the sink's FIN.
-            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:65536" -close-after 1
-            send 0 "\"bytes\":\"${REQ}\",\"response_until_fin\":true"
+            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:65536" -close-after 1 || return 1
+            send 0 "\"bytes\":\"${REQ}\",\"response_until_fin\":true" || ok=0
             stop_sink; report
             check_flows 1 "${REQ}" 65536
             ;;
         server-close)
-            # The sink closes after the last response; the client waits for its FIN.
-            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:${RESP}" -close-after "${ROUNDS}"
-            send 0 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":${ROUNDS},\"close\":\"server\""
+            # The sink closes after the last response, and the client waits for its FIN.
+            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:${RESP}" -close-after "${ROUNDS}" || return 1
+            send 0 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":${ROUNDS},\"close\":\"server\"" || ok=0
             stop_sink; report
             check_flows "${ROUNDS}" "${REQ}" "${RESP}"
             ;;
         duration)
             # rounds 0 repeats until --duration; every round the sink answered is counted.
-            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:${RESP}"
-            send 0 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":0" --duration 3s
+            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:${RESP}" || return 1
+            send 0 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":0" --duration 3s || ok=0
             stop_sink; report
             local done_rounds
-            done_rounds="$(tx_field rounds_done)"
+            done_rounds="$(tx_field rounds_done || true)"
+            expect done "$(tx_field done)" "${FLOWS}"
             expect failed "$(tx_field failed)" 0
+            expect sink.closed "$(sink_field closed)" "${FLOWS}"
             [ "${done_rounds:-0}" -gt $(( FLOWS * ROUNDS )) ] || { print_error "rounds_done=${done_rounds}, want more than $(( FLOWS * ROUNDS ))"; ok=0; }
             expect response_bytes "$(tx_field response_bytes)" $(( ${done_rounds:-0} * RESP ))
             expect sink.responses "$(sink_field responses)" "${done_rounds:-0}"
             ;;
         early-close)
             # The sink closes after 3 of 10 rounds: xdperf counts it and exits non-zero.
-            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:${RESP}" -close-after 3
-            send 1 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":${ROUNDS}"
+            start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:${RESP}" -close-after 3 || return 1
+            send 1 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":${ROUNDS}" || ok=0
             stop_sink; report
+            # The flows still close cleanly. sink.bytes is not checked: a flow may
+            # send its 4th request before the sink's FIN arrives, or not.
+            expect done "$(tx_field done)" "${FLOWS}"
+            expect failed "$(tx_field failed)" 0
+            expect short_responses "$(tx_field short_responses)" 0
             expect peer_closed_early "$(tx_field peer_closed_early)" "${FLOWS}"
             expect rounds_done "$(tx_field rounds_done)" $(( 3 * FLOWS ))
             expect sink.responses "$(sink_field responses)" $(( 3 * FLOWS ))
