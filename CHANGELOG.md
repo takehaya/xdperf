@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.24.0](https://github.com/takehaya/xdperf/compare/v0.23.1...v0.24.0) (2026-11-19)
+
+
+### 🎉 Features
+
+* add netkit live-frame TX guardrail, fastpath helper, and E2E scenario ([#161](https://github.com/takehaya/xdperf/issues/161)) ([25d4a2a](https://github.com/takehaya/xdperf/commit/25d4a2ae84c586cde20d40843d6dd55dd823c7b8))
+* **bpf:** request/response rounds for the TCP client ([#163](https://github.com/takehaya/xdperf/issues/163)) ([32abf13](https://github.com/takehaya/xdperf/commit/32abf13d88312eee36bf6212f5d94e1cb90554ef))
+* **tcp:** request/response rounds from the plugin API ([#164](https://github.com/takehaya/xdperf/issues/164)) ([8a5e230](https://github.com/takehaya/xdperf/commit/8a5e230a97e28cba8430a29e3bf7749ea4d4727e))
+
+
+### 🐛 Bug Fixes
+
+* **xdperf:** check post-attach NDO_XMIT for NICs enabling XDP TX dynamically ([#162](https://github.com/takehaya/xdperf/issues/162)) ([1173b5e](https://github.com/takehaya/xdperf/commit/1173b5e8a9d020859b7b277f73d18aa3b694eb02))
+
+
+### ⚡ Performance Improvements
+
+* **bpf:** verify the GENEVE option walk and outer header fixups once ([#165](https://github.com/takehaya/xdperf/issues/165)) ([1f45fe9](https://github.com/takehaya/xdperf/commit/1f45fe92f51028decbbc5ab476ea14539e88123f))
+
+
+### 📝 Documentation
+
+* record 400G ConnectX-7 results ([#154](https://github.com/takehaya/xdperf/issues/154)) ([29aa302](https://github.com/takehaya/xdperf/commit/29aa3027942107ca61d64391f9f0c4b977fc9975))
+* record veth 8-way packet I/O comparison and netkit 100G/400G benchmark results ([#166](https://github.com/takehaya/xdperf/issues/166)) ([0c4e141](https://github.com/takehaya/xdperf/commit/0c4e141e3155afc9f1fa7fe6796e79e95fb78507))
+* **tcp:** document request/response rounds and add the tcp-exchange example ([#167](https://github.com/takehaya/xdperf/issues/167)) ([7c42a96](https://github.com/takehaya/xdperf/commit/7c42a967ae2c1c80ad84a233728cd47c488c0203))
+
 ## [0.23.1](https://github.com/takehaya/xdperf/compare/v0.23.0...v0.23.1) (2026-11-18)
 
 
