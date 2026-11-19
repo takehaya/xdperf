@@ -1,0 +1,41 @@
+mode,round,packets,duration_s,pps,gbps_64b,syscalls,notes
+xdperf_live_frames,1,14000000,1.4716,9513216.0,4.871,1,BPF_F_TEST_XDP_LIVE_FRAMES + in-kernel XDP Diff (16384 port sweep)
+xdperf_live_frames,2,14000000,1.4286,9799680.0,5.017,1,BPF_F_TEST_XDP_LIVE_FRAMES + in-kernel XDP Diff (16384 port sweep)
+xdperf_live_frames,3,14000000,1.4750,9491456.0,4.860,1,BPF_F_TEST_XDP_LIVE_FRAMES + in-kernel XDP Diff (16384 port sweep)
+xdperf_live_frames,4,14000000,1.4789,9466368.0,4.847,1,BPF_F_TEST_XDP_LIVE_FRAMES + in-kernel XDP Diff (16384 port sweep)
+xdperf_live_frames,5,14000000,1.4713,9515264.0,4.872,1,BPF_F_TEST_XDP_LIVE_FRAMES + in-kernel XDP Diff (16384 port sweep)
+af_xdp_copy,1,3539616,2.0000,1769809.8,0.906,110613,XDP_ZEROCOPY bind returns errno=95 (EOPNOTSUPP); fallback to XDP_COPY batch=64
+af_xdp_copy,2,3540320,2.0000,1770157.3,0.906,110635,XDP_ZEROCOPY bind returns errno=95 (EOPNOTSUPP); fallback to XDP_COPY batch=64
+af_xdp_copy,3,3616896,2.0000,1808439.5,0.926,113028,XDP_ZEROCOPY bind returns errno=95 (EOPNOTSUPP); fallback to XDP_COPY batch=64
+af_xdp_copy,4,3526848,2.0000,1763420.5,0.903,110214,XDP_ZEROCOPY bind returns errno=95 (EOPNOTSUPP); fallback to XDP_COPY batch=64
+af_xdp_copy,5,3536544,2.0000,1768277.3,0.905,110517,XDP_ZEROCOPY bind returns errno=95 (EOPNOTSUPP); fallback to XDP_COPY batch=64
+io_uring_send,1,2809984,2.0000,1404985.2,0.719,43906,IORING_OP_SEND batch=64 on AF_PACKET + PACKET_QDISC_BYPASS
+io_uring_send,2,2823872,2.0000,1411929.8,0.723,44123,IORING_OP_SEND batch=64 on AF_PACKET + PACKET_QDISC_BYPASS
+io_uring_send,3,2988672,2.0000,1494328.9,0.765,46698,IORING_OP_SEND batch=64 on AF_PACKET + PACKET_QDISC_BYPASS
+io_uring_send,4,2917312,2.0000,1458649.1,0.747,45583,IORING_OP_SEND batch=64 on AF_PACKET + PACKET_QDISC_BYPASS
+io_uring_send,5,2810240,2.0000,1405124.5,0.719,43910,IORING_OP_SEND batch=64 on AF_PACKET + PACKET_QDISC_BYPASS
+af_packet_sendmmsg,1,2647040,2.0000,1323514.2,0.678,41360,AF_PACKET SOCK_RAW + sendmmsg batch=64 + PACKET_QDISC_BYPASS
+af_packet_sendmmsg,2,2621312,2.0000,1310650.1,0.671,40958,AF_PACKET SOCK_RAW + sendmmsg batch=64 + PACKET_QDISC_BYPASS
+af_packet_sendmmsg,3,2508480,2.0000,1254234.8,0.642,39195,AF_PACKET SOCK_RAW + sendmmsg batch=64 + PACKET_QDISC_BYPASS
+af_packet_sendmmsg,4,2618368,2.0000,1309178.4,0.670,40912,AF_PACKET SOCK_RAW + sendmmsg batch=64 + PACKET_QDISC_BYPASS
+af_packet_sendmmsg,5,2560832,2.0000,1280412.0,0.656,40013,AF_PACKET SOCK_RAW + sendmmsg batch=64 + PACKET_QDISC_BYPASS
+af_packet_sendto,1,2549920,2.0000,1274961.0,0.653,2549920,AF_PACKET SOCK_RAW + send() per packet + PACKET_QDISC_BYPASS
+af_packet_sendto,2,2554905,2.0000,1277454.3,0.654,2554905,AF_PACKET SOCK_RAW + send() per packet + PACKET_QDISC_BYPASS
+af_packet_sendto,3,2542718,2.0000,1271360.6,0.651,2542718,AF_PACKET SOCK_RAW + send() per packet + PACKET_QDISC_BYPASS
+af_packet_sendto,4,2547779,2.0000,1273892.8,0.652,2547779,AF_PACKET SOCK_RAW + send() per packet + PACKET_QDISC_BYPASS
+af_packet_sendto,5,2536444,2.0000,1268225.6,0.649,2536444,AF_PACKET SOCK_RAW + send() per packet + PACKET_QDISC_BYPASS
+af_packet_mmap,1,2474304,2.0000,1237139.1,0.633,38661,AF_PACKET TPACKET_V2 PACKET_TX_RING + PACKET_QDISC_BYPASS
+af_packet_mmap,2,2474688,2.0000,1237342.8,0.634,38667,AF_PACKET TPACKET_V2 PACKET_TX_RING + PACKET_QDISC_BYPASS
+af_packet_mmap,3,2592960,2.0000,1296463.6,0.664,40515,AF_PACKET TPACKET_V2 PACKET_TX_RING + PACKET_QDISC_BYPASS
+af_packet_mmap,4,2490176,2.0000,1245077.4,0.637,38909,AF_PACKET TPACKET_V2 PACKET_TX_RING + PACKET_QDISC_BYPASS
+af_packet_mmap,5,2478528,2.0000,1239258.0,0.635,38727,AF_PACKET TPACKET_V2 PACKET_TX_RING + PACKET_QDISC_BYPASS
+kernel_pktgen_sweep,1,5000000,7.9212,631214.0,0.323,1,pktgen.ko kpktgend_2 clone_skb=0 udp_src_min=10000 udp_src_max=26383
+kernel_pktgen_sweep,2,5000000,7.8404,637718.0,0.327,1,pktgen.ko kpktgend_2 clone_skb=0 udp_src_min=10000 udp_src_max=26383
+kernel_pktgen_sweep,3,5000000,7.9347,630143.0,0.323,1,pktgen.ko kpktgend_2 clone_skb=0 udp_src_min=10000 udp_src_max=26383
+kernel_pktgen_sweep,4,5000000,7.8717,635185.0,0.325,1,pktgen.ko kpktgend_2 clone_skb=0 udp_src_min=10000 udp_src_max=26383
+kernel_pktgen_sweep,5,5000000,7.9543,628591.0,0.322,1,pktgen.ko kpktgend_2 clone_skb=0 udp_src_min=10000 udp_src_max=26383
+udp_socket_sendmmsg,1,863424,2.0000,431709.8,0.221,13491,AF_INET SOCK_DGRAM + sendmmsg batch=64 (22B payload = 64B L2 frame)
+udp_socket_sendmmsg,2,854528,2.0000,427262.1,0.219,13352,AF_INET SOCK_DGRAM + sendmmsg batch=64 (22B payload = 64B L2 frame)
+udp_socket_sendmmsg,3,859392,2.0000,429694.2,0.220,13428,AF_INET SOCK_DGRAM + sendmmsg batch=64 (22B payload = 64B L2 frame)
+udp_socket_sendmmsg,4,834368,2.0000,417182.3,0.214,13037,AF_INET SOCK_DGRAM + sendmmsg batch=64 (22B payload = 64B L2 frame)
+udp_socket_sendmmsg,5,848256,2.0000,424115.1,0.217,13254,AF_INET SOCK_DGRAM + sendmmsg batch=64 (22B payload = 64B L2 frame)
