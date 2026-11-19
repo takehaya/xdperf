@@ -353,7 +353,7 @@ sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
 
 `short_responses` と `peer_closed_early` に該当するフローは正常に閉じますが、どちらかが 1 以上の場合、実行の終了コードは非ゼロになります。
 応答タイムアウトもフローの失敗とみなし、非ゼロで終了します。
-非ゼロで終了した実行では `--summary-json` を書き出さないため、`response_timeouts`、`short_responses`、`peer_closed_early` の 0 以外の値は最終ログでのみ確認できます。
+いずれの場合も、`--summary-json` は書き出してから終了します。
 xdperf-sink の JSON 要約には `responses`、`response_bytes`、`respond_errors` が追加されます。
 
 `--pps` を指定すると、worker はおよそ 10 ms ごとにまとめて動作します (worker あたり 100 pps 未満では、間隔がさらに長くなります)。

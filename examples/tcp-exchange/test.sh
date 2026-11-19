@@ -120,7 +120,10 @@ run_case() {
         early-close)
             # The sink closes after 3 of 10 rounds: xdperf counts it and exits non-zero.
             start_sink "${RX_IP4}:${DST_PORT}" -respond "${REQ}:${RESP}" -close-after 3 || return 1
-            send 1 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":${ROUNDS}" || ok=0
+            local summary="${XDPERF_EXAMPLE_RUNDIR}/xchg-${name}-summary.json"
+            rm -f "$summary"
+            send 1 "\"bytes\":\"${REQ}\",\"response_bytes\":\"${RESP}\",\"rounds\":${ROUNDS}" \
+                --summary-json "$summary" || ok=0
             stop_sink; report
             # The flows still close cleanly. sink.bytes is not checked: a flow may
             # send its 4th request before the sink's FIN arrives, or not.
@@ -130,6 +133,10 @@ run_case() {
             expect peer_closed_early "$(tx_field peer_closed_early)" "${FLOWS}"
             expect rounds_done "$(tx_field rounds_done)" $(( 3 * FLOWS ))
             expect sink.responses "$(sink_field responses)" $(( 3 * FLOWS ))
+            # The failed run still writes its summary.
+            expect summary.peer_closed_early \
+                "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tcp"]["peer_closed_early"])' "$summary" 2>/dev/null || true)" \
+                "${FLOWS}"
             ;;
         *)
             print_error "unknown case: ${name}"

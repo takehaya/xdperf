@@ -169,7 +169,7 @@ The final `tcp final statistics` log and `--summary-json` add `rounds_done`, `re
 A response timeout sends RST and fails the flow.
 A peer FIN that cuts a response short counts as `short_responses`; a peer FIN at a response boundary before all rounds are done counts as `peer_closed_early`.
 Those flows end cleanly, but the run exits non-zero.
-A run that exits non-zero does not write `--summary-json`, so non-zero values of the last three appear only in the final log.
+These runs still write `--summary-json` before they exit non-zero.
 
 With `--pps`, workers run in batches about every 10 ms (less often below 100 pps per worker).
 A flow then waits for the next batch after each response: on veth, the gap between rounds was 8 to 16 ms or more.
