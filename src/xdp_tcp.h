@@ -465,15 +465,24 @@ static __always_inline int mixed_flow_closed(__u8 state)
 }
 
 // A slot owns indices slot, slot+N, ...; wrapping to slot also works when P%N != 0.
-static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cfg *cfg, __u64 now, __u32 *quarantine)
+// Returns the flow index of the slot's current flow, -1 without one, -2 when
+// the next generation is still quarantined. A global function, so the verifier
+// checks it once instead of once per scan iteration (see tcp_tx_step_run).
+__noinline int tcp_slot_resolve(__u32 slot, __u64 now)
 {
+    __u32 zero = 0;
+    const struct tcp_cfg *cfg = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
+    if (!cfg)
+        return -1;
     __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &slot);
     if (!current || *current >= cfg->flow_count)
-        return NULL;
+        return -1;
     __u32 idx = *current;
     struct tcp_flow *f = bpf_map_lookup_elem(&tcp_flow_map, &idx);
-    if (!f || !mixed_flow_closed(f->state))
-        return f;
+    if (!f)
+        return -1;
+    if (!mixed_flow_closed(f->state))
+        return idx;
     __u64 id = f->connection_id + cfg->slot_count;
     if (!cfg->drain && !cfg->abort && (!cfg->end_ns || now < cfg->end_ns) && (!cfg->connections || id < cfg->connections)) {
         __u32 next = idx + cfg->slot_count;
@@ -481,14 +490,13 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
             next = slot;
         struct tcp_flow *n = bpf_map_lookup_elem(&tcp_flow_map, &next);
         if (!n)
-            return NULL;
+            return -1;
         __u32 iss = bpf_get_prandom_u32();
         bpf_spin_lock(&n->lock);
         if (mixed_flow_closed(n->state)) {
             if (now < n->closed_ns || now - n->closed_ns < cfg->reuse_delay_ns) {
                 bpf_spin_unlock(&n->lock);
-                *quarantine = 1;
-                return NULL;
+                return -2;
             }
             // shortcut: quarantine >= 1s outlasts microsecond frame construction outside
             // the lock; revisit with reference protection if sub-second reuse is added.
@@ -509,7 +517,7 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
         n->connection_id = id;
         bpf_spin_unlock(&n->lock);
         *current = next;
-        return n;
+        return next;
     }
     *current = 0xffffffff;
     struct mixed_cfg *mix = bpf_map_lookup_elem(&mixed_cfg_map, &(__u32){0});
@@ -519,24 +527,7 @@ static __noinline struct tcp_flow *tcp_slot_flow(__u32 slot, const struct tcp_cf
         if (closed)
             __sync_fetch_and_add(closed, 1);
     }
-    return NULL;
-}
-
-// tcp_slot_flow as a global function, so the verifier checks it once instead
-// of once per scan iteration: the flow index of the slot's current flow, -1
-// without one, -2 when the next generation is still quarantined.
-__noinline int tcp_slot_resolve(__u32 slot, __u64 now)
-{
-    __u32 zero = 0, quarantine = 0;
-    const struct tcp_cfg *cfg = bpf_map_lookup_elem(&tcp_cfg_map, &zero);
-    if (!cfg)
-        return -1;
-    struct tcp_flow *f = tcp_slot_flow(slot, cfg, now, &quarantine);
-    // Only the owner worker advances a slot: this is the index just resolved.
-    __u32 *current = bpf_map_lookup_elem(&tcp_slot_map, &slot);
-    if (!f || !current)
-        return quarantine ? -2 : -1;
-    return *current;
+    return -1;
 }
 
 // Burst capacity is one. Expired opportunities are discarded, never caught up.
@@ -571,7 +562,7 @@ static __noinline int tcp_start_permit(const struct tcp_cfg *cfg, struct tcp_cpu
 // Scan only CLOSED candidates here; running the full state machine in both scans
 // duplicates verifier paths on older kernels. Its cursor is separate from normal TX.
 // Returns the flow index of the candidate, or -1.
-static __noinline int tcp_start_flow(const struct tcp_cfg *cfg, struct tcp_cpu_state *cs, __u32 first, __u32 count)
+static __noinline int tcp_start_flow(struct tcp_cpu_state *cs, __u32 first, __u32 count)
 {
     __u32 zero = 0;
     struct tcp_stats *st = bpf_map_lookup_elem(&tcp_stats_map, &zero);
@@ -678,11 +669,19 @@ static __noinline int tcp_tx_decide_mixed_xchg(struct tcp_flow *f, const struct 
 }
 
 // One scan attempt: resolve the flow at idx (a slot unless allow_start, where
-// tcp_start_flow already resolved it) and decide what it sends. These are
-// global functions on purpose: the verifier checks a global function once,
-// for any arguments, instead of once per scan iteration and per state that
-// reaches it. That is what keeps the TX programs far below the 1M instruction
-// limit on 6.1. Returns the action kind, or -1 when a map lookup failed.
+// tcp_start_flow already resolved it) and decide what it sends. Returns the
+// action kind (TXA_NONE when idx has no flow), or -1 when the config, stats or
+// template lookup failed (the caller aborts).
+//
+// The entries below are global functions on purpose: the verifier checks a
+// global function once, for any arguments, instead of once per scan iteration
+// and per state that reaches it. A static decision called from the scan loop
+// cost 945k of the 1M instruction limit on 6.1; this costs under 40k, and
+// TestBpfMixedSpecializations enforces a budget. On 6.1 a global function takes
+// only scalars and pointers to fixed-size memory that may be NULL, and returns
+// a scalar: flows are passed by index, never by pointer (a flow pointer would
+// lose its spin lock), and the caller looks the flow and template up again by
+// d->flow and d->group.
 static __always_inline int tcp_tx_step_run(__u32 idx, struct tcp_mixed_decision *d, const int extended, const int exchange)
 {
     __u32 zero = 0;
@@ -725,6 +724,12 @@ __noinline int tcp_tx_step_ext(__u32 idx, struct tcp_mixed_decision *d)
 __noinline int tcp_tx_step_xchg(__u32 idx, struct tcp_mixed_decision *d)
 {
     return tcp_tx_step_run(idx, d, 1, 1);
+}
+static __always_inline int tcp_tx_step_any(__u32 idx, struct tcp_mixed_decision *d, const int extended, const int exchange)
+{
+    if (exchange)
+        return tcp_tx_step_xchg(idx, d);
+    return extended ? tcp_tx_step_ext(idx, d) : tcp_tx_step(idx, d);
 }
 
 // Compile separate entry points for basic and extended TCP templates.
@@ -772,11 +777,10 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended, co
     // After every new SYN, reserve an iteration for data/retries/FIN even at saturation.
     cs->service_pending = 0;
     if (permit) {
-        int start = tcp_start_flow(global, cs, first, count);
+        int start = tcp_start_flow(cs, first, count);
         if (start >= 0) {
             decision.allow_start = 1;
-            kind = exchange ? tcp_tx_step_xchg(start, &decision)
-                            : extended ? tcp_tx_step_ext(start, &decision) : tcp_tx_step(start, &decision);
+            kind = tcp_tx_step_any(start, &decision, extended, exchange);
             if (kind < 0)
                 return XDP_ABORTED;
             if (kind != TXA_NONE && kind != TXA_CLOSED) {
@@ -798,8 +802,8 @@ static __always_inline int tcp_tx_run(struct xdp_md *ctx, const int extended, co
         idx = first + cursor * cs->stride;
         if (idx >= MAX_TCP_FLOWS)
             continue;
-        kind = exchange ? tcp_tx_step_xchg(idx, &decision)
-                        : extended ? tcp_tx_step_ext(idx, &decision) : tcp_tx_step(idx, &decision);
+        // Keep the decision inside the global step: see tcp_tx_step_run.
+        kind = tcp_tx_step_any(idx, &decision, extended, exchange);
         if (kind < 0)
             return XDP_ABORTED;
         if (kind != TXA_NONE && kind != TXA_CLOSED)

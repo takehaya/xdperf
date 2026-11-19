@@ -219,12 +219,6 @@ func TestBpfMixedSpecializations(t *testing.T) {
 			if err := LoadMixedProgramsWithFeatures(objs, spec, features); err != nil {
 				t.Fatal(err)
 			}
-			// TCP TX verifies one scan attempt as a global function: 6.1
-			// needs under 40k instructions. A static helper back in the
-			// scan loop multiplies that by the scan length (945k on 6.1).
-			if n := verifiedInstructions(t, objs.XdpTxTcpMixed); n > txTCPVerifierBudget {
-				t.Fatalf("xdp_tx_tcp_mixed: %d verified instructions, budget %d", n, txTCPVerifierBudget)
-			}
 			var original uint32
 			if err := spec.Variables["mixed_max_udps"].Get(&original); err != nil {
 				t.Fatal(err)
@@ -246,13 +240,19 @@ func TestBpfMixedSpecializations(t *testing.T) {
 					t.Fatalf("tail call %d: %d, want %d", i, got, id)
 				}
 			}
+			checkTxTCPVerifierBudget(t, objs.XdpTxTcpMixed)
 		})
 	}
 }
 
-const txTCPVerifierBudget = 200_000
+// TCP TX verifies one scan attempt as a global function (tcp_tx_step_run in
+// src/xdp_tcp.h): every CI kernel needs under 40k instructions. A static
+// helper called from a scan loop multiplies its cost by the scan length: the
+// decision in the loop took 148k-262k on 7.0 and up to 954k on 6.1, and the
+// slot helper in the start loop 97k-120k on 6.1. 80k catches both.
+const txTCPVerifierBudget = 80_000
 
-func verifiedInstructions(t *testing.T, prog *ebpf.Program) uint32 {
+func checkTxTCPVerifierBudget(t *testing.T, prog *ebpf.Program) {
 	t.Helper()
 	info, err := prog.Info()
 	if err != nil {
@@ -260,7 +260,11 @@ func verifiedInstructions(t *testing.T, prog *ebpf.Program) uint32 {
 	}
 	n, ok := info.VerifiedInstructions()
 	if !ok {
-		t.Skip("kernel does not report verified instructions")
+		t.Log("kernel does not report verified instructions")
+		return
 	}
-	return n
+	t.Logf("xdp_tx_tcp_mixed: %d verified instructions", n)
+	if n > txTCPVerifierBudget {
+		t.Fatalf("xdp_tx_tcp_mixed: %d verified instructions, budget %d: is a static function called from a TX scan loop?", n, txTCPVerifierBudget)
+	}
 }

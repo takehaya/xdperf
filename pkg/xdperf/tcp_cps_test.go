@@ -328,6 +328,28 @@ func TestTCPCPSGateBPF(t *testing.T) {
 	if err != nil || s.StartDroppedBusy != 1 || s.Started != 1 {
 		t.Fatalf("busy gate %+v %v", s, err)
 	}
+	// With the only port still quarantined, the opportunity is counted as a
+	// quarantine drop, not as busy (tcp_slot_resolve returns -2).
+	var reuseDelay uint64
+	if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { reuseDelay, c.ReuseDelayNs = c.ReuseDelayNs, uint64(time.Hour) }); err != nil {
+		t.Fatal(err)
+	}
+	f.State, f.ClosedNs = tcpFlowDone, now
+	if err := x.bpfobjs.TcpFlowMap.Put(uint32(0), f); err != nil {
+		t.Fatal(err)
+	}
+	setGate(now)
+	if tx() != 1 {
+		t.Fatal("SYN on a quarantined port")
+	}
+	q, err := x.readTCPStats(recs)
+	if err != nil || q.StartDroppedQuarantine != s.StartDroppedQuarantine+1 || q.StartDroppedBusy != s.StartDroppedBusy || q.Started != 1 {
+		t.Fatalf("quarantine gate %+v, before %+v %v", q, s, err)
+	}
+	if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.ReuseDelayNs = reuseDelay }); err != nil {
+		t.Fatal(err)
+	}
+	f.ClosedNs = 0
 	// Shared start/end clocks apply even before the host switches to drain.
 	if err := x.updateTCPCfg(func(c *coreelf.BpfTcpCfg) { c.EndNs = 1 }); err != nil {
 		t.Fatal(err)
