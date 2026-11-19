@@ -49,6 +49,25 @@
    - `io_uring`、`sendmmsg`、`PACKET_MMAP` はいずれもシステムコール回数を 64 分の 1 に減らすが、カーネル内部（`packet_snd` / `tpacket_snd`）で **「毎パケット `alloc_skb` してユーザー空間からコピーし、`veth_xmit(skb)` に流して `kfree_skb` する」** という支配的ボトルネック（約 500〜600 ns/pkt）が `AF_XDP (XDP_COPY)` と共通しているため、すべて 1.25〜1.78 Mpps の帯域に収束する。
    - なお DPDK の仮想 PMD（`--vdev=net_af_xdp` / `--vdev=net_af_packet`）や `Netmap` の `veth` generic（エミュレーション）モードも、カーネル境界では上記の `xsk_generic_xmit` または `tpacket_snd` / `alloc_skb` を呼ぶため、同じ上限に従う。
 
+### 1.4 同じ送出機構を `netkit` ペア（`nktx` ↔ `nkrx`）に直接適用した場合の挙動と「`sk_buff` の壁（1.66 Mpps）」
+
+続いて、同じホスト（`400g-1.lab`、CPU 2 固定、64B UDP、16,384 ポートスイープ）上で、`veth` ペアを **`netkit` ペア（`ip link add nktx type netkit mode l2 peer nkrx`、対向 `nkrx` は TC ingress で drop）** に置き換えて直接送信した場合の実測値を比較する：
+
+| パケット送出機構 | `veth` 1 コア PPS | `netkit` 直接送信 1 コア PPS | `veth` → `netkit` での変化とカーネル内部の理由 |
+|---|---:|---:|---|
+| **`xdperf` (`BPF_F_TEST_XDP_LIVE_FRAMES`)** | **`9,557,197 PPS`** | **直接送信は不可**（Phase 0 ガードレールで即拒否） | `netkit`（`drivers/net/netkit.c`）は `.ndo_bpf` と `.ndo_xdp_xmit` を実装していない（`xdp_features = 0`）ため、`netkit` 自体からは `xdp_frame` を送出できない。したがって `netkit` を試験する際は **「対向の `veth` / 物理 NIC から `xdperf` で送信し、`TCX ingress`（`bpf_redirect_peer`）で `netkit` に流し込む非対称構成」** が必須となる。 |
+| **`AF_XDP` (`XDP_COPY`, batch=64)** | `1,776,021 PPS` | **`1,658,604 PPS`** (`zc_errno=95`) | `netkit` でも `XDP_ZEROCOPY` は `errno=95 (EOPNOTSUPP)` で拒否され、`xsk_generic_xmit`（毎パケット `alloc_skb` ＋ UMEM コピー）に落ちるため **1.66 Mpps（`602.9 ns/pkt`）** が上限となる。 |
+| **カーネル標準 `pktgen` (`pktgen.ko`, 16,384 ポートスイープ)** | `632,570 PPS` | **`1,658,527 PPS` (+162% 高速化)** | `veth` では対向に XDP がアタッチされていると `veth_xmit(skb)` の先で `veth_xdp_rcv_skb()` の変換コストがかかっていたが、`netkit_xmit(skb)` は `sk_buff` をそのままインラインで peer へ渡すため **2.62 倍** に高速化し、**`AF_XDP (XDP_COPY)` と完全に同じ `1.66 Mpps`（`602.9 ns/pkt`）に収束**する。 |
+| **`io_uring` (`IORING_OP_SEND`, batch=64)** | `1,435,004 PPS` | **`1,274,201 PPS`** | `alloc_skb` ＋ ユーザー空間からのコピーにより約 1.27 Mpps で頭打ち。 |
+| **`AF_PACKET` (`sendmmsg`, batch=64)** | `1,295,598 PPS` | **`1,184,044 PPS`** | 同上（約 1.18 Mpps）。 |
+| **`AF_PACKET` (`send()`)** | `1,273,179 PPS` | **`1,174,318 PPS`** | 同上（約 1.17 Mpps）。 |
+| **`AF_PACKET` (`PACKET_MMAP` / `TPACKET_V2`)** | `1,251,056 PPS` | **`1,123,843 PPS`** | 同上（約 1.12 Mpps）。 |
+| **標準 UDP ソケット (`AF_INET` + `sendmmsg` batch=64)** | `425,993 PPS` | **`886,326 PPS` (+108% 高速化)** | `netkit_xmit(skb)` によるデバイス境界の軽量化で通常の UDP ソケットも **2.08 倍** に高速化するが、UDP/IP スタック＋`alloc_skb` により 88.6 万 PPS が上限となる。 |
+
+* **`netkit` 直接送信実験から分かる重要な結論**:
+  1. **`netkit` によってデバイス境界が軽量化されると、`AF_XDP (XDP_COPY)`（`1,658,604 PPS`）とカーネル内 `pktgen`（`1,658,527 PPS`）が完全に同じ数値（`1.66 Mpps` = `603 ns/pkt`）に収束する**。これは、**「毎パケット `struct sk_buff` をメモリ確保して解放する限り、ユーザー空間の `AF_XDP` を使ってもカーネル内の `pktgen` を使っても、1 コアあたり `1.66 Mpps`（約 600 ns/pkt）という『`sk_buff` 割り当ての壁』を絶対に超えられない」** ことを示している。
+  2. 一方、`netkit` 自体は `.ndo_xdp_xmit` を持たないため、`netkit` 上で直接 `sk_buff` をバイパスすることはできない。だからこそ、「送信側は `.ndo_xdp_xmit` を持つ `veth` や物理 NIC 上の `xdperf`（`page_pool` + `xdp_frame` で `sk_buff` の壁を突破）で駆動し、受信側 Pod の `netkit` へ `bpf_redirect_peer` で流し込む」という非対称トポロジが技術的に理にかなっている。
+
 ---
 
 ## 2. `veth` vs `netkit` および 5-Tuple `LRU_HASH` カウンタの実測結果（単一ホスト・100GbE・400GbE）
