@@ -439,6 +439,7 @@ The counters have the same scope as the existing statistics: packet TX excludes 
 TCP wire byte totals are not measured.
 
 For TCP flow clients, `tcp` contains the final TCP counters, including `flows`, `done`, `failed`, `retransmits`, `window_stalls`, and `data_bytes_sent` (payload bytes).
+Request/response flows add `rounds_done`, `response_bytes` (bytes received in responses), `response_timeouts`, `short_responses`, and `peer_closed_early`; the run exits non-zero when either of the last two is above zero.
 `tcp.started` counts connections whose first SYN was built; `tcp.flows` is the number of concurrent slots.
 `tcp.target_cps` records the requested connection rate; `tcp.port_reuses` counts successful starts on reused ports.
 The `tcp.start_dropped_*` counters distinguish late workers, busy owned slots, quarantine waits, the bounded scan limit and service reserved for existing connections.

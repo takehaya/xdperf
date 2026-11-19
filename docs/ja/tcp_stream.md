@@ -1,6 +1,7 @@
 # TCP ストリーム送信 (`tcpflow.go`)
 
-`tcpflow.go` プラグインは、XDP で TCP 接続を開いて一方向にデータを送ります。
+`tcpflow.go` プラグインは、XDP で TCP 接続を開いてデータを送信します。
+既定では一方向に送信しますが、`response_bytes` を指定すると、リクエストを送信して相手の応答を待つ往復動作になります。
 SYN、データ、再送、FIN は `xdp_tx_mixed` から TCP テンプレート経路へ渡し、応答は同じデバイスの `xdp_rx_mixed` が処理します。
 送信側ではカーネルの TCP ソケットを使いません。
 単独 `--tcp` とクライアント用の `--tcp-*` フラグは廃止しました。
@@ -294,6 +295,63 @@ sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin 
 隔離による破棄は所有枠での不足を示し、全ポートの枯渇とは断定しません。
 `port_exhausted` は互換性のため残りますが、このモードでは false です。
 フローが失敗した場合も summary JSON を書き、非ゼロで終了します。
+
+## リクエストとレスポンスの往復
+
+`response_bytes` を指定すると、各接続は `bytes` バイトのリクエストを送信し、相手から `response_bytes` バイトの応答を受信するまで待ちます。
+これを `rounds` 回繰り返してから接続を閉じます。
+応答をすべて受信するまで次のリクエストは送信せず、応答待ちの間は FIN も送信しません。
+`xdperf-sink -respond Q:R` は、Q バイトのリクエストごとに R バイトを返す対向プログラムです。
+
+```bash
+# 受信側: 1000 バイトのリクエストごとに 4000 バイトを返す
+xdperf-sink -listen 10.0.0.2:5201 -respond 1000:4000
+
+# 送信側: 8 接続 × 10 往復
+sudo xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
+  --cfg '{"dst_ip":"10.0.0.2","tcp_port":5201,"flows":8,"bytes":"1000","response_bytes":"4000","rounds":10}'
+```
+
+| tcpflow.go の設定 | 既定 | 意味 |
+|---|---|---|
+| `response_bytes` | 省略 | リクエスト 1 回あたりの応答バイト数です。0 より大きい十進文字列で指定します。指定すると、`bytes` はリクエスト 1 回あたりのバイト数になります |
+| `rounds` | 1 | 1 接続あたりの往復回数です。0 の場合は `--duration` または `--count` の上限まで繰り返します |
+| `close` | `client` | `client` は最後の応答を受信したあとに FIN を送信し、`server` は相手の FIN を待ちます |
+| `response_until_fin` | `false` | リクエストを 1 回送信し、相手の FIN までを応答として扱います (HTTP/1.0 形式) |
+| `response_timeout_ms` | 10000 | 応答待ち中にこの時間にわたって何も受信しなかったフローを、RST で失敗させます |
+
+ほかにも、次の使い方があります。
+
+| 形 | プラグインの設定 | xdperf-sink |
+|---|---|---|
+| ダウンロード | `"bytes":"0","response_bytes":"1000000"` | `-respond 0:1000000` (接続時に 1 回送信) |
+| HTTP/1.0 形式 | `"bytes":"1000","response_until_fin":true` | `-respond 1000:65536 -close-after 1` |
+| 相手が接続を閉じる | `...,"rounds":10,"close":"server"` | `-respond 1000:4000 -close-after 10` |
+| 指定時間まで繰り返す | `...,"rounds":0` と `--duration 30s` | `-respond 1000:4000` |
+
+ダウンロードではリクエストを送信せず、往復は 1 回だけです。
+`rounds: 0` は `close: "server"` や `connections` と併用できません。
+`connections` を指定すると、各接続が同じ回数だけ往復します。
+`close` と `response_timeout_ms` は、`response_bytes` または `response_until_fin` を指定したときだけ使用できます。
+`xdperf-sink -close-after N` は N 回応答したあとに送信を終了し、残りの受信データを読み捨ててから接続を閉じます。
+そのため、送信中のリクエストに RST は返しません。
+
+最終ログの `tcp final statistics` と `--summary-json` の `tcp` に、次の値が追加されます。
+
+| フィールド | 意味 |
+|---|---|
+| `rounds_done` | 完了した往復の数 |
+| `response_bytes` | 応答として受信したバイト数 |
+| `response_timeouts` | 応答待ちのタイムアウトで失敗したフロー数 |
+| `short_responses` | 応答の途中で相手が FIN を送信したフロー数 |
+| `peer_closed_early` | 最後の往復に入る前に、往復の合間で相手が FIN を送信したフロー数 |
+
+`short_responses` と `peer_closed_early` に該当するフローは正常に閉じますが、どちらかが 1 以上の場合、実行の終了コードは非ゼロになります。
+xdperf-sink の JSON 要約には `responses`、`response_bytes`、`respond_errors` が追加されます。
+
+`--pps` を指定すると、各フローは 10 ms のペーシング間隔ごとにおよそ 1 往復しか進まず、往復の間隔は 8 ms 以上になります。
+`--pps` を指定しない場合、フロー数が少なければ、応答の受信から次のリクエストの送信までの間隔は数マイクロ秒以内です。
+veth 上ですべての使い方を確認する例は、[examples/tcp-exchange](../../examples/tcp-exchange/README.md) にあります。
 
 ## 実行結果を JSON に保存する
 

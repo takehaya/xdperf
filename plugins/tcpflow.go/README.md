@@ -29,6 +29,16 @@ Zero or omitted tuning fields use the defaults below.
 | `ip_id` | `flow` | IPv4 ID mode: `flow` or `shared`; empty uses the default |
 | `port_base` | 10000 | First source port for the entire set; repetition cycles through ports up to 65535 |
 
+Request/response fields are off by default; see [Request/response rounds](#requestresponse-rounds).
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `response_bytes` | omitted | Bytes the peer sends back per request, a decimal string above `"0"`; `bytes` then sizes each request |
+| `rounds` | `1` | Request/response rounds per connection; `0` repeats until `--duration` or `--count` |
+| `close` | `client` | `client` sends FIN after the last response; `server` waits for the peer's FIN |
+| `response_until_fin` | `false` | One request; the response is everything up to the peer's FIN |
+| `response_timeout_ms` | 10000 | Reset a flow that receives nothing for this long while it waits for a response |
+
 The host uses the largest group RTO for linger and drain timeout.
 Retry counts remain engine constants.
 
@@ -123,3 +133,41 @@ CSV remains available for finite attempts within the port capacity, with the con
 `--tcp-flow-report` is rejected when reuse is possible (`connections: 0` or a limit above port capacity), since retained states cannot preserve the complete CSV history.
 Source-IP `variable_params` are rejected with positive CPS or possible reuse.
 Runs with failed connections still write the summary JSON and exit non-zero.
+
+## Request/response rounds
+
+With `response_bytes`, each connection sends a request of `bytes`, waits for `response_bytes` from the peer, and repeats `rounds` times before it closes.
+The client never sends the next request before the whole response has arrived, and never sends FIN while a response is pending.
+`xdperf-sink -respond Q:R` is a matching peer: it writes R bytes after every Q request bytes.
+
+```bash
+# peer: answer every 1000-byte request with 4000 bytes
+out/bin/xdperf-sink -listen 192.0.2.2:5201 -respond 1000:4000
+
+# sender: 8 connections x 10 rounds
+sudo out/bin/xdperf run --device eth0 --plugin tcpflow.go --plugin-path out/bin \
+  --cfg '{"dst_ip":"192.0.2.2","flows":8,"bytes":"1000","response_bytes":"4000","rounds":10}'
+```
+
+Other shapes:
+
+| Shape | Plugin fields | Peer |
+| --- | --- | --- |
+| Download | `"bytes":"0","response_bytes":"1000000"` | `-respond 0:1000000` writes once on accept |
+| HTTP/1.0 style | `"bytes":"1000","response_until_fin":true` | `-respond 1000:65536 -close-after 1` |
+| Peer closes | `...,"rounds":10,"close":"server"` | `-respond 1000:4000 -close-after 10` |
+| Until the deadline | `...,"rounds":0` plus `--duration 30s` | `-respond 1000:4000` |
+
+A download sends no request and has exactly one round.
+`rounds: 0` cannot be combined with `close: "server"` or `connections`.
+With `connections`, every connection repeats the same rounds.
+`close` and `response_timeout_ms` require `response_bytes` or `response_until_fin`.
+
+The final `tcp final statistics` log and `--summary-json` add `rounds_done`, `response_bytes`, `response_timeouts`, `short_responses`, and `peer_closed_early`.
+A response timeout fails the flow.
+A peer FIN that cuts a response short counts as `short_responses`; a peer FIN between rounds before the last one counts as `peer_closed_early`.
+Both end the flow cleanly, but the run exits non-zero.
+
+With `--pps`, a flow advances about one round per 10 ms pacing tick, so the gap between rounds is 8 ms or more.
+Without `--pps`, the next request follows the response within microseconds at low flow counts.
+See [examples/tcp-exchange](../../examples/tcp-exchange/README.md) for a veth run of every shape.
