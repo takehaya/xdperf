@@ -2,12 +2,33 @@
 
 > **Japanese version (日本語版)**: [docs/ja/benchmarks/netkit-and-veth-io/README.md](../../../ja/benchmarks/netkit-and-veth-io/README.md)
 
-This document summarizes:
-1. **8-Way Linux Packet Transmission Comparison on `veth` and `netkit` (`n=5`, [veth_io_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv))**:
+## Summary
+
+`veth` and `netkit` are the virtual devices that connect containers and Kubernetes Pods to the host. This document records the transmit rate of `xdperf`, an XDP-based traffic generator, the difference between `veth` and `netkit-bpf` measured under `xdperf` load, and how to set up the test environment.
+
+1. **On a `veth` pair, `xdperf` transmits 5.4x to 22x faster than the seven other transmit mechanisms (Section 1)**. With one sender core and 64 B UDP, `xdperf` reached 9.56 Mpps and the runner-up, `AF_XDP` in copy mode, reached 1.78 Mpps. The other seven (`AF_XDP`, `io_uring`, three `AF_PACKET` variants, the kernel's `pktgen`, and a UDP socket) allocate an `sk_buff` for every packet. `xdperf` allocates none and recycles frames inside the kernel. The seven mechanisms that allocate an `sk_buff` stayed below 1.8 Mpps per core on both `veth` (mean of five runs) and `netkit`.
+2. **Switching the receiving Pod's connection from `veth` to `netkit-bpf` raised TCP throughput measured with `xdperf` by up to 32% on a single host (mean of five runs) and by up to 35% in single runs on 100GbE (Section 2)**.
+   - `netkit-bpf` is `netkit` combined with BPF forwarding programs (`bpf_redirect_peer` and others). The `veth` baseline uses kernel forwarding.
+   - For `netkit` without the BPF programs (`netkit-l2`, `netkit-l3`), this document reports results from the physical NICs only. In 11 of the 12 sustained-TCP conditions it was within ±3% of `veth`.
+   - On the single host, the more GRO coalesced segments, the smaller the gain was, because coalesced segments cross the Pod boundary as one packet. With `iperf3 -P 4` the gain was +4% (±2.9 pt), about the size of the run-to-run variation. `xdperf` can raise the flow count or set `ip_id: "shared"` on the sender, either of which limits GRO coalescing without any change on the receiver.
+   - Measured with `xdperf`, the gain was +16% to +32% on a single host with 16 to 256 flows (mean of five runs). On physical NICs each condition was run once: +0.8% to +35% on 100GbE and -0.3% to +10% on 400GbE.
+   - Short-lived TCP connections per second (CPS) rose 46% on 400GbE and 3% on 100GbE with `netkit-bpf`. Without the BPF programs, however, `netkit-l2` and `netkit-l3` also changed CPS by +3% on 100GbE and by +28% and -1% on 400GbE, so the variation between modes is large.
+3. **Adding per-flow (5-tuple) counters to the BPF programs on the receive path lowered throughput by no more than the run-to-run variation (Section 2)**. The counters live in an `LRU_HASH` map (65,536 entries). Where GRO did not coalesce segments, every flow's count matched `xdperf`'s per-flow send record (`--tcp-flow-report`).
+4. **To test `netkit`, send from `xdperf` on `veth` or a physical NIC and swap only the receiving Pod's connection between `veth` and `netkit` (Section 3)**. `xdperf` cannot transmit directly on `netkit`, because `netkit` does not implement XDP frame transmission (`.ndo_xdp_xmit`). Section 3 shows this setup for a single host, two physical nodes, and Kubernetes + Cilium. The quick reference matrix in Section 3.3 lists the settings Cilium needs.
+5. **On `veth`, `xdperf`'s transmit rate grows almost in proportion to the number of queues and workers (Section 3.4)**. A worker is an `xdperf` transmit thread that uses one core. With 32 queues and 32 workers on a single host, `xdperf` reached 301.5 Mpps for 64 B UDP and 225.7 Gbps for TCP. The TCP peer was `xdperf`'s XDP responder (`--tcp-server`), and there were no retransmissions. A `veth` created by a CNI has one active queue, but the count can be raised with `ethtool -L` after creation (confirmed on a `veth` pair created with one queue). If the Pod has a CPU limit, keep the worker count within it, pass the allowed CPUs explicitly with `--cpu-mode`, and choose a queue count in which the CPU numbers do not collide. Otherwise `xdperf` either fails to start or its transmit rate falls to roughly a quarter to a sixteenth.
+
+The measurements come from three environments: a single host (Xeon 6746E, 64 vCPU), two 100GbE nodes (ConnectX-5, EPYC 7282), and two 400GbE nodes (ConnectX-7, Core i9-12900K).
+
+## Contents
+
+This document covers:
+1. **8-Way Linux Packet Transmission Comparison on `veth` and `netkit` (`n=5` on `veth`, [veth_io_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv)) (Section 1)**:
    - Empirical 1-core comparison of `xdperf` (`BPF_F_TEST_XDP_LIVE_FRAMES` + in-kernel XDP Diff) against `AF_XDP` (`XDP_COPY`), `io_uring` (`IORING_OP_SEND`), `AF_PACKET` (`sendmmsg` / `send()` / `PACKET_MMAP`), Linux kernel `pktgen` (`pktgen.ko`), and standard UDP sockets (`sendmmsg`), including a nanosecond-per-packet kernel code-path breakdown and the `1.66 Mpps` `sk_buff` allocation ceiling observed on `netkit`.
-2. **`veth` vs. `netkit` (`netkit-l2` / `netkit-l3` / `netkit-bpf`) & 5-Tuple `LRU_HASH` Counter Benchmarks across Single-Host (`n=5`), 100GbE (ConnectX-5), and 400GbE (ConnectX-7) ([netkit_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/netkit_summary.csv))**:
+2. **`veth` vs. `netkit` (`netkit-l2` / `netkit-l3` / `netkit-bpf`) & 5-Tuple `LRU_HASH` Counter Benchmarks across Single-Host (`n=5`), 100GbE (ConnectX-5), and 400GbE (ConnectX-7) ([netkit_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/netkit_summary.csv)) (Section 2)**:
    - Direct comparison of `iperf3` (GSO/GRO ON vs. OFF) and `xdperf`, flow-count scaling under standard `ip_id: "flow"`, sender-side GRO control (`ip_id: "shared"`), short-lived TCP CPS (`/proc/net/softnet_stat` exact `13.00 → 10.00` calls/connection match), high-PPS UDP flood + TCP mixed workloads, and 5-tuple `LRU_HASH` (65,536 entries) overhead & 1-to-1 per-flow verification (`--tcp-flow-report`).
-3. **Recommended Benchmark Topologies for Single-Host (`netns`), 2-Node 100G/400G Physical NICs, and Kubernetes + Cilium (`datapathMode=veth` and `datapathMode=netkit`)**.
+3. **Recommended Benchmark Topologies for Single-Host (`netns`), 2-Node 100G/400G Physical NICs, and Kubernetes + Cilium (`datapathMode=veth` and `datapathMode=netkit`) (Sections 3.1 to 3.3)**.
+4. **Multi-Queue `veth` Scaling and Kubernetes Pod Considerations (Section 3.4)**:
+   - UDP and TCP transmit rates as the `veth` queue count and the `xdperf` worker count grow from `1` to `32`, post-creation multi-queue expansion of CNI-created 1-queue `veth` pairs via `ethtool -L`, and behavior and mitigations for Pods under cgroup CPU limits (CFS quota and `cpuset.cpus`).
 
 Reproducible scripts are available at:
 - [docs/ja/scripts/bench_veth_io.sh](../../../ja/scripts/bench_veth_io.sh)
@@ -16,7 +37,7 @@ Reproducible scripts are available at:
 
 ---
 
-## 1. 8-Way Linux Packet Transmission Comparison on `veth` and `netkit` (1 Core, `n=5`)
+## 1. 8-Way Linux Packet Transmission Comparison on `veth` and `netkit` (1 Core, `n=5` on `veth`)
 
 ### 1.1 Experimental Setup
 - **Host**: Intel Xeon 6746E (64 vCPUs, single NUMA node), Linux `6.17.0-41-generic`
@@ -29,12 +50,12 @@ Reproducible scripts are available at:
 |---:|---|---|---:|---:|---:|---:|
 | **1** | **`xdperf`<br>(`BPF_F_TEST_XDP_LIVE_FRAMES` + In-Kernel XDP Diff)** | **In-kernel `page_pool` `xdp_frame` recycling with zero `sk_buff` allocations and zero userspace copies → `veth_xdp_xmit`** | **`9,557,197 ± 136,988 PPS`** | **`104.6 ns`** | **`4.893 Gbps`** | **Baseline (`1.00x`)** |
 | **2** | **`AF_XDP`<br>(`XDP_COPY`, batch=64)** | `XDP_ZEROCOPY` fails with `errno=95 (EOPNOTSUPP)`.<br>Allocates `sk_buff` and copies from UMEM per packet (`xsk_generic_xmit`) | `1,776,021 ± 18,321 PPS` | `563.1 ns` | `0.909 Gbps` | **`xdperf` is 5.38x faster** |
-| **3** | **`io_uring`<br>(`IORING_OP_SEND`, batch=64 + `QDISC_BYPASS`)** | 64 SQEs batched per `io_uring_enter`, per-packet `sk_buff` allocation + copy from userspace | `1,435,004 ± 37,477 PPS` | `696.9 ns` | `0.735 Gbps` | **`xdperf` is 6.66x faster** |
-| **4** | **`AF_PACKET`<br>(`sendmmsg`, batch=64 + `QDISC_BYPASS`)** | 64 messages batched per syscall, per-packet `sk_buff` allocation + copy from userspace | `1,295,598 ± 28,444 PPS` | `771.8 ns` | `0.663 Gbps` | **`xdperf` is 7.38x faster** |
+| **3** | **`io_uring`<br>(`IORING_OP_SEND`, batch=64 + `QDISC_BYPASS`)** | 64 SQEs batched per `io_uring_enter`, per-packet `sk_buff` allocation + copy from userspace | `1,435,004 ± 40,015 PPS` | `696.9 ns` | `0.735 Gbps` | **`xdperf` is 6.66x faster** |
+| **4** | **`AF_PACKET`<br>(`sendmmsg`, batch=64 + `QDISC_BYPASS`)** | 64 messages batched per syscall, per-packet `sk_buff` allocation + copy from userspace | `1,295,598 ± 27,981 PPS` | `771.8 ns` | `0.663 Gbps` | **`xdperf` is 7.38x faster** |
 | **5** | **`AF_PACKET`<br>(`send()` + `PACKET_QDISC_BYPASS`)** | Per-packet syscall + `sk_buff` allocation + copy from userspace | `1,273,179 ± 3,529 PPS` | `785.4 ns` | `0.652 Gbps` | **`xdperf` is 7.51x faster** |
 | **6** | **`AF_PACKET`<br>(`PACKET_MMAP` / `TPACKET_V2` `TX_RING` + `QDISC_BYPASS`)** | Shared mmap ring, per-packet `sk_buff` allocation + copy in `tpacket_snd()` | `1,251,056 ± 25,586 PPS` | `799.3 ns` | `0.641 Gbps` | **`xdperf` is 7.64x faster** |
-| **7** | **Linux Kernel `pktgen`<br>(`pktgen.ko`, 16,384 port sweep, `clone_skb 0`)** | 100% in-kernel thread (`kpktgend`), but per-packet port modification requires `pktgen_alloc_skb()` + checksum + `veth_xmit` (SKB path) | `632,570 ± 3,900 PPS` | `1,580.9 ns` | `0.324 Gbps` | **`xdperf` is 15.11x faster** |
-| **8** | **Standard UDP Socket<br>(`AF_INET` `SOCK_DGRAM` + `sendmmsg` batch=64)** | Full UDP/IP stack traversal + per-packet `sk_buff` allocation + copy | `425,993 ± 5,630 PPS` | `2,347.5 ns` | `0.218 Gbps` | **`xdperf` is 22.44x faster** |
+| **7** | **Linux Kernel `pktgen`<br>(`pktgen.ko`, 16,384 port sweep, `clone_skb 0`)** | 100% in-kernel thread (`kpktgend`), but per-packet port modification requires `pktgen_alloc_skb()` + checksum + `veth_xmit` (SKB path) | `632,570 ± 3,772 PPS` | `1,580.9 ns` | `0.324 Gbps` | **`xdperf` is 15.11x faster** |
+| **8** | **Standard UDP Socket<br>(`AF_INET` `SOCK_DGRAM` + `sendmmsg` batch=64)** | Full UDP/IP stack traversal + per-packet `sk_buff` allocation + copy | `425,993 ± 5,682 PPS` | `2,347.5 ns` | `0.218 Gbps` | **`xdperf` is 22.44x faster** |
 
 ### 1.3 Why `xdperf` Is 5.38x Faster Than `AF_XDP` on `veth` (Nanosecond Kernel Breakdown)
 
@@ -51,22 +72,27 @@ Reproducible scripts are available at:
      4. Calls `kfree_skb()` → `xsk_destruct_skb()` to update the UMEM completion ring, plus a `sendto()` syscall every 64 packets (~60 ns).
    - Note that DPDK virtual PMDs (`--vdev=net_af_xdp` and `--vdev=net_af_packet`) and `Netmap` generic (emulated) mode on `veth` invoke the exact same `xsk_generic_xmit` or `tpacket_snd` / `alloc_skb` kernel paths and hit the same ceiling.
 
-### 1.4 Direct Transmission on `netkit` (`nktx` ↔ `nkrx`) and the `1.66 Mpps` `sk_buff` Ceiling
+### 1.4 Direct Transmission on `netkit` (`nktx` ↔ `nkrx`) and the `1.66 Mpps` `sk_buff` Allocation Ceiling
 
 Replacing the `veth` pair with a **`netkit` L2 pair (`ip link add nktx type netkit mode l2 peer nkrx`, dropping incoming UDP at `nkrx` TC ingress)** under the exact same 1-core workload yields:
 
 | Transmission Mechanism | `veth` 1-Core PPS | `netkit` Direct TX 1-Core PPS | Behavior Change and Kernel Explanation |
 |---|---:|---:|---|
 | **`xdperf` (`BPF_F_TEST_XDP_LIVE_FRAMES`)** | **`9,557,197 PPS`** | **Not supported on `netkit`** (Rejected by Phase 0 guardrail) | `netkit` (`drivers/net/netkit.c`) does not implement `.ndo_bpf` or `.ndo_xdp_xmit` (`xdp_features = 0`), so live `xdp_frame` injection cannot run directly on a `netkit` device. Instead, `xdperf` must run on the sending `veth` / physical NIC / SR-IOV VF and redirect into `netkit` via `TCX ingress` (`bpf_redirect_peer`). |
-| **`AF_XDP` (`XDP_COPY`, batch=64)** | `1,776,021 PPS` | **`1,658,604 PPS`** (`zc_errno=95`) | `XDP_ZEROCOPY` fails with `errno=95 (EOPNOTSUPP)`; `xsk_generic_xmit` (per-packet `alloc_skb` + UMEM copy) caps at **`1.66 Mpps` (`602.9 ns/pkt`)**. |
-| **Linux Kernel `pktgen` (`pktgen.ko`, 16,384 port sweep)** | `632,570 PPS` | **`1,658,527 PPS` (+162% faster)** | On `veth`, `veth_xmit(skb)` paid the cost of `veth_xdp_rcv_skb()` on the peer. On `netkit`, `netkit_xmit(skb)` processes the `sk_buff` inline without backlog/XDP conversion, speeding up by **2.62x** and **converging to the exact same `1.66 Mpps` (`602.9 ns/pkt`) ceiling as `AF_XDP (XDP_COPY)`**. |
+| **`AF_XDP` (`XDP_COPY`, batch=64)** | `1,776,021 PPS` | **`1,658,604 PPS`** (`zc_errno=95`) | `XDP_ZEROCOPY` fails with `errno=95 (EOPNOTSUPP)`; `xsk_generic_xmit` (per-packet `alloc_skb` + UMEM copy) reached **`1.66 Mpps` (`602.9 ns/pkt`)**. |
+| **Linux Kernel `pktgen` (`pktgen.ko`, 16,384 port sweep)** | `632,570 PPS` | **`1,658,527 PPS` (+162% faster)** | On `veth`, `veth_xmit(skb)` paid the cost of `veth_xdp_rcv_skb()` on the peer. On `netkit`, `netkit_xmit(skb)` processes the `sk_buff` inline without backlog/XDP conversion, speeding up by **2.62x** and **reaching nearly the same `1.66 Mpps` (`602.9 ns/pkt`) as `AF_XDP (XDP_COPY)`**. |
 | **`io_uring` (`IORING_OP_SEND`, batch=64)** | `1,435,004 PPS` | **`1,274,201 PPS`** | Capped by per-packet `alloc_skb` + userspace copy (~1.27 Mpps). |
 | **`AF_PACKET` (`sendmmsg`, batch=64)** | `1,295,598 PPS` | **`1,184,044 PPS`** | Same (~1.18 Mpps). |
 | **`AF_PACKET` (`send()`)** | `1,273,179 PPS` | **`1,174,318 PPS`** | Same (~1.17 Mpps). |
 | **`AF_PACKET` (`PACKET_MMAP` / `TPACKET_V2`)** | `1,251,056 PPS` | **`1,123,843 PPS`** | Same (~1.12 Mpps). |
 | **Standard UDP Socket (`AF_INET` + `sendmmsg` batch=64)** | `425,993 PPS` | **`886,326 PPS` (+108% faster)** | Inline `netkit_xmit(skb)` doubles standard UDP socket throughput (**2.08x**), capped at 886k PPS by UDP/IP stack + `alloc_skb`. |
 
-- **Key Takeaway**: Once `netkit` removes device-boundary backlog overhead, **userspace `AF_XDP (XDP_COPY)` (`1,658,604 PPS`) and in-kernel `pktgen` (`1,658,527 PPS`) converge to the exact same rate (`1.66 Mpps` = `603 ns/pkt`)**. Any mechanism that allocates and frees a `struct sk_buff` per packet hits this `1.66 Mpps/core` wall. Only `BPF_F_TEST_XDP_LIVE_FRAMES` (`xdperf`, `9.56 Mpps/core`) bypasses `sk_buff` allocation entirely.
+The `netkit` column of this table is not included in [veth_io_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv). The reproduction script [bench_veth_io.sh](../../../ja/scripts/bench_veth_io.sh) also covers the `veth` pair only. This document does not record the run count or standard deviation for the `netkit` column.
+
+- **Key Takeaway**: When sending directly on the `netkit` pair, **userspace `AF_XDP (XDP_COPY)` (`1,658,604 PPS`) and in-kernel `pktgen` (`1,658,527 PPS`) reached nearly the same rate (`1.66 Mpps` = `603 ns/pkt`)**. The two take different paths, but both allocate and free a `struct sk_buff` per packet, which suggests that per-packet `sk_buff` allocation and freeing sets the transmit ceiling in this setup. This document calls that ceiling on `netkit` the `sk_buff` allocation ceiling.
+  - `1.66 Mpps` is the rate measured on the `netkit` pair, not a device-independent limit: `AF_XDP (XDP_COPY)` on the `veth` pair reached `1.78 Mpps` (Section 1.2).
+  - The peer also drops packets differently on the two pairs (native XDP `XDP_DROP` on `veth`, TC ingress on `netkit`), so the gap between the two pairs cannot be attributed to the device alone.
+  - On both devices, the seven mechanisms that allocate an `sk_buff` per packet stayed below `1.8 Mpps/core` (mean of five runs on `veth`). Of the eight mechanisms measured, only `xdperf` (`BPF_F_TEST_XDP_LIVE_FRAMES`, `9.56 Mpps/core` on `veth`) avoids `sk_buff` allocation entirely.
 
 ---
 
@@ -79,17 +105,47 @@ Full data is recorded in [netkit_summary.csv](../../../ja/benchmarks/netkit-and-
    - Without touching receiver `ethtool` offloads, `xdperf` drives uncoalesced segment loads (`Softnet/seg = 2.51 → 2.00`), exposing a **`+16.71% ± 1.40 pt`** (`1w/16f`) to **`+19.90% ± 1.18 pt`** (`4w/64f`) advantage for `netkit-bpf`.
 2. **Flow-Count Scaling under Standard `ip_id: "flow"` (`n=5`)**:
    - Even with standard per-flow sequential IP IDs (`ip_id: "flow"`), increasing concurrent flows from `1` (`+1.55% ± 0.65 pt`, `Softnet/seg = 0.65 → 0.54`, GRO active) to `16` → `64` → `128` → `256` naturally prevents GRO coalescing and exposes the peer-backlog bypass of `netkit-bpf`: **`+16.42% ± 0.62 pt` → `+16.85% ± 1.07 pt` → `+25.53% ± 0.45 pt` → `+31.99% ± 0.67 pt`** (`Softnet/seg = 2.98–3.00 → 2.00`).
-3. **100GbE (ConnectX-5) and 400GbE (ConnectX-7) 2-Node Benchmarks**:
-   - **Sustained TCP (`E3-A`)**: On 100GbE (`4w/64f`), `netkit-bpf` improves goodput by **`+25.4%` (`53.19 → 66.69 Gbps`, `ip_id: flow`)** and **`+32.3%` (`25.46 → 33.67 Gbps`, `ip_id: shared`)**. On 400GbE (`4w/64f`), `netkit-bpf` reaches **`110.42 Gbps` (`9.53M segs/s`, `0` retransmits)** under `ip_id: flow` and **`+10.4%` (`82.10 → 90.62 Gbps`)** under `ip_id: shared` (where the ~110 Gbps ceiling is governed by the single-process `xdperf-sink` socket reader sharing Core i9-12900K P/E cores with RX `ksoftirqd`).
-   - **Short-Lived TCP CPS (`E3-B`)**: Across single-host (`n=5`), 100GbE, and 400GbE, receiver `Softnet/conn` drops from **`13.00–13.01`** on `veth` to **`10.00`** on `netkit-bpf` (eliminating all 3 return-path peer backlog traversals per connection), achieving **`27,050.4 CPS (+45.8%)`** on 400GbE (`4w/256s`).
+3. **100GbE (ConnectX-5, AMD EPYC 7282, Linux `7.0.0-38-generic`) and 400GbE (ConnectX-7, Core i9-12900K, Linux `6.8.0-147-generic`) 2-Node Benchmarks** (each condition was run once, so run-to-run variance is not evaluated; see the `n_rounds` column of the CSV. The values were transcribed from the record made at measurement time; the repository does not include the raw logs):
+   - **Sustained TCP (`E3-A`)**: On 100GbE (`4w/64f`), `netkit-bpf` improves goodput by **`+25.4%` (`53.19 → 66.69 Gbps`, `ip_id: flow`)** and **`+32.3%` (`25.46 → 33.67 Gbps`, `ip_id: shared`)**; `ip_id: shared` also gives **`+24.5%`** at `1w/16f` and **`+35.2%`** at `8w/256f`. At `1w/16f` with `ip_id: flow`, the gain is only `+0.8%` (`19.01 → 19.17 Gbps`, `Softnet/seg = 0.33 → 0.25`). GRO coalescing alone does not explain this result: the `4w/64f` `ip_id: flow` run above is coalesced more (`Softnet/seg = 0.18 → 0.13`) and still gained `+25.4%`. On 400GbE (`4w/64f`), `netkit-bpf` reaches **`110.42 Gbps` (`+4.7%` from `105.42 Gbps`, `9.53M segs/s`, `0` retransmits)** under `ip_id: flow` and **`+10.4%` (`82.10 → 90.62 Gbps`)** under `ip_id: shared` (where the ~110 Gbps ceiling is governed by the single-process `xdperf-sink` socket reader sharing Core i9-12900K P/E cores with RX `ksoftirqd`).
+   - **Short-Lived TCP CPS (`E3-B`)**: Across single-host (`n=5`), 100GbE, and 400GbE, receiver `Softnet/conn` drops from **`13.00–13.01`** on `veth` to **`10.00`** on `netkit-bpf` (eliminating all 3 return-path peer backlog traversals per connection), achieving **`27,050.4 CPS (+45.8%)`** on 400GbE (`4w/256s`); the same workload on 100GbE gained `+2.7%` (`23,780 → 24,418 CPS`).
    - **Noisy-Neighbor Mixed UDP Flood + TCP (`E3-C`, 100GbE 250k PPS)**: `netkit-bpf` cuts TCP retransmissions by **`54.9%` (`408 → 184`)** and TCP completion time by **`61.2%` (`8.901s → 3.451s`)**.
    - **5-Tuple `LRU_HASH` (65,536 entries) Overhead & Per-Flow Verification (`E3-D`)**: Counter overhead remains below 1% across `1w/16f` (`+0.41% ± 3.16 pt`), `4w/64f` (`+0.64% ± 3.59 pt`), `4w/256f` (`+0.35% ± 2.41 pt`), `4w/1,024f` (`+0.87% ± 0.90 pt`), high-CPS continuous insertion of **44,479 unique 5-tuples in 3s** (`-6.72% ± 12.67 pt`, 100% tuple match), and 400GbE at 110 Gbps (`-0.3%`, `110.25 → 109.87 Gbps`), with **100% (0 mismatch) 1-to-1 agreement** against `--tcp-flow-report` when uncoalesced (`window_segs=1`).
+
+**Four modes on the physical NICs (sustained TCP)**: [bench_netkit_realnic.sh](../../../ja/scripts/bench_netkit_realnic.sh) also measures `netkit-l2` and `netkit-l3`, which run without the BPF programs. The table gives sustained-TCP goodput in Gbps for the four modes, with the difference from `veth` in parentheses.
+
+| Environment | Condition | `veth` | `netkit-l2` | `netkit-l3` | `netkit-bpf` |
+|---|---|---:|---:|---:|---:|
+| 100GbE | `1w/16f`, `ip_id: flow` | `19.012` | `19.008` (`-0.0%`) | `18.888` (`-0.7%`) | `19.170` (`+0.8%`) |
+| 100GbE | `1w/16f`, `ip_id: shared` | `13.940` | `14.061` (`+0.9%`) | `13.798` (`-1.0%`) | `17.358` (`+24.5%`) |
+| 100GbE | `4w/64f`, `ip_id: flow` | `53.188` | `59.340` (`+11.6%`) | `60.185` (`+13.2%`) | `66.692` (`+25.4%`) |
+| 100GbE | `4w/64f`, `ip_id: shared` | `25.461` | `25.666` (`+0.8%`) | `26.024` (`+2.2%`) | `33.674` (`+32.3%`) |
+| 100GbE | `8w/256f`, `ip_id: flow` | `54.757` | `54.870` (`+0.2%`) | `55.283` (`+1.0%`) | `62.038` (`+13.3%`) |
+| 100GbE | `8w/256f`, `ip_id: shared` | `24.815` | `25.485` (`+2.7%`) | `25.229` (`+1.7%`) | `33.551` (`+35.2%`) |
+| 400GbE | `1w/16f`, `ip_id: flow` | `58.383` | `56.994` (`-2.4%`) | `58.803` (`+0.7%`) | `58.201` (`-0.3%`) |
+| 400GbE | `1w/16f`, `ip_id: shared` | `53.614` | `53.356` (`-0.5%`) | `52.540` (`-2.0%`) | `56.307` (`+5.0%`) |
+| 400GbE | `4w/64f`, `ip_id: flow` | `105.422` | `107.994` (`+2.4%`) | `107.968` (`+2.4%`) | `110.423` (`+4.7%`) |
+| 400GbE | `4w/64f`, `ip_id: shared` | `82.097` | `81.600` (`-0.6%`) | `80.722` (`-1.7%`) | `90.623` (`+10.4%`) |
+| 400GbE | `8w/256f`, `ip_id: flow` | `93.152` | `92.594` (`-0.6%`) | `93.628` (`+0.5%`) | `96.983` (`+4.1%`) |
+| 400GbE | `8w/256f`, `ip_id: shared` | `63.638` | `64.472` (`+1.3%`) | `64.519` (`+1.4%`) | `69.037` (`+8.5%`) |
+
+Without the BPF programs, `netkit-l2` and `netkit-l3` were within ±3% of `veth` in 11 of the 12 conditions. The exception is 100GbE `4w/64f` with `ip_id: flow`, where `netkit-l2` was `+11.6%` and `netkit-l3` was `+13.2%`. Retransmissions in that condition were `6,177` for `veth`, `1,605` for `netkit-l2`, `386` for `netkit-l3` and `448` for `netkit-bpf`. It is the same condition in which `netkit-bpf` gained `+25.4%` in the list above. `netkit-bpf` differed from `veth` by `+0.8%` to `+35.2%` on 100GbE and by `-0.3%` to `+10.4%` on 400GbE.
+
+**Four modes on the physical NICs (short-lived TCP, `4w/256s`)**: The table gives connections per second (CPS) and the receiver's `Softnet/conn` for the four modes, with the difference from `veth` in parentheses.
+
+| Environment | Metric | `veth` | `netkit-l2` | `netkit-l3` | `netkit-bpf` |
+|---|---|---:|---:|---:|---:|
+| 100GbE | CPS | `23,779.5` | `24,389.7` (`+2.6%`) | `24,543.3` (`+3.2%`) | `24,418.1` (`+2.7%`) |
+| 100GbE | `Softnet/conn` | `13.00` | `13.00` | `13.00` | `10.00` |
+| 400GbE | CPS | `18,549.2` | `23,762.2` (`+28.1%`) | `18,295.8` (`-1.4%`) | `27,050.4` (`+45.8%`) |
+| 400GbE | `Softnet/conn` | `13.01` | `13.00` | `13.00` | `10.00` |
+
+`Softnet/conn` was `13.00` to `13.01` for `veth`, `netkit-l2` and `netkit-l3`, and `10.00` for `netkit-bpf`. On 100GbE, CPS for `netkit-l2`, `netkit-l3` and `netkit-bpf` was `+2.6%` to `+3.2%` above `veth` in every case. On 400GbE, CPS ranged from `18,295.8` to `23,762.2` across the three modes with nearly the same `Softnet/conn`, so the `+45.8%` for `netkit-bpf` should be read with that variation in mind. Goodput was not recorded for the `netkit-l2` and `netkit-l3` CPS runs, so the goodput columns of those CSV rows are empty.
 
 ---
 
 ## 3. Recommended Benchmark Topologies (Single-Host, 100G/400G Hardware, and Kubernetes + Cilium)
 
-Because `netkit` lacks `.ndo_xdp_xmit` and caps direct `sk_buff` transmission at `1.66 Mpps/core`, **always place the traffic generator (`xdperf`) on an `.ndo_xdp_xmit`-capable interface (`veth`, physical NIC, or SR-IOV VF), and swap only the DUT receiver Pod boundary between `veth` and `netkit` (Asymmetric Topology)**.
+Because `netkit` lacks `.ndo_xdp_xmit`, `xdperf` cannot transmit on it directly, and the seven `sk_buff`-based mechanisms measured in Section 1.4 reached at most `1.66 Mpps/core` there. Therefore, **always place the traffic generator (`xdperf`) on an `.ndo_xdp_xmit`-capable interface (`veth`, physical NIC, or SR-IOV VF), and swap only the DUT receiver Pod boundary between `veth` and `netkit` (Asymmetric Topology)**.
 
 ### 3.1 Pattern 1: Single-Host 3-Namespace Asymmetric Topology (`netns` / CI)
 
