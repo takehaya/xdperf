@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.1](https://github.com/takehaya/xdperf/compare/v0.24.0...v0.24.1) (2026-11-20)
+
+
+### 📝 Documentation
+
+* add a summary and netkit-l2/l3 results to the netkit and veth I/O benchmark ([#170](https://github.com/takehaya/xdperf/issues/170)) ([e4eb97e](https://github.com/takehaya/xdperf/commit/e4eb97e77e84bf072b783c5648574b076f3c4239))
+* record multi-queue veth scaling (301.5 Mpps / 225.7 Gbps), dynamic ethtool -L, and cgroup CPU limit verifications ([#168](https://github.com/takehaya/xdperf/issues/168)) ([8d5c3ac](https://github.com/takehaya/xdperf/commit/8d5c3ac04851b63f96de0f78c96984d55c2275af))
+
 ## [0.24.0](https://github.com/takehaya/xdperf/compare/v0.23.1...v0.24.0) (2026-11-19)
 
 
