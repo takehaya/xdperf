@@ -2,12 +2,25 @@
 
 > **Japanese version (日本語版)**: [docs/ja/benchmarks/netkit-and-veth-io/README.md](../../../ja/benchmarks/netkit-and-veth-io/README.md)
 
+## Summary
+
+`veth` and `netkit` are the virtual devices that connect containers and Kubernetes Pods to the host. This document records what xdperf, an XDP-based traffic generator, measured on them and how to set up the test environment.
+
+1. **On a `veth` pair, xdperf sends 5.4x to 22x faster than the seven other transmit mechanisms (Section 1).** With one sender core and 64 B UDP, xdperf reached 9.56 Mpps. The runner-up, `AF_XDP` in copy mode, reached 1.78 Mpps. The other seven allocate an `sk_buff` for every packet. xdperf allocates none and recycles frames inside the kernel. When sending directly on a `netkit` pair, `AF_XDP` and the kernel's `pktgen` both reached 1.66 Mpps.
+2. **When the receiving Pod's boundary is switched to `netkit`, xdperf shows a clear speed difference from `veth` (Section 2).** With default `iperf3`, GSO/GRO merges segments, so the `netkit` gain is only +4% and is lost in the run-to-run variation. xdperf can send segments that are not merged, over many flows. `netkit` was faster than `veth` by +16% to +32% on a single host, +25% to +35% on real 100GbE, and +5% to +10% on real 400GbE. On 400GbE the receiving application hits its limit first, so the difference is smaller. Short-lived TCP connections per second (CPS) on 400GbE were +46% with `netkit`. Adding a per-flow counting BPF program to the receive path slowed traffic by an amount within the measurement noise. Where GRO did not merge segments, the counts from that BPF program matched xdperf's per-flow send records for every flow.
+3. **xdperf cannot use `netkit` as its transmit device (Section 3).** `netkit` does not implement XDP frame transmission (`.ndo_xdp_xmit`). This document recommends sending from `veth` or a physical NIC and swapping only the receiving Pod's boundary. Section 3 shows this setup for a single host, two real nodes, and Kubernetes + Cilium. The quick reference matrix in Section 3.3 lists the settings Cilium needs.
+4. **On `veth`, xdperf's transmit rate grows almost in proportion to the number of queues and workers (Section 3.4).** With 32 queues and 32 workers, xdperf reached 301.5 Mpps for UDP and 225.7 Gbps for TCP, with zero TCP retransmissions. A `veth` created by a CNI has one queue. The queue count can be raised with `ethtool -L` after the Pod has started. If the Pod has a CPU limit, xdperf's transmit rate drops sharply unless the worker count, the CPU selection, and the queue count fit that limit.
+
+## Contents
+
 This document summarizes:
 1. **8-Way Linux Packet Transmission Comparison on `veth` and `netkit` (`n=5`, [veth_io_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/veth_io_summary.csv))**:
    - Empirical 1-core comparison of `xdperf` (`BPF_F_TEST_XDP_LIVE_FRAMES` + in-kernel XDP Diff) against `AF_XDP` (`XDP_COPY`), `io_uring` (`IORING_OP_SEND`), `AF_PACKET` (`sendmmsg` / `send()` / `PACKET_MMAP`), Linux kernel `pktgen` (`pktgen.ko`), and standard UDP sockets (`sendmmsg`), including a nanosecond-per-packet kernel code-path breakdown and the `1.66 Mpps` `sk_buff` allocation ceiling observed on `netkit`.
 2. **`veth` vs. `netkit` (`netkit-l2` / `netkit-l3` / `netkit-bpf`) & 5-Tuple `LRU_HASH` Counter Benchmarks across Single-Host (`n=5`), 100GbE (ConnectX-5), and 400GbE (ConnectX-7) ([netkit_summary.csv](../../../ja/benchmarks/netkit-and-veth-io/netkit_summary.csv))**:
    - Direct comparison of `iperf3` (GSO/GRO ON vs. OFF) and `xdperf`, flow-count scaling under standard `ip_id: "flow"`, sender-side GRO control (`ip_id: "shared"`), short-lived TCP CPS (`/proc/net/softnet_stat` exact `13.00 → 10.00` calls/connection match), high-PPS UDP flood + TCP mixed workloads, and 5-tuple `LRU_HASH` (65,536 entries) overhead & 1-to-1 per-flow verification (`--tcp-flow-report`).
 3. **Recommended Benchmark Topologies for Single-Host (`netns`), 2-Node 100G/400G Physical NICs, and Kubernetes + Cilium (`datapathMode=veth` and `datapathMode=netkit`)**.
+4. **Multi-Queue `veth` Scaling and Kubernetes Pod Considerations (Section 3.4)**:
+   - UDP and TCP transmit rates as the `veth` queue count and the `xdperf` worker count grow from `1` to `32`, post-creation multi-queue expansion of CNI-created 1-queue `veth` pairs via `ethtool -L`, and behavior and mitigations for Pods under cgroup CPU limits (CFS quota and `cpuset.cpus`).
 
 Reproducible scripts are available at:
 - [docs/ja/scripts/bench_veth_io.sh](../../../ja/scripts/bench_veth_io.sh)
@@ -66,7 +79,7 @@ Replacing the `veth` pair with a **`netkit` L2 pair (`ip link add nktx type netk
 | **`AF_PACKET` (`PACKET_MMAP` / `TPACKET_V2`)** | `1,251,056 PPS` | **`1,123,843 PPS`** | Same (~1.12 Mpps). |
 | **Standard UDP Socket (`AF_INET` + `sendmmsg` batch=64)** | `425,993 PPS` | **`886,326 PPS` (+108% faster)** | Inline `netkit_xmit(skb)` doubles standard UDP socket throughput (**2.08x**), capped at 886k PPS by UDP/IP stack + `alloc_skb`. |
 
-- **Key Takeaway**: Once `netkit` removes device-boundary backlog overhead, **userspace `AF_XDP (XDP_COPY)` (`1,658,604 PPS`) and in-kernel `pktgen` (`1,658,527 PPS`) converge to the exact same rate (`1.66 Mpps` = `603 ns/pkt`)**. Any mechanism that allocates and frees a `struct sk_buff` per packet hits this `1.66 Mpps/core` wall. Only `BPF_F_TEST_XDP_LIVE_FRAMES` (`xdperf`, `9.56 Mpps/core`) bypasses `sk_buff` allocation entirely.
+- **Key Takeaway**: Once `netkit` removes device-boundary backlog overhead, **userspace `AF_XDP (XDP_COPY)` (`1,658,604 PPS`) and in-kernel `pktgen` (`1,658,527 PPS`) converge to the same rate (`1.66 Mpps` = `603 ns/pkt`)**. Both allocate and free a `struct sk_buff` per packet, so two different paths reaching the same rate suggests that `sk_buff` allocation and freeing sets the transmit ceiling in this setup. This document calls that ceiling on `netkit` the `sk_buff` allocation ceiling. `1.66 Mpps` is the rate measured on the `netkit` pair, not a device-independent limit: `AF_XDP (XDP_COPY)` on the `veth` pair reaches `1.78 Mpps` (Section 1.2). The two pairs also drop packets differently on the peer (native XDP `XDP_DROP` on `veth`, TC ingress on `netkit`). On both devices, the seven mechanisms that allocate an `sk_buff` per packet stayed below `1.8 Mpps/core`. Only `BPF_F_TEST_XDP_LIVE_FRAMES` (`xdperf`, `9.56 Mpps/core`) bypasses `sk_buff` allocation entirely.
 
 ---
 

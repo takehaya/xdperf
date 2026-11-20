@@ -2,7 +2,18 @@
 
 > **English version**: [docs/en/benchmarks/netkit-and-veth-io/README.md](../../../en/benchmarks/netkit-and-veth-io/README.md)
 
-コンテナ・Kubernetes データパス（`veth` および `netkit`）における以下の 3 点を記録する。
+## 要約
+
+`veth` と `netkit` は、コンテナや Kubernetes の Pod をホストにつなぐ仮想デバイスである。この文書は、XDP を使うトラフィックジェネレータ xdperf による測定結果と、測定環境の組み方を記録したものである。
+
+1. **xdperf は `veth` ペア上で、ほかの 7 種の送信手段より 5.4〜22 倍速い（1 章）。** 送信 1 コア、64 B の UDP で、xdperf は 9.56 Mpps を記録した。2 位の `AF_XDP`（コピーモード）は 1.78 Mpps であった。ほかの 7 種は 1 パケットごとに `sk_buff` を確保する。xdperf は `sk_buff` を確保せず、カーネル内のフレームを再利用する。`netkit` ペアへの直接送信では、`AF_XDP` とカーネルの `pktgen` はともに 1.66 Mpps であった。
+2. **受信 Pod の境界を `netkit` に替えると、xdperf による測定では `veth` との速度差がはっきり表れる（2 章）。** `iperf3` の既定設定では、GSO/GRO がセグメントを束ねる。そのため、`netkit` の速度向上は +4% にとどまり、ばらつきに埋もれる。xdperf は、束ねられないセグメントを複数フローで流せる。`netkit` は `veth` より、単一ホストで +16〜32%、100GbE 実機で +25〜35%、400GbE 実機で +5〜10% 速かった。400GbE では受信アプリケーションが先に上限に達するため、速度差は小さい。`netkit` の短命 TCP の毎秒接続数（CPS）は、400GbE で `veth` に対して +46% であった。受信経路へのフロー別集計用 BPF プログラムの追加による速度低下は、誤差の範囲であった。GRO がセグメントを束ねない条件では、BPF プログラムの集計値は全フローで xdperf のフロー別送信記録と一致した。
+3. **xdperf は `netkit` を送信デバイスにできない（3 章）。** `netkit` は XDP フレームの送信（`.ndo_xdp_xmit`）を実装していない。この文書は、送信側に `veth` か物理 NIC を使い、受信 Pod の境界だけを差し替える構成を推奨する。3 章は、単一ホスト、実機 2 ノード、Kubernetes + Cilium の構成を示す。3.3 節の早見表は、Cilium で必要な設定をまとめている。
+4. **`veth` での xdperf の送信性能は、キュー数と worker 数にほぼ比例して伸びる（3.4 節）。** 32 キュー、32 worker で、xdperf は UDP で 301.5 Mpps、TCP で 225.7 Gbps を記録した。TCP の再送は 0 であった。CNI が作る `veth` は 1 キューである。`veth` のキュー数は、Pod の起動後に `ethtool -L` で増やせる。Pod に CPU 制限がある場合、worker 数、CPU の指定、キュー数が制限に合わないと、xdperf の送信性能は大きく落ちる。
+
+## この文書の内容
+
+コンテナ・Kubernetes データパス（`veth` および `netkit`）における以下の 4 点を記録する。
 
 1. **`veth` / `netkit` 1 コアにおける Linux 全 8 種のパケット送出機構の比較（`n=5` 反復、[veth_io_summary.csv](veth_io_summary.csv)）**:
    - `xdperf`（`BPF_F_TEST_XDP_LIVE_FRAMES` + カーネル内 XDP Diff）と、`AF_XDP`（`XDP_COPY`）、`io_uring`（`IORING_OP_SEND`）、`AF_PACKET`（`sendmmsg` / `send()` / `PACKET_MMAP`）、カーネル標準 `pktgen`（`pktgen.ko`）、標準 UDP ソケット（`sendmmsg`）の同一条件比較、および `netkit` 直接送信時に現れる「`sk_buff` 割り当ての壁（1.66 Mpps）」。
@@ -10,6 +21,8 @@
    - `iperf3`（GSO/GRO ON vs OFF）と `xdperf` の対照、標準 `ip_id: "flow"` でのフロー数スケーリングと送信側 GRO 制御（`ip_id: "shared"`）、短命 TCP（CPS）における `/proc/net/softnet_stat` 理論値一致（`13.00 → 10.00` 回/接続）、高 PPS UDP フラッド＋TCP 混合、および 5-tuple `LRU_HASH`（65,536 エントリ）の負荷と `--tcp-flow-report` 送信記録照合。
 3. **単一ホスト・実機 100G/400G・Kubernetes + Cilium（`datapathMode=veth` / `netkit`）における推奨実験トポロジと必須設定**:
    - なぜ送信側を `.ndo_xdp_xmit` 対応デバイスに置く非対称トポロジが必要か、および Cilium 環境でハマりやすい設定（`lxc*` の GRO、`--xdp-mode generic`、`socketLB.hostNamespaceOnly`、`hostNetwork` / `CiliumNodeConfig`）の早見表。
+4. **マルチキュー `veth` のスケーリングと Kubernetes Pod での注意点（3.4 節）**:
+   - `veth` のキュー数と `xdperf` の worker 数を `1` から `32` まで増やしたときの UDP と TCP の送信性能、CNI が作成した 1 キューの `veth` を Pod の起動後に `ethtool -L` でマルチキュー化する手順と効果、および cgroup の CPU 制限（CFS クォータ、`cpuset.cpus`）がある Pod での挙動と対策。
 
 再現スクリプトは [docs/ja/scripts/bench_veth_io.sh](../../scripts/bench_veth_io.sh)、[docs/ja/scripts/bench_netkit.sh](../../scripts/bench_netkit.sh)、[docs/ja/scripts/bench_netkit_realnic.sh](../../scripts/bench_netkit_realnic.sh) に収録している。
 
@@ -69,7 +82,7 @@
 | **標準 UDP ソケット (`AF_INET` + `sendmmsg` batch=64)** | `425,993 PPS` | **`886,326 PPS` (+108% 高速化)** | `netkit_xmit(skb)` によるデバイス境界の軽量化で通常の UDP ソケットも **2.08 倍** に高速化するが、UDP/IP スタック＋`alloc_skb` により 88.6 万 PPS が上限となる。 |
 
 * **`netkit` 直接送信実験から分かる重要な結論**:
-  1. **`netkit` によってデバイス境界が軽量化されると、`AF_XDP (XDP_COPY)`（`1,658,604 PPS`）とカーネル内 `pktgen`（`1,658,527 PPS`）が完全に同じ数値（`1.66 Mpps` = `603 ns/pkt`）に収束する**。これは、**「毎パケット `struct sk_buff` をメモリ確保して解放する限り、ユーザー空間の `AF_XDP` を使ってもカーネル内の `pktgen` を使っても、1 コアあたり `1.66 Mpps`（約 600 ns/pkt）という『`sk_buff` 割り当ての壁』を絶対に超えられない」** ことを示している。
+  1. **`netkit` ペアへの直接送信では、`AF_XDP (XDP_COPY)` の送信速度は `1,658,604 PPS`、カーネル内 `pktgen` の送信速度は `1,658,527 PPS`（いずれも `1.66 Mpps` = `603 ns/pkt`）であった。** `AF_XDP (XDP_COPY)` はユーザー空間から送信する。`pktgen` はカーネル内で送信する。両者は、1 パケットごとに `struct sk_buff` を確保して解放する。経路が異なる両者の送信速度が同じ値になったことから、この構成では `struct sk_buff` の確保と解放が送信速度の上限を決めていると考えられる。本書は、`netkit` 上のこの上限を「`sk_buff` 割り当ての壁」と呼ぶ。ただし、`1.66 Mpps` は `netkit` ペアでの実測値であり、デバイスによらない上限ではない。`veth` ペア上の `AF_XDP (XDP_COPY)` の送信速度は `1.78 Mpps`（1.2 節）であり、`1.66 Mpps` を上回る。両ペアでは、対向でのパケット破棄方法も異なる。`veth` ペアでは、対向の Native XDP が `XDP_DROP` でパケットを破棄する。`netkit` ペアでは、対向の TC ingress がパケットを破棄する。1 パケットごとに `sk_buff` を確保する 7 種の送信手段は、どちらのデバイスでも 1 コアあたり `1.8 Mpps` 未満にとどまった。
   2. 一方、`netkit` 自体は `.ndo_xdp_xmit` を持たないため、`netkit` 上で直接 `sk_buff` をバイパスすることはできない。だからこそ、「送信側は `.ndo_xdp_xmit` を持つ `veth` や物理 NIC 上の `xdperf`（`page_pool` + `xdp_frame` で `sk_buff` の壁を突破）で駆動し、受信側 Pod の `netkit` へ `bpf_redirect_peer` で流し込む」という非対称トポロジが技術的に理にかなっている。
 
 ---
